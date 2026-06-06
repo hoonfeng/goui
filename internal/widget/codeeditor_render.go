@@ -1,0 +1,1042 @@
+package widget
+
+import (
+	"strings"
+
+	"github.com/user/goui/internal/canvas"
+	"github.com/user/goui/internal/event"
+	"github.com/user/goui/internal/paint"
+	"github.com/user/goui/internal/types"
+)
+
+// CodeEditor 的渲染（行号栏 + 语法高亮 + 当前行 + 选区 + 光标 + 滚动条）与事件处理。
+
+// ceTokenColor token 种类 → 颜色，取自 Theme.CodeEditor（SetTheme 换肤即生效）。
+func ceTokenColor(k ceTokKind) types.Color {
+	t := CurrentTheme().CodeEditor
+	switch k {
+	case tkKeyword:
+		return t.Keyword
+	case tkType:
+		return t.Type
+	case tkString:
+		return t.String
+	case tkComment:
+		return t.Comment
+	case tkNumber:
+		return t.Number
+	case tkFunc:
+		return t.Func
+	default:
+		return t.Text
+	}
+}
+
+// ── 坐标换算 ──
+
+func (e *CodeEditorElement) colToX(line, col int) float64 {
+	r := e.lineRunes(line)
+	if col > len(r) {
+		col = len(r)
+	}
+	if col <= 0 {
+		return 0
+	}
+	return e.measure(string(r[:col]))
+}
+
+// xToCol 把行内局部 x（已扣除滚动/起点）换算为列。
+func (e *CodeEditorElement) xToCol(line int, lx float64) int {
+	r := e.lineRunes(line)
+	col := 0
+	for col < len(r) {
+		w := e.measure(string(r[:col+1]))
+		if w > lx {
+			// 取更近的一侧
+			prev := e.measure(string(r[:col]))
+			if lx-prev > w-lx {
+				col++
+			}
+			return col
+		}
+		col++
+	}
+	return len(r)
+}
+
+// lineTopY 返回实际行号在屏幕上的顶部 Y（经折叠可见索引换算）。
+func (e *CodeEditorElement) lineTopY(line int, top float64) float64 {
+	return top + float64(e.visIndexOf(line))*ceLineH
+}
+
+// isStringOrComment 判断 (行,列) 处的字符是否在字符串/注释 token 内（括号匹配时跳过）。
+func (e *CodeEditorElement) isStringOrComment(li, ci int) bool {
+	if li >= len(e.hl) {
+		return false
+	}
+	for _, tk := range e.hl[li] {
+		if ci >= tk.start && ci < tk.end {
+			return tk.kind == tkString || tk.kind == tkComment
+		}
+	}
+	return false
+}
+
+// enclosingBracket 返回包裹光标的最内层「跨行」括号对 {}/()/[] 的开/闭位置（按行包含光标行）；无则 ok=false。
+// 结果只随「内容(bracketRev) + 光标行」变化，故缓存命中时直接返回，免每帧全文扫描。
+func (e *CodeEditorElement) enclosingBracket() (ol, oc, cl, cc int, ok bool) {
+	if e.brkCacheValid && e.brkCacheRev == e.bracketRev && e.brkCacheLine == e.cursor.line {
+		return e.brkOL, e.brkOC, e.brkCL, e.brkCC, e.brkOK
+	}
+	defer func() { // 计算后写回缓存
+		e.brkCacheValid, e.brkCacheRev, e.brkCacheLine = true, e.bracketRev, e.cursor.line
+		e.brkOL, e.brkOC, e.brkCL, e.brkCC, e.brkOK = ol, oc, cl, cc, ok
+	}()
+	match := map[rune]rune{')': '(', ']': '[', '}': '{'}
+	opens := map[rune]bool{'(': true, '[': true, '{': true}
+	type bp struct {
+		line, col int
+		ch        rune
+	}
+	var stack []bp
+	curL := e.cursor.line
+	best := -1
+	for li := 0; li < len(e.lines); li++ {
+		runes := []rune(e.lines[li])
+		for ci := 0; ci < len(runes); ci++ {
+			r := runes[ci]
+			isOpen := opens[r]
+			open, isClose := match[r]
+			if (isOpen || isClose) && e.isStringOrComment(li, ci) {
+				continue // 忽略字符串/注释里的括号
+			}
+			if isOpen {
+				stack = append(stack, bp{li, ci, r})
+			} else if isClose {
+				n := len(stack)
+				if n == 0 {
+					continue
+				}
+				o := stack[n-1]
+				stack = stack[:n-1]
+				if o.ch != open || li <= o.line { // 仅跨行括号对
+					continue
+				}
+				if o.line <= curL && curL <= li { // 光标行落在括号对的行范围内
+					if area := li - o.line; best < 0 || area < best { // 取最内层（行跨度最小）
+						best = area
+						ol, oc, cl, cc, ok = o.line, o.col, li, ci, true
+					}
+				}
+			}
+		}
+	}
+	return
+}
+
+func (e *CodeEditorElement) maxLineWidth() float64 {
+	m := 0.0
+	for _, ln := range e.lines {
+		if w := e.measure(ln); w > m {
+			m = w
+		}
+	}
+	return m
+}
+
+// posFromXY 屏幕坐标 → (行,列)。
+func (e *CodeEditorElement) posFromXY(sx, sy float64) cePos {
+	pos := e.Offset()
+	contentTop := pos.Y + 4
+	vi := int((sy - contentTop + e.scrollY) / ceLineH) // 可见行索引
+	if vi < 0 {
+		vi = 0
+	}
+	if vi >= len(e.visRows) {
+		vi = len(e.visRows) - 1
+	}
+	line := 0
+	if vi >= 0 && vi < len(e.visRows) {
+		line = e.visRows[vi]
+	}
+	editorTextX := pos.X + e.gutterW + ceTextPad
+	lx := sx - (editorTextX - e.scrollX)
+	if lx < 0 {
+		lx = 0
+	}
+	return cePos{line, e.xToCol(line, lx)}
+}
+
+// ── Paint ──
+
+func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
+	pos := e.Offset()
+	w, h := e.size.Width, e.size.Height
+	e.lastCanvas = cvs       // 缓存画布，供点击定位/IME 候选用与渲染一致的 Skia 测量
+	e.drainLSPCompletion()   // 消费异步到达的 LSP 补全结果
+
+	if e.ed == nil || !e.ed.Embedded {
+		// 独立模式：白底圆角 + 边框（聚焦主色）。嵌入模式(StructEditor)完全无边框，无缝融入整份文档。
+		bg := paint.DefaultPaint()
+		bg.Color = CurrentTheme().CodeEditor.Background
+		cvs.DrawRoundedRect(pos.X, pos.Y, w, h, 6, bg)
+		border := elBorder()
+		if e.focused {
+			border = elPrimary()
+		}
+		bp := paint.DefaultStrokePaint()
+		bp.Color = border
+		bp.StrokeWidth = 1
+		cvs.DrawRoundedRect(pos.X+0.5, pos.Y+0.5, w-1, h-1, 6, bp)
+	}
+
+	contentTop := pos.Y + 4
+	editorX := pos.X + e.gutterW
+	editorTextX := editorX + ceTextPad
+
+	// 滚动范围 + 滚动条占位（按折叠后的可见行数算高度）
+	contentH := float64(len(e.visRows)) * ceLineH
+	maxLineW := e.maxLineWidth()
+	miniW := 0.0
+	if e.showMinimap && w > 260 { // 太窄不显示缩略图
+		miniW = ceMiniW
+	}
+	vBar, hBar := 0.0, 0.0
+	if miniW == 0 && contentH > h-8 { // 有缩略图时用其视口框代替竖滚动条
+		vBar = sbThick
+	}
+	editorViewW := w - e.gutterW - ceTextPad - vBar - miniW
+	if maxLineW > editorViewW {
+		hBar = sbThick
+	}
+	viewH := h - 8 - hBar
+	if miniW == 0 && vBar == 0 && contentH > viewH {
+		vBar = sbThick
+		editorViewW = w - e.gutterW - ceTextPad - vBar - miniW
+	}
+	maxScrollY := contentH - viewH
+	if maxScrollY < 0 {
+		maxScrollY = 0
+	}
+	maxScrollX := maxLineW - editorViewW + 4
+	if maxScrollX < 0 {
+		maxScrollX = 0
+	}
+
+	// 光标跟随（按可见索引）
+	if e.focused && e.cursorMoved {
+		curTop := float64(e.visIndexOf(e.cursor.line)) * ceLineH
+		if curTop-e.scrollY < 0 {
+			e.scrollY = curTop
+		}
+		if curTop+ceLineH-e.scrollY > viewH {
+			e.scrollY = curTop + ceLineH - viewH
+		}
+		curX := e.colToX(e.cursor.line, e.cursor.col)
+		if curX-e.scrollX < 0 {
+			e.scrollX = curX
+		}
+		if curX-e.scrollX > editorViewW-6 {
+			e.scrollX = curX - editorViewW + 6
+		}
+		e.cursorMoved = false
+	}
+	e.scrollY = clamp(e.scrollY, 0, maxScrollY)
+	e.scrollX = clamp(e.scrollX, 0, maxScrollX)
+
+	top := contentTop - e.scrollY
+	left := editorTextX - e.scrollX
+
+	// 行号栏背景
+	gb := paint.DefaultPaint()
+	gb.Color = CurrentTheme().CodeEditor.GutterBg
+	cvs.DrawRect(pos.X+1, pos.Y+1, e.gutterW, h-2, gb)
+
+	firstVis := int(e.scrollY/ceLineH) - 1
+	if firstVis < 0 {
+		firstVis = 0
+	}
+	lastVis := int((e.scrollY+viewH)/ceLineH) + 1
+	if lastVis >= len(e.visRows) {
+		lastVis = len(e.visRows) - 1
+	}
+
+	// 当前行高亮（编辑区 + 行号栏）
+	if e.focused && !e.hasSel() {
+		cy := e.lineTopY(e.cursor.line, top)
+		if cy+ceLineH >= pos.Y && cy <= pos.Y+h {
+			cl := paint.DefaultPaint()
+			cl.Color = CurrentTheme().CodeEditor.CurrentLineBg
+			cvs.DrawRect(editorX+1, cy, w-e.gutterW-2, ceLineH, cl)
+			gl := paint.DefaultPaint()
+			gl.Color = CurrentTheme().CodeEditor.GutterActiveBg
+			cvs.DrawRect(pos.X+1, cy, e.gutterW, ceLineH, gl)
+		}
+	}
+
+	// 编辑区裁剪：选区/文本/光标（右侧给缩略图/滚动条留位）
+	cvs.Save()
+	cvs.ClipRect(editorX+1, pos.Y+1, w-e.gutterW-2-vBar-miniW, h-2-hBar)
+
+	// 选区高亮（主 + 多光标额外选区）
+	if e.hasSel() {
+		e.paintSelection(cvs, left, top)
+	}
+	for _, c := range e.extraCarets {
+		if !cePosEq(c.cursor, c.anchor) {
+			lo, hi := c.anchor, c.cursor
+			if cePosLess(c.cursor, c.anchor) {
+				lo, hi = c.cursor, c.anchor
+			}
+			e.paintSelRange(cvs, left, top, lo, hi)
+		}
+	}
+	// 查找匹配高亮（所有匹配黄、当前橙）
+	if e.findActive {
+		e.paintMatchHighlights(cvs, left, top)
+	}
+
+	// 缩进连线（indent guides）：各级缩进画虚线；光标所在最内层「跨行括号对」画实线折线——
+	// 折线从开括号位置横折引出、竖到闭括号位置（真正的括号范围，非缩进推断）。
+	if e.ed.IndentGuides {
+		dash := paint.DefaultStrokePaint()
+		dash.Color = types.ColorFromRGB(0xDD, 0xE2, 0xE8)
+		dash.StrokeWidth = 1
+		for vi := firstVis; vi <= lastVis; vi++ {
+			if vi < 0 || vi >= len(e.visRows) {
+				continue
+			}
+			i := e.visRows[vi]
+			ly := top + float64(vi)*ceLineH
+			for k := 0; (k+1)*ceIndentSize <= leadingSpaces(e.lines[i]); k++ {
+				gx := left + e.colToX(i, k*ceIndentSize) + 0.5
+				for yy := ly + 1; yy < ly+ceLineH-1; yy += 4 {
+					ye := yy + 2
+					if ye > ly+ceLineH-1 {
+						ye = ly + ceLineH - 1
+					}
+					cvs.DrawLine(gx, yy, gx, ye, dash)
+				}
+			}
+		}
+		if e.focused { // 活动折线：包裹光标的最内层跨行括号对，从括号位置引出（走行间空隙，不穿过文字）
+			if ol, oc, cl, cc, ok := e.enclosingBracket(); ok {
+				solid := paint.DefaultStrokePaint()
+				solid.Color = types.ColorFromRGB(0x6F, 0x8F, 0xD0)
+				solid.StrokeWidth = 1.3
+				gx := left + e.colToX(ol, leadingSpaces(e.lines[ol])) + 0.5 // 竖线在开括号行缩进列
+				ocx := left + e.colToX(ol, oc) + 0.5                        // 开括号 { 的 x（行末，文字右侧）
+				ccx := left + e.colToX(cl, cc) + 0.5                        // 闭括号 } 的 x
+				oyTop := e.lineTopY(ol, top)
+				oyBot := oyTop + ceLineH
+				cyTop := e.lineTopY(cl, top)
+				cvs.DrawLine(ocx, oyTop+ceLineH/2, ocx, oyBot, solid) // 开括号 → 本行底（沿括号右侧下行）
+				cvs.DrawLine(ocx, oyBot, gx, oyBot, solid)            // 行底横折到竖线列（在文字下方空隙）
+				cvs.DrawLine(gx, oyBot, gx, cyTop, solid)             // 块体竖线
+				cvs.DrawLine(gx, cyTop, ccx, cyTop, solid)            // 行顶横折到闭括号列（在文字上方空隙）
+				cvs.DrawLine(ccx, cyTop, ccx, cyTop+ceLineH/2, solid) // → 闭括号
+			}
+		}
+	}
+
+	// 文本（遍历可见行，逐行按 token 着色）
+	for vi := firstVis; vi <= lastVis; vi++ {
+		if vi < 0 || vi >= len(e.visRows) {
+			continue
+		}
+		i := e.visRows[vi] // 实际行号
+		ly := top + float64(vi)*ceLineH
+		baseY := canvas.BaselineFor(ly, ceLineH, e.font.Size, canvas.VAlignMiddle)
+		runes := []rune(e.lines[i])
+		lineEndX := left
+		toks := e.hl[i]
+		drawn := 0
+		for _, tk := range toks {
+			if tk.start > drawn { // token 之间的空白/未着色段
+				seg := string(runes[drawn:tk.start])
+				cvs.DrawText(seg, left+e.colToX(i, drawn), baseY, e.font, mkPaint(ceTokenColor(tkText)))
+			}
+			seg := string(runes[tk.start:tk.end])
+			cvs.DrawText(seg, left+e.colToX(i, tk.start), baseY, e.font, mkPaint(ceTokenColor(tk.kind)))
+			drawn = tk.end
+		}
+		if drawn < len(runes) {
+			seg := string(runes[drawn:])
+			cvs.DrawText(seg, left+e.colToX(i, drawn), baseY, e.font, mkPaint(ceTokenColor(tkText)))
+		}
+		// 折叠提示：该行被折叠 → 行尾画 ⋯ 块
+		if e.folded[i] && e.isFoldStart(i) {
+			lineEndX = left + e.colToX(i, len(runes))
+			fp := paint.DefaultPaint()
+			fp.Color = types.ColorFromRGB(0xE8, 0xEC, 0xF0)
+			cvs.DrawRoundedRect(lineEndX+6, ly+4, 22, ceLineH-8, 3, fp)
+			canvas.DrawTextAligned(cvs, "...", types.Rect{X: lineEndX + 6, Y: ly - 2, Width: 22, Height: ceLineH}, e.font, types.ColorFromRGB(0x6A, 0x73, 0x7D), canvas.HAlignCenter, canvas.VAlignMiddle)
+		}
+	}
+
+	// 诊断波浪线（LSP 错误/警告）
+	e.paintDiagnostics(cvs, left, top)
+
+	// 括号匹配高亮（光标紧邻括号时，两端淡蓝底）
+	if e.focused {
+		if a, b, ok := e.findMatchingBracket(); ok {
+			e.paintBracketBox(cvs, a, left, top)
+			e.paintBracketBox(cvs, b, left, top)
+		}
+	}
+
+	// IME 组合预览 + 光标
+	baseCx := left + e.colToX(e.cursor.line, e.cursor.col)
+	cyTop := e.lineTopY(e.cursor.line, top)
+	cBase := canvas.BaselineFor(cyTop, ceLineH, e.font.Size, canvas.VAlignMiddle)
+	caretX := baseCx
+	if e.composition != "" && !e.findActive { // 组合预览：白底盖后方文字 + 文本 + 蓝下划线（查找激活时改在查找框显示）
+		compW := canvas.MeasureTextGlobal(e.composition, e.font).Width
+		wbg := paint.DefaultPaint()
+		wbg.Color = CurrentTheme().CodeEditor.Background
+		cvs.DrawRect(baseCx, cyTop+1, compW, ceLineH-2, wbg)
+		cvs.DrawText(e.composition, baseCx, cBase, e.font, mkPaint(types.ColorFromRGB(0x24, 0x29, 0x2E)))
+		ul := paint.DefaultStrokePaint()
+		ul.Color = types.ColorFromRGB(0x40, 0x9E, 0xFF)
+		ul.StrokeWidth = 1
+		cvs.DrawLine(baseCx, cBase+2, baseCx+compW, cBase+2, ul)
+		caretX = baseCx + compW
+	}
+	if e.focused && (e.isCursorVisible() || e.composition != "") {
+		cp := paint.DefaultStrokePaint()
+		cp.Color = types.ColorFromRGB(0x24, 0x29, 0x2E)
+		cp.StrokeWidth = 1.6
+		cvs.DrawLine(caretX, cBase-e.font.Size*0.82, caretX, cBase+e.font.Size*0.22, cp)
+	}
+	// 缓存光标客户区位置（供 IME 候选窗口定位）。Y 用光标【顶部】——与 InputElement
+	// 一致：多数输入法把候选放到锚点下方，用顶部锚点候选恰好紧贴文字下方；用底部会偏下一行。
+	e.cursorClientX = caretX
+	e.cursorClientY = cBase - e.font.Size*0.82
+	if e.ed.CursorRef != nil { // 同步光标/滚动，供切换视图后恢复
+		e.ed.CursorRef.Line, e.ed.CursorRef.Col = e.cursor.line, e.cursor.col
+		e.ed.CursorRef.ScrollX, e.ed.CursorRef.ScrollY = e.scrollX, e.scrollY
+	}
+
+	// 额外光标（多光标）
+	if e.focused && e.isCursorVisible() {
+		for _, c := range e.extraCarets {
+			ecx := left + e.colToX(c.cursor.line, c.cursor.col)
+			ecBase := canvas.BaselineFor(e.lineTopY(c.cursor.line, top), ceLineH, e.font.Size, canvas.VAlignMiddle)
+			cp := paint.DefaultStrokePaint()
+			cp.Color = types.ColorFromRGB(0x24, 0x29, 0x2E)
+			cp.StrokeWidth = 1.6
+			cvs.DrawLine(ecx, ecBase-e.font.Size*0.82, ecx, ecBase+e.font.Size*0.22, cp)
+		}
+	}
+	cvs.Restore()
+
+	// 行号 + 折叠箭头（裁剪到行号栏）
+	cvs.Save()
+	cvs.ClipRect(pos.X+1, pos.Y+1, e.gutterW, h-2-hBar)
+	for vi := firstVis; vi <= lastVis; vi++ {
+		if vi < 0 || vi >= len(e.visRows) {
+			continue
+		}
+		i := e.visRows[vi]
+		ly := top + float64(vi)*ceLineH
+		numColor := CurrentTheme().CodeEditor.GutterText
+		if i == e.cursor.line && e.focused {
+			numColor = CurrentTheme().CodeEditor.Text // 当前行号加深
+		}
+		canvas.DrawTextAligned(cvs, itoaCE(i+1+e.ed.LineNumberOffset),
+			types.Rect{X: pos.X, Y: ly, Width: e.gutterW - ceGutterPad - ceFoldW, Height: ceLineH},
+			e.font, numColor, canvas.HAlignRight, canvas.VAlignMiddle)
+		if e.isFoldStart(i) { // 折叠箭头
+			e.paintFoldArrow(cvs, pos.X+e.gutterW-ceFoldW, ly, e.folded[i])
+		}
+	}
+	cvs.Restore()
+
+	// 行号栏右分隔线
+	sep := paint.DefaultStrokePaint()
+	sep.Color = elBorder()
+	cvs.DrawLine(editorX, pos.Y+1, editorX, pos.Y+h-1, sep)
+
+	e.paintScrollbars(cvs, pos, w, h, contentH, maxLineW, viewH, editorViewW, maxScrollY, maxScrollX, hBar, vBar, editorTextX)
+
+	// 缩略图（右侧）
+	e.miniRect = types.Rect{}
+	if miniW > 0 {
+		e.paintMinimap(cvs, pos.X+w-miniW-1, pos.Y+1, h-2, viewH, e.scrollY, maxScrollY)
+	}
+
+	// 补全弹窗（编辑器内容之上，可超出编辑区）
+	if e.completing {
+		e.paintCompletion(cvs, left, top)
+	}
+
+	// 查找栏（最上层，右上角）
+	if e.findActive {
+		e.paintFindBar(cvs, pos, w)
+	}
+}
+
+// paintBracketBox 在括号字符位置画一个蓝色边框（匹配高亮）。
+func (e *CodeEditorElement) paintBracketBox(cvs canvas.Canvas, p cePos, left, top float64) {
+	x0 := left + e.colToX(p.line, p.col)
+	x1 := left + e.colToX(p.line, p.col+1)
+	ly := e.lineTopY(p.line, top)
+	bp := paint.DefaultStrokePaint()
+	bp.Color = types.ColorFromRGB(0x40, 0x9E, 0xFF)
+	bp.StrokeWidth = 1
+	cvs.DrawRoundedRect(x0-1, ly+2, x1-x0+2, ceLineH-4, 2, bp)
+}
+
+// paintSelection 逐行画主选区高亮。
+func (e *CodeEditorElement) paintSelection(cvs canvas.Canvas, left, top float64) {
+	lo, hi := e.sortedSel()
+	e.paintSelRange(cvs, left, top, lo, hi)
+}
+
+// paintSelRange 逐行画 [lo,hi) 选区高亮（主选区 + 多光标额外选区共用）。
+func (e *CodeEditorElement) paintSelRange(cvs canvas.Canvas, left, top float64, lo, hi cePos) {
+	sel := paint.DefaultPaint()
+	sel.Color = CurrentTheme().CodeEditor.Selection
+	for ln := lo.line; ln <= hi.line; ln++ {
+		r := e.lineRunes(ln)
+		startCol := 0
+		endCol := len(r)
+		if ln == lo.line {
+			startCol = lo.col
+		}
+		if ln == hi.line {
+			endCol = hi.col
+		}
+		x0 := left + e.colToX(ln, startCol)
+		x1 := left + e.colToX(ln, endCol)
+		if ln < hi.line {
+			x1 += 6 // 跨行：行尾补一小段表示选中换行
+		}
+		ly := e.lineTopY(ln, top)
+		if x1 > x0 {
+			cvs.DrawRect(x0, ly, x1-x0, ceLineH, sel)
+		}
+	}
+}
+
+func (e *CodeEditorElement) paintScrollbars(cvs canvas.Canvas, pos types.Point, w, h, contentH, maxLineW, viewH, editorViewW, maxScrollY, maxScrollX, hBar, vBar, editorTextX float64) {
+	e.vbarThumb, e.vbarFactor = types.Rect{}, 0
+	if maxScrollY > 0 && vBar > 0 { // 有缩略图时 vBar=0，用缩略图视口框代替竖滚动条
+		barW := 6.0
+		bx := pos.X + w - barW - 3
+		trackH := h - 6 - hBar
+		thumbH := viewH / contentH * trackH
+		if thumbH < 20 {
+			thumbH = 20
+		}
+		thumbY := pos.Y + 3 + (e.scrollY/maxScrollY)*(trackH-thumbH)
+		e.vbarThumb = types.Rect{X: bx, Y: thumbY, Width: barW, Height: thumbH}
+		if trackH-thumbH > 0 {
+			e.vbarFactor = maxScrollY / (trackH - thumbH)
+		}
+		th := paint.DefaultPaint()
+		th.Color = types.ColorFromRGB(193, 193, 193)
+		cvs.DrawRoundedRect(bx, thumbY, barW, thumbH, 3, th)
+	}
+	e.hbarThumb, e.hbarFactor = types.Rect{}, 0
+	if maxScrollX > 0 {
+		barH := 6.0
+		by := pos.Y + h - barH - 3
+		trackW := editorViewW
+		thumbW := editorViewW / maxLineW * trackW
+		if thumbW < 20 {
+			thumbW = 20
+		}
+		thumbX := editorTextX + (e.scrollX/maxScrollX)*(trackW-thumbW)
+		e.hbarThumb = types.Rect{X: thumbX, Y: by, Width: thumbW, Height: barH}
+		if trackW-thumbW > 0 {
+			e.hbarFactor = maxScrollX / (trackW - thumbW)
+		}
+		th := paint.DefaultPaint()
+		th.Color = types.ColorFromRGB(193, 193, 193)
+		cvs.DrawRoundedRect(thumbX, by, thumbW, barH, 3, th)
+	}
+}
+
+// ── 光标移动 ──
+
+func (e *CodeEditorElement) moveCursor(dLine, dCol int, extend bool) {
+	c := e.cursor
+	if dCol != 0 {
+		c.col += dCol
+		if c.col < 0 { // 跨到上一【可见】行末
+			if vi := e.visIndexOf(c.line) - 1; vi >= 0 {
+				c.line = e.visRows[vi]
+				c.col = len(e.lineRunes(c.line))
+			} else {
+				c.col = 0
+			}
+		} else if c.col > len(e.lineRunes(c.line)) { // 跨到下一【可见】行首
+			if vi := e.visIndexOf(c.line) + 1; vi < len(e.visRows) {
+				c.line = e.visRows[vi]
+				c.col = 0
+			} else {
+				c.col = len(e.lineRunes(c.line))
+			}
+		}
+	}
+	if dLine != 0 {
+		vi := e.visIndexOf(c.line) + dLine // 上/下移按可见行
+		if vi < 0 {
+			vi = 0
+		}
+		if vi >= len(e.visRows) {
+			vi = len(e.visRows) - 1
+		}
+		if vi >= 0 && vi < len(e.visRows) {
+			c.line = e.visRows[vi]
+		}
+		c = e.clampPos(c) // 保持列，clamp 到目标行长度
+	}
+	e.cursor = c
+	if !extend {
+		e.anchor = c
+	}
+	e.breakUndo()
+	e.cursorMoved = true
+	e.resetBlink()
+	repaint()
+}
+
+// indentSelection 给选区涉及的每一行加/减一级缩进（Tab/Shift+Tab）。
+func (e *CodeEditorElement) indentSelection(out bool) {
+	lo, hi := e.sortedSel()
+	for ln := lo.line; ln <= hi.line; ln++ {
+		if out {
+			s := e.lines[ln]
+			n := 0
+			for n < 4 && n < len(s) && s[n] == ' ' {
+				n++
+			}
+			e.lines[ln] = s[n:]
+		} else {
+			e.lines[ln] = "    " + e.lines[ln]
+		}
+	}
+	e.rehighlight()
+	if e.ed.OnChange != nil {
+		e.ed.OnChange(e.text())
+	}
+	repaint()
+}
+
+// ── 事件 ──
+
+func (e *CodeEditorElement) HandleEvent(ev event.Event) bool {
+	switch ev.Type() {
+	case event.TypeIMEComposition:
+		ce, ok := ev.(*event.IMECompositionEvent)
+		if !ok || !e.focused {
+			break
+		}
+		e.composition = ce.Composition // 组合预览（提交文本走 KeyChar→handleCharInput）
+		e.compositionCursor = ce.CursorPos
+		repaint()
+		return true
+
+	case event.TypeContextMenu:
+		me, ok := ev.(*event.MouseEvent)
+		if !ok {
+			break
+		}
+		ShowContextMenu(me.X, me.Y, e.contextItems())
+		return true
+
+	case event.TypeMouseWheel:
+		me, ok := ev.(*event.MouseEvent)
+		if !ok {
+			break
+		}
+		if me.DeltaX != 0 || me.Mods&(event.ModShift|event.ModCtrl) != 0 {
+			d := me.DeltaX
+			if d == 0 {
+				d = me.DeltaY
+			}
+			e.scrollX -= d * 40
+			if e.scrollX < 0 {
+				e.scrollX = 0
+			}
+		} else {
+			e.scrollY -= me.DeltaY * 40
+			if e.scrollY < 0 {
+				e.scrollY = 0
+			}
+		}
+		ev.StopPropagation()
+		repaint()
+		return true
+
+	case event.TypeMouseEnter:
+		e.hovered = true
+		return true
+	case event.TypeMouseLeave:
+		e.hovered = false
+		return true
+
+	case event.TypeMouseDown:
+		me, ok := ev.(*event.MouseEvent)
+		if !ok {
+			break
+		}
+		if me.Button == event.ButtonRight {
+			return false
+		}
+		if e.findActive && e.findBarHit(me.X, me.Y) { // 查找栏按钮/输入框
+			return true
+		}
+		if line, ok := e.foldArrowAt(me.X, me.Y); ok { // 折叠箭头
+			e.focused = true
+			e.toggleFold(line)
+			return true
+		}
+		if e.minimapHit(me.X, me.Y) { // 缩略图点击/拖动跳转
+			e.miniDragging = true
+			e.minimapJump(me.Y)
+			if RequestPointerCapture != nil {
+				RequestPointerCapture(e)
+			}
+			ev.StopPropagation()
+			return true
+		}
+		if thumbHit(e.vbarThumb, me.X, me.Y) {
+			e.draggingVBar = true
+			e.dragStartMouse, e.dragStartScroll = me.Y, e.scrollY
+			if RequestPointerCapture != nil {
+				RequestPointerCapture(e)
+			}
+			ev.StopPropagation()
+			return true
+		}
+		if thumbHit(e.hbarThumb, me.X, me.Y) {
+			e.draggingHBar = true
+			e.dragStartMouse, e.dragStartScroll = me.X, e.scrollX
+			if RequestPointerCapture != nil {
+				RequestPointerCapture(e)
+			}
+			ev.StopPropagation()
+			return true
+		}
+		e.focused = true
+		p := e.posFromXY(me.X, me.Y)
+		if me.Mods&event.ModCtrl != 0 { // Ctrl+点击：在点击处加光标
+			e.addCaretAt(p)
+			return true
+		}
+		e.clearExtraCarets() // 普通点击：取消多光标
+		e.completing = false // 取消补全
+		e.cursor = p
+		e.anchor = p
+		e.selecting = true
+		e.breakUndo()
+		e.cursorMoved = true
+		e.resetBlink()
+		repaint()
+		return true
+
+	case event.TypeMouseMove:
+		me, ok := ev.(*event.MouseEvent)
+		if !ok {
+			break
+		}
+		if e.draggingVBar {
+			e.scrollY = clamp(e.dragStartScroll+(me.Y-e.dragStartMouse)*e.vbarFactor, 0, 1e9)
+			ev.StopPropagation()
+			repaint()
+			return true
+		}
+		if e.draggingHBar {
+			e.scrollX = clamp(e.dragStartScroll+(me.X-e.dragStartMouse)*e.hbarFactor, 0, 1e9)
+			ev.StopPropagation()
+			repaint()
+			return true
+		}
+		if e.miniDragging {
+			e.minimapJump(me.Y)
+			ev.StopPropagation()
+			return true
+		}
+		if e.selecting {
+			e.cursor = e.posFromXY(me.X, me.Y)
+			e.cursorMoved = true
+			repaint()
+			return true
+		}
+		return false
+
+	case event.TypeMouseUp:
+		e.selecting = false
+		e.draggingVBar = false
+		e.draggingHBar = false
+		e.miniDragging = false
+		return true
+
+	case event.TypeMouseDoubleClick:
+		// 双击选中光标所在单词
+		e.selectWord()
+		return true
+
+	case event.TypeKeyChar:
+		keyEv, ok := ev.(*event.KeyEvent)
+		if !ok {
+			break
+		}
+		if e.findActive { // 查找栏激活：输入进查找/替换框
+			if keyEv.Char >= 32 {
+				e.handleFindChar(keyEv.Char)
+			}
+			return true
+		}
+		if !e.focused {
+			break
+		}
+		if keyEv.Char >= 32 {
+			e.handleCharInput(keyEv.Char) // 含自动配对/包裹/over-type/撤销记录
+			if !e.hasMultiCaret() {
+				e.updateCompletion() // 输入后刷新补全候选
+			}
+			return true
+		}
+
+	case event.TypeKeyDown:
+		keyEv, ok := ev.(*event.KeyEvent)
+		if !ok {
+			break
+		}
+		if e.findActive {
+			return e.handleFindKey(keyEv)
+		}
+		if !e.focused {
+			break
+		}
+		return e.handleKeyDown(keyEv)
+	}
+	return false
+}
+
+func (e *CodeEditorElement) handleKeyDown(k *event.KeyEvent) bool {
+	if k.Mods&event.ModCtrl != 0 {
+		switch k.Key {
+		case "A":
+			e.anchor = cePos{0, 0}
+			last := len(e.lines) - 1
+			e.cursor = cePos{last, len(e.lineRunes(last))}
+			repaint()
+		case "C":
+			if e.hasSel() && ClipboardWrite != nil {
+				ClipboardWrite(e.selText())
+			}
+		case "X":
+			if e.hasSel() && ClipboardWrite != nil {
+				ClipboardWrite(e.selText())
+				e.recordUndo("cut")
+				e.deleteSel()
+				e.afterEdit()
+			}
+		case "V":
+			if ClipboardRead != nil {
+				e.recordUndo("paste")
+				e.insertStr(ClipboardRead())
+			}
+		case "Z":
+			if k.Mods&event.ModShift != 0 {
+				e.redo()
+			} else {
+				e.undo()
+			}
+		case "Y":
+			e.redo()
+		case "F":
+			e.openFind(false)
+		case "H":
+			e.openFind(true)
+		case "Space", " ": // Ctrl+Space 手动触发补全
+			e.triggerCompletion()
+		}
+		return true
+	}
+	if e.completing { // 补全弹窗激活：拦截导航/接受/取消键
+		switch k.Key {
+		case "ArrowDown":
+			e.compMove(1)
+			return true
+		case "ArrowUp":
+			e.compMove(-1)
+			return true
+		case "Enter", "Tab":
+			e.acceptCompletion()
+			return true
+		case "Escape":
+			e.cancelCompletion()
+			repaint()
+			return true
+		case "ArrowLeft", "ArrowRight", "Home", "End":
+			e.cancelCompletion() // 光标离开词→关闭，继续走下面正常移动
+		}
+	}
+	extend := k.Mods&event.ModShift != 0
+	if e.hasMultiCaret() { // 多光标编辑/移动
+		switch k.Key {
+		case "Escape":
+			e.clearExtraCarets()
+			return true
+		case "Backspace":
+			e.editEachCaret("delete", e.backspace)
+			return true
+		case "Delete":
+			e.editEachCaret("delete", e.deleteForward)
+			return true
+		case "Enter":
+			e.editEachCaret("newline", e.insertNewline)
+			return true
+		case "Tab":
+			e.editEachCaret("indent", func() { e.insertStr("    ") })
+			return true
+		case "ArrowLeft":
+			e.forEachCaret(func() { e.moveCursor(0, -1, extend) })
+			return true
+		case "ArrowRight":
+			e.forEachCaret(func() { e.moveCursor(0, 1, extend) })
+			return true
+		case "ArrowUp":
+			e.forEachCaret(func() { e.moveCursor(-1, 0, extend) })
+			return true
+		case "ArrowDown":
+			e.forEachCaret(func() { e.moveCursor(1, 0, extend) })
+			return true
+		}
+	}
+	switch k.Key {
+	case "Escape":
+		e.clearExtraCarets()
+	case "Backspace":
+		e.recordUndo("delete")
+		e.backspace()
+		if e.completing {
+			e.updateCompletion() // 退格后重新过滤
+		}
+	case "Delete":
+		e.recordUndo("delete")
+		e.deleteForward()
+	case "Enter":
+		e.recordUndo("newline")
+		e.insertNewline()
+	case "Tab":
+		e.recordUndo("indent")
+		if e.hasSel() && e.anchorDiffLine() {
+			e.indentSelection(false)
+		} else {
+			e.insertStr("    ")
+		}
+	case "ArrowLeft":
+		e.moveCursor(0, -1, extend)
+	case "ArrowRight":
+		e.moveCursor(0, 1, extend)
+	case "ArrowUp":
+		e.moveCursor(-1, 0, extend)
+	case "ArrowDown":
+		e.moveCursor(1, 0, extend)
+	case "Home":
+		e.cursor.col = 0
+		if !extend {
+			e.anchor = e.cursor
+		}
+		e.cursorMoved = true
+		e.resetBlink()
+		repaint()
+	case "End":
+		e.cursor.col = len(e.lineRunes(e.cursor.line))
+		if !extend {
+			e.anchor = e.cursor
+		}
+		e.cursorMoved = true
+		e.resetBlink()
+		repaint()
+	}
+	return true
+}
+
+func (e *CodeEditorElement) anchorDiffLine() bool { return e.cursor.line != e.anchor.line }
+
+// selectWord 选中光标所在的标识符单词。
+func (e *CodeEditorElement) selectWord() {
+	r := e.lineRunes(e.cursor.line)
+	c := e.cursor.col
+	s := c
+	for s > 0 && isIdentPart(r[s-1]) {
+		s--
+	}
+	en := c
+	for en < len(r) && isIdentPart(r[en]) {
+		en++
+	}
+	if en > s {
+		e.anchor = cePos{e.cursor.line, s}
+		e.cursor = cePos{e.cursor.line, en}
+		repaint()
+	}
+}
+
+func (e *CodeEditorElement) contextItems() []MenuItem {
+	hasSel := e.hasSel()
+	return []MenuItem{
+		{Label: "剪切", Enabled: hasSel && ClipboardWrite != nil, OnClick: func() {
+			if e.hasSel() && ClipboardWrite != nil {
+				ClipboardWrite(e.selText())
+				e.recordUndo("cut")
+				e.deleteSel()
+				e.afterEdit()
+			}
+		}},
+		{Label: "复制", Enabled: hasSel && ClipboardWrite != nil, OnClick: func() {
+			if e.hasSel() && ClipboardWrite != nil {
+				ClipboardWrite(e.selText())
+			}
+		}},
+		{Label: "粘贴", Enabled: ClipboardRead != nil, OnClick: func() {
+			if ClipboardRead != nil {
+				e.recordUndo("paste")
+				e.insertStr(ClipboardRead())
+			}
+		}},
+		{Label: "全选", Enabled: true, OnClick: func() {
+			e.anchor = cePos{0, 0}
+			last := len(e.lines) - 1
+			e.cursor = cePos{last, len(e.lineRunes(last))}
+			repaint()
+		}},
+	}
+}
+
+func (e *CodeEditorElement) Update(newWidget Widget) {
+	if nc, ok := newWidget.(*CodeEditor); ok {
+		e.ed = nc
+		e.lang = ceLangFor(nc.Language)
+		e.BaseElement.widget = newWidget
+		e.dirty = true
+		// 受控重载：ReloadToken 变了 → 把运行时内容重置为新文件（切换打开的文件）。
+		if nc.ReloadToken != e.lastReload {
+			e.lastReload = nc.ReloadToken
+			e.lines = strings.Split(expandTabs(nc.initial), "\n")
+			if len(e.lines) == 0 {
+				e.lines = []string{""}
+			}
+			e.cursor = cePos{0, 0}
+			e.anchor = e.cursor
+			e.scrollX, e.scrollY = 0, 0
+			e.rehighlight()
+			e.computeVisible()
+		}
+		// 跳转到行：RevealToken 变了 → 移光标到 RevealLine 并滚动到可见（在重载之后，行已就绪）。
+		if nc.RevealToken != e.lastReveal {
+			e.lastReveal = nc.RevealToken
+			if nc.RevealLine > 0 {
+				e.revealLine(nc.RevealLine)
+			}
+		}
+	}
+}

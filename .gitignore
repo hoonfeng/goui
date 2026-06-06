@@ -1,0 +1,39 @@
+# 构建产物（可重新构建，不入库）
+*.exe
+*.exe~
+*.test
+*.out
+
+# Skia 原生库：仅根目录一份入库（运行所需）；各 exe 旁的副本与 skia 预编译库不入库（约 66MB 重复）
+libSkiaSharp.dll
+!/libSkiaSharp.dll
+/skia/lib/
+
+# 渲染/测试输出（skiawidget_output.png / skiapaint_output.png / *_shot.png 等）
+*_output.png
+*_shot.png
+
+# 运行日志
+*.log
+/logs/
+
+# 截图产物
+/screenshots/
+
+# 临时目录
+/.cache/
+/fonts_install_temp/
+
+# 源码备份（非源码，CLAUDE.md 标注忽略）
+/源码备份/
+
+# Agent 运行数据 / IDE 工程目录（非 goui 源码：对话/会话/任务/计划等运行态）
+/.Pair/
+/.trae/
+
+# 个人 / 系统
+*.lnk
+.DS_Store
+Thumbs.db
+
+# 注：libSkiaSharp.dll、fonts/、assets/ 是运行所需资源，保留入库（见 CLAUDE.md）

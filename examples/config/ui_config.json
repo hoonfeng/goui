@@ -1,0 +1,54 @@
+{
+  "type": "Column",
+  "class": "page",
+  "children": [
+    {
+      "type": "Div",
+      "class": "card-bordered",
+      "children": [
+        { "type": "H2", "text": "用户登录" },
+        {
+          "type": "Div",
+          "style": { "padding": "0 0 8 0" },
+          "children": [
+            { "type": "Label", "text": "用户名：" },
+            { "type": "Input", "text": "请输入用户名...", "events": { "change": "onNameChange" } }
+          ]
+        },
+        {
+          "type": "Div",
+          "style": { "padding": "0 0 12 0" },
+          "children": [
+            { "type": "Label", "text": "密码：" },
+            { "type": "Input", "text": "请输入密码...", "events": { "change": "onPasswordChange" } }
+          ]
+        },
+        {
+          "type": "Checkbox",
+          "text": "记住登录信息",
+          "props": { "checked": false },
+          "events": { "change": "onRememberChange" }
+        },
+        {
+          "type": "HBox",
+          "style": { "padding": "12 0 0 0" },
+          "children": [
+            {
+              "type": "Button",
+              "text": "登录",
+              "props": { "color": "#4285F4" },
+              "events": { "click": "onLogin" }
+            },
+            { "type": "Spacer" },
+            {
+              "type": "Button",
+              "text": "取消",
+              "props": { "color": "#9E9E9E" },
+              "events": { "click": "onCancel" }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
