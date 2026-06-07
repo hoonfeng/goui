@@ -123,7 +123,7 @@ func defaultSettings() appSettings {
 	return appSettings{
 		Provider: "deepseek", BaseURL: "https://api.deepseek.com/v1",
 		PlanModel: "deepseek-v4-pro", ExecuteModel: "deepseek-v4-flash", ReviewModel: "deepseek-v4-pro",
-		ThinkingMode: "thinking", MaxTokens: 131072, ContextMaxTokens: 1000000,
+		Temperature: "1.0", ThinkingMode: "thinking", MaxTokens: 131072, ContextMaxTokens: 1000000,
 		CompressEnabled: true, CompressProvider: "deepseek", CompressBaseURL: "https://api.deepseek.com/v1",
 		CompressModel: "deepseek-v4-flash", CompressThinkingMode: "non-thinking",
 		MaxIterations: 50, MaxParallel: 3, ReviewRetries: 3, AutoIterate: true, RequireApproval: true, Benchmark: true,
@@ -535,59 +535,92 @@ func settingsToggle(lbl string, on bool, toggle func()) widget.Widget {
 
 const settingsCtlW = 536 // 设置控件（下拉/输入）宽度，对齐内容区（556 - 左右内边距 10）
 
-func (b *settingsBodyState) modelTab() widget.Widget {
-	// 服务商下拉
-	provOpts := make([]widget.SelectOption, 0, len(providerPresets))
+// providerSelect 服务商下拉。onPick(v) 在切换时由调用方处理 baseURL/模型联动。
+func providerSelect(value string, onPick func(string)) widget.Widget {
+	opts := make([]widget.SelectOption, 0, len(providerPresets))
 	for _, p := range providerPresets {
-		provOpts = append(provOpts, widget.SelectOption{Label: p.label, Value: p.name})
+		opts = append(opts, widget.SelectOption{Label: p.label, Value: p.name})
 	}
-	provSel := widget.NewSelect(provOpts).WithValue(editingSettings.Provider).WithWidth(settingsCtlW).
-		WithOnChanged(func(v string) {
-			editingSettings.Provider = v
-			if v != "custom" { // 选服务商→自动填 baseURL + 默认模型（默认值）
-				_, _, base, _ := providerByID(v)
-				editingSettings.BaseURL = base
-				editingSettings.Model = defaultModelFor(v)
-			}
-			b.resetTok++
-			b.SetState()
-		})
+	return widget.NewSelect(opts).WithValue(value).WithWidth(settingsCtlW).WithOnChanged(onPick)
+}
 
-	// 模型：标准服务商=下拉（该商的模型列表）；custom=手填输入
-	var modelCtl widget.Widget
-	if editingSettings.Provider == "custom" {
-		modelCtl = settingsInput("自定义模型 ID", editingSettings.Model, b.resetTok, func(t string) { editingSettings.Model = t })
-	} else {
-		_, _, _, models := providerByID(editingSettings.Provider)
-		mOpts := make([]widget.SelectOption, 0, len(models)+1)
-		inList := false
-		for _, m := range models {
-			mOpts = append(mOpts, widget.SelectOption{Label: m.name, Value: m.id})
-			if m.id == editingSettings.Model {
-				inList = true
-			}
-		}
-		if editingSettings.Model != "" && !inList { // 保留已存的非列表内模型值（可见可选）
-			mOpts = append([]widget.SelectOption{{Label: editingSettings.Model, Value: editingSettings.Model}}, mOpts...)
-		}
-		modelCtl = widget.NewSelect(mOpts).WithValue(editingSettings.Model).WithWidth(settingsCtlW).
-			WithOnChanged(func(v string) { editingSettings.Model = v; b.SetState() })
-	}
-
+func (b *settingsBodyState) modelTab() widget.Widget {
+	prov := editingSettings.Provider
+	temp := parseTempOr(editingSettings.Temperature, 1.0)
 	maxTokStr := ""
 	if editingSettings.MaxTokens > 0 {
 		maxTokStr = itoa(editingSettings.MaxTokens)
 	}
+	provSel := providerSelect(prov, func(v string) {
+		editingSettings.Provider = v
+		if v != "custom" { // 选服务商→自动填 baseURL + 三角色默认模型
+			_, _, base, _ := providerByID(v)
+			dm := defaultModelFor(v)
+			editingSettings.BaseURL = base
+			editingSettings.PlanModel, editingSettings.ExecuteModel, editingSettings.ReviewModel = dm, dm, dm
+		}
+		b.resetTok++
+		b.SetState()
+	})
 	return widget.Div(
 		widget.Style{FlexDirection: "column", AlignItems: "stretch"},
-		settingsField("服务商 (Provider)", provSel),
-		settingsField("模型 (Model)", modelCtl),
-		settingsField("接口地址 (Base URL)", settingsInput("https://...", editingSettings.BaseURL, b.resetTok, func(t string) { editingSettings.BaseURL = t })),
+		label("模型配置", ghTextMuted, 11),
+		settingsField("服务提供商", provSel),
 		settingsField("API Key", settingsInput("sk-...", editingSettings.APIKey, b.resetTok, func(t string) { editingSettings.APIKey = t })),
-		settingsField("温度 Temperature（留空=服务端默认，0~2）", settingsInput("留空=默认", editingSettings.Temperature, b.resetTok, func(t string) { editingSettings.Temperature = t })),
-		settingsField("最大输出 Token（0=不下发）", settingsInput("0", maxTokStr, b.resetTok, func(t string) { editingSettings.MaxTokens, _ = strconv.Atoi(strings.TrimSpace(t)) })),
+		settingsField("API 地址", settingsInput("https://...", editingSettings.BaseURL, b.resetTok, func(t string) { editingSettings.BaseURL = t })),
+		settingsField("规划模型", modelSelectFor(prov, editingSettings.PlanModel, b.resetTok, func(v string) { editingSettings.PlanModel = v; b.SetState() })),
+		settingsField("执行模型", modelSelectFor(prov, editingSettings.ExecuteModel, b.resetTok, func(v string) { editingSettings.ExecuteModel = v; b.SetState() })),
+		settingsField("审核模型", modelSelectFor(prov, editingSettings.ReviewModel, b.resetTok, func(v string) { editingSettings.ReviewModel = v; b.SetState() })),
+		settingsSlider("温度: "+strconv.FormatFloat(temp, 'f', 1, 64), temp, 0, 2, 0.1, func(v float64) {
+			editingSettings.Temperature = strconv.FormatFloat(v, 'f', 1, 64)
+			b.SetState()
+		}),
+		settingsField("思考模式", thinkingSelect(editingSettings.ThinkingMode, func(v string) { editingSettings.ThinkingMode = v; b.SetState() })),
+		settingsField("最大 Token", settingsInput("131072", maxTokStr, b.resetTok, func(t string) { editingSettings.MaxTokens, _ = strconv.Atoi(strings.TrimSpace(t)) })),
+		settingsSlider("上下文窗口: "+fmtContext(editingSettings.ContextMaxTokens), float64(editingSettings.ContextMaxTokens), 32000, 1000000, 32000, func(v float64) {
+			editingSettings.ContextMaxTokens = int(v)
+			b.SetState()
+		}),
+		label("超过此值自动压缩上下文 · DeepSeek: 1M", ghTextMuted, 10),
+		// ── 压缩模型段 ──
+		widget.Div(widget.Style{Height: 16}),
+		label("压缩模型（上下文动态剪枝，独立配置）", ghTextMuted, 11),
+		settingsToggle("启用压缩模型（关闭则使用规则式压缩）", editingSettings.CompressEnabled, func() {
+			editingSettings.CompressEnabled = !editingSettings.CompressEnabled
+			b.SetState()
+		}),
+		b.compressSection(),
+	)
+}
+
+// compressSection 压缩模型字段（仅启用时显示）。
+func (b *settingsBodyState) compressSection() widget.Widget {
+	if !editingSettings.CompressEnabled {
+		return widget.Div(widget.Style{})
+	}
+	cp := editingSettings.CompressProvider
+	if cp == "" {
+		cp = "deepseek"
+	}
+	provSel := providerSelect(cp, func(v string) {
+		editingSettings.CompressProvider = v
+		if v != "custom" {
+			_, _, base, _ := providerByID(v)
+			editingSettings.CompressBaseURL = base
+			editingSettings.CompressModel = defaultModelFor(v)
+		}
+		b.resetTok++
+		b.SetState()
+	})
+	return widget.Div(
+		widget.Style{FlexDirection: "column", AlignItems: "stretch"},
+		settingsField("服务提供商", provSel),
+		settingsField("API Key", settingsInput("留空则复用主模型 Key", editingSettings.CompressAPIKey, b.resetTok, func(t string) { editingSettings.CompressAPIKey = t })),
+		settingsField("API 地址", settingsInput("https://...", editingSettings.CompressBaseURL, b.resetTok, func(t string) { editingSettings.CompressBaseURL = t })),
+		settingsField("模型", modelSelectFor(cp, editingSettings.CompressModel, b.resetTok, func(v string) { editingSettings.CompressModel = v; b.SetState() })),
+		settingsField("思考模式", thinkingSelect(editingSettings.CompressThinkingMode, func(v string) { editingSettings.CompressThinkingMode = v; b.SetState() })),
 		widget.Div(widget.Style{Height: 4}),
-		label("提示：选服务商自动填接口地址与默认模型；留空 Key 则回退环境变量（DEEPSEEK_API_KEY 等）。", ghTextMuted, 10),
+		label("提示：压缩模型建议用轻量模型并关闭思考模式，以降低延迟和成本。", ghTextMuted, 10),
 	)
 }
 
@@ -611,4 +644,59 @@ func settingsInput(placeholder, val string, tok int, onChanged func(string)) wid
 	in.FocusBorderColor = *ghAccent
 	in.HoverBorderColor = *ghBorder
 	return in
+}
+
+// settingsSlider 深色滑块（field 标签含实时值）。
+func settingsSlider(lbl string, val, min, max, step float64, onChange func(float64)) widget.Widget {
+	sl := widget.NewSlider(val, onChange).WithRange(min, max).WithStep(step)
+	sl.ActiveColor, sl.ThumbColor = *ghAccentEmph, *ghAccentEmph
+	sl.InactiveColor = *ghBgTertiary
+	sl.LabelColor = ghText
+	return settingsField(lbl, sl)
+}
+
+// modelSelectFor 某服务商的模型下拉（custom→手填）；保留已存的非列表内值可见可选。
+func modelSelectFor(provider, value string, tok int, onChange func(string)) widget.Widget {
+	if provider == "custom" {
+		return settingsInput("自定义模型 ID", value, tok, onChange)
+	}
+	_, _, _, models := providerByID(provider)
+	opts := make([]widget.SelectOption, 0, len(models)+1)
+	inList := false
+	for _, m := range models {
+		opts = append(opts, widget.SelectOption{Label: m.name, Value: m.id})
+		if m.id == value {
+			inList = true
+		}
+	}
+	if value != "" && !inList {
+		opts = append([]widget.SelectOption{{Label: value, Value: value}}, opts...)
+	}
+	return widget.NewSelect(opts).WithValue(value).WithWidth(settingsCtlW).WithOnChanged(onChange)
+}
+
+// thinkingSelect 思考模式下拉（关闭 / 开启推荐 / 最大推理深度）。
+func thinkingSelect(value string, onChange func(string)) widget.Widget {
+	return widget.NewSelect([]widget.SelectOption{
+		{Label: "关闭", Value: "non-thinking"},
+		{Label: "开启（推荐）", Value: "thinking"},
+		{Label: "最大推理深度", Value: "thinking_max"},
+	}).WithValue(value).WithWidth(settingsCtlW).WithOnChanged(onChange)
+}
+
+func parseTempOr(s string, def float64) float64 {
+	if v, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil {
+		return v
+	}
+	return def
+}
+
+func fmtContext(n int) string {
+	if n >= 1000000 {
+		return itoa(n/1000000) + "M"
+	}
+	if n >= 1000 {
+		return itoa(n/1000) + "K"
+	}
+	return itoa(n)
 }
