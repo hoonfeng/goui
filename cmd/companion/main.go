@@ -437,7 +437,7 @@ func (s *shellState) panelGroup(id string) widget.Widget {
 // 微小移动＝点击→循环换到下一区（保留 Phase 1 的便捷换位）。
 func (s *shellState) dragGrip(panelID string) widget.Widget {
 	return &widget.DragGrip{
-		Icon: "move", Box: 20, IconSz: 13, Color: cTextDim,
+		Icon: "move", Box: 22, IconSz: 14, Color: cText, Bg: *cTitle, // 醒目按钮：圆角底 + 亮图标
 		OnStart: func(x, y float64) { s.onGrabStart(panelID, x, y) },
 		OnMove:  func(x, y float64) { s.onGrabMove(x, y) },
 		OnEnd:   func(x, y float64) { s.onGrabEnd(panelID, x, y) },

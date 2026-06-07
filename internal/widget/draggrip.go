@@ -4,6 +4,7 @@ import (
 	"github.com/user/goui/internal/canvas"
 	"github.com/user/goui/internal/event"
 	"github.com/user/goui/internal/layout"
+	"github.com/user/goui/internal/paint"
 	"github.com/user/goui/internal/types"
 )
 
@@ -13,9 +14,10 @@ import (
 type DragGrip struct {
 	StatelessWidget
 	Icon    string
-	Box     float64 // 命中+绘制方框边长（默认 18）
-	IconSz  float64 // 图标尺寸（默认 13）
+	Box     float64     // 命中+绘制方框边长（默认 18）
+	IconSz  float64     // 图标尺寸（默认 13）
 	Color   types.Color
+	Bg      types.Color // 背景（A>0 时画圆角底，使手柄更像可拖拽按钮、更醒目）
 	OnStart func(x, y float64)
 	OnMove  func(x, y float64)
 	OnEnd   func(x, y float64)
@@ -44,6 +46,11 @@ func (e *dragGripElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult 
 
 func (e *dragGripElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	pos := e.Offset()
+	if e.g.Bg.A > 0 { // 圆角底：让手柄更像可拖拽按钮、更醒目
+		p := paint.DefaultPaint()
+		p.Color = e.g.Bg
+		cvs.DrawRoundedRect(pos.X, pos.Y, e.size.Width, e.size.Height, 4, p)
+	}
 	sz := e.g.IconSz
 	if sz <= 0 {
 		sz = 13

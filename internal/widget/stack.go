@@ -158,6 +158,14 @@ func (e *StackElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult {
 	for _, child := range e.children {
 		cs := child.Size()
 		var x, y float64
+		if _, ok := child.Widget().(*Positioned); !ok {
+			// 非定位子（基层）：重排为填满 Stack（否则它停留在 loose 测量的收缩尺寸，
+			// 在有界容器里会留白/内部 ScrollView 高度算错→行重叠）。定位于左上 (0,0)。
+			child.Layout(&layout.LayoutContext{Constraints: layout.BoxConstraints{
+				MinWidth: e.size.Width, MaxWidth: e.size.Width, MinHeight: e.size.Height, MaxHeight: e.size.Height}})
+			child.SetPosition(types.Point{X: 0, Y: 0})
+			continue
+		}
 		if p, ok := child.Widget().(*Positioned); ok {
 			// 同轴两端都设 → 拉伸该轴填满（CSS absolute 的 left+right / top+bottom 拉伸语义）。
 			tw, th := cs.Width, cs.Height
