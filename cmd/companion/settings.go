@@ -94,9 +94,7 @@ func saveInstructions(s string) {
 
 // applyAgentSettings 把持久化设置应用到运行态（启动时若有存档 + 保存后调用）。
 func applyAgentSettings() {
-	theChatState.autoReview = theSettings.AutoReview
-	theChatState.autonomous = theSettings.Autonomous
-	theChatState.autoCollapse = theSettings.AutoCollapse
+	theChatState.autoReview = !theSettings.RequireApproval // 破坏性操作需人工确认 ↔ 手动审核
 	if theSettings.DefaultShell != "" {
 		theTerminal.shell = theSettings.DefaultShell
 	}
@@ -370,31 +368,45 @@ func (b *settingsBodyState) content() widget.Widget {
 
 // agentTab Agent 行为设置：审批/自主/收起开关 + 最大迭代步数。
 func (b *settingsBodyState) agentTab() widget.Widget {
-	iterVal := ""
-	if editingSettings.MaxIterations > 0 {
-		iterVal = itoa(editingSettings.MaxIterations)
-	}
 	return widget.Div(
 		widget.Style{FlexDirection: "column", AlignItems: "stretch"},
-		label("审批与自主", ghTextMuted, 11),
-		widget.Div(widget.Style{Height: 6}),
-		settingsToggle("自动审核（写类工具免逐次确认）", editingSettings.AutoReview, func() {
-			editingSettings.AutoReview = !editingSettings.AutoReview
+		label("Agent 行为", ghTextMuted, 11),
+		settingsSlider("最大迭代次数: "+itoa(editingSettings.MaxIterations), float64(editingSettings.MaxIterations), 5, 200, 1, func(v float64) {
+			editingSettings.MaxIterations = int(v)
 			b.SetState()
 		}),
-		settingsToggle("自主模式（先列计划，连续完成所有步骤）", editingSettings.Autonomous, func() {
-			editingSettings.Autonomous = !editingSettings.Autonomous
+		settingsSlider("并行 Agent 数: "+itoa(editingSettings.MaxParallel), float64(editingSettings.MaxParallel), 1, 8, 1, func(v float64) {
+			editingSettings.MaxParallel = int(v)
 			b.SetState()
 		}),
-		settingsToggle("完成后自动收起上一轮对话", editingSettings.AutoCollapse, func() {
-			editingSettings.AutoCollapse = !editingSettings.AutoCollapse
+		settingsSlider("审核重试次数: "+itoa(editingSettings.ReviewRetries), float64(editingSettings.ReviewRetries), 0, 10, 1, func(v float64) {
+			editingSettings.ReviewRetries = int(v)
 			b.SetState()
 		}),
-		settingsField("最大迭代步数（默认 30；自主模式翻倍）", settingsInput("30", iterVal, b.resetTok, func(t string) {
-			editingSettings.MaxIterations, _ = strconv.Atoi(strings.TrimSpace(t))
+		settingsToggle("审核驳回自动迭代修正", editingSettings.AutoIterate, func() {
+			editingSettings.AutoIterate = !editingSettings.AutoIterate
+			b.SetState()
+		}),
+		settingsToggle("破坏性操作需人工确认", editingSettings.RequireApproval, func() {
+			editingSettings.RequireApproval = !editingSettings.RequireApproval
+			b.SetState()
+		}),
+		settingsToggle("任务完成后自动评测评分", editingSettings.Benchmark, func() {
+			editingSettings.Benchmark = !editingSettings.Benchmark
+			b.SetState()
+		}),
+		label("关闭后 Agent 完成任务将跳过基准评测环节，减少等待时间。", ghTextMuted, 10),
+		// ── 网络服务 ──
+		widget.Div(widget.Style{Height: 14}),
+		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"},
+			widget.Lucide("globe", widget.IconSize(13), widget.IconColor(ghTextMuted)),
+			widget.Div(widget.Style{Width: 6}),
+			label("网络服务", ghTextMuted, 11),
+		),
+		settingsField("SearXNG 搜索地址（留空使用 DuckDuckGo）", settingsInput("http://192.168.1.100:8888", editingSettings.SearxngURL, b.resetTok, func(t string) {
+			editingSettings.SearxngURL = t
 		})),
-		widget.Div(widget.Style{Height: 6}),
-		label("提示：这些是默认值，保存即生效；对话输入区的开关可临时切换本轮。", ghTextMuted, 10),
+		label("配置后 web_search 将使用自托管 SearXNG 实例进行搜索，支持更大结果量与自定义搜索引擎。", ghTextMuted, 10),
 	)
 }
 
