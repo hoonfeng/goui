@@ -68,20 +68,8 @@ func workspaceRootMenu(x, y float64, path string) {
 		mi("terminal", "在终端打开", func() { theTerminal.openDir(path) }),
 		mi("folder-open", "在资源管理器中显示", func() { revealInExplorer(path, true) }),
 	}
-	// 排序（首个文件夹 = Agent 主文件夹）
-	var order []widget.MenuItem
-	if i > 0 {
-		order = append(order,
-			mi("star", "设为首选项目（Agent 主文件夹）", func() { setPrimaryFolder(path) }),
-			mi("chevron-up", "上移", func() { moveFolderUp(path) }),
-		)
-	}
-	if i >= 0 && i < len(workspaceFolders)-1 {
-		order = append(order, mi("chevron-down", "下移", func() { moveFolderDown(path) }))
-	}
-	if len(order) > 0 {
-		items = append(items, sep())
-		items = append(items, order...)
+	if i > 0 { // 非首位 → 可一键设为首选（拖拽手柄也能排序）
+		items = append(items, sep(), mi("star", "设为首选项目（Agent 主文件夹）", func() { setPrimaryFolder(path) }))
 	}
 	items = append(items, sep(), miD("circle-x", "从工作区移除文件夹", func() { removeFolder(path) }))
 	showMenu(x, y, items)

@@ -26,8 +26,9 @@ var lucideIcons = map[string][]string{
 	"minus":         {"M5 12h14"},
 	"plus":          {"M5 12h14", "M12 5v14"},
 	"check":         {"M20 6 9 17l-5-5"},
-	"chevron-down":  {"m6 9 6 6 6-6"},
-	"chevron-up":    {"m18 15-6-6-6 6"},
+	"chevron-down":     {"m6 9 6 6 6-6"},
+	"chevron-up":       {"m18 15-6-6-6 6"},
+	"chevrons-up-down": {"m7 15 5 5 5-5", "m7 9 5-5 5 5"}, // 拖拽排序手柄（上下移动）
 	"chevron-left":  {"m15 18-6-6 6-6"},
 	"chevron-right": {"m9 18 6-6-6-6"},
 	"menu":          {"M4 6h16", "M4 12h16", "M4 18h16"},

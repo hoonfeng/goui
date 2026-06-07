@@ -118,7 +118,13 @@ type fileTreeState struct {
 	roots     []*fileNode         // 工作区各文件夹的根节点（VS Code 多根）
 	active    string              // 当前选中文件路径
 	gitStatus map[string]gitBadge // 绝对路径→git 状态徽标（每次 Build 重建）
+	// 多根拖拽排序（拖根文件夹的手柄重排；首个=Agent 主文件夹）
+	dragPath        string  // 正在拖的根路径（""=未拖）
+	dragLastY       float64 // 上次光标 Y（累积位移判定换位）
+	dragStartPrimary string // 拖拽开始时的主文件夹（结束时判主是否变→是否重建 agent）
 }
+
+const rootRowH = 26.0 // 根文件夹行高（拖拽换位步长）
 
 func (s *fileTreeState) ensure() {
 	if len(s.roots) == 0 {
@@ -265,26 +271,40 @@ func (s *fileTreeState) onClick(n *fileNode) {
 	s.SetState()
 }
 
-// rootRow 多根工作区里，每个文件夹的可折叠根行（大写名 + chevron；idx==0 带金色星标=Agent 主文件夹；右键排序/移除）。
+// rootRow 多根工作区里，每个文件夹的可折叠根行：大写名 + chevron + idx==0 金色星标(Agent 主文件夹)
+// + 右侧拖拽手柄(按住上下拖重排，首个=主文件夹)。点行折叠/展开，右键菜单。
 func (s *fileTreeState) rootRow(r *fileNode, idx int) widget.Widget {
 	chev := "chevron-down"
 	if !r.expanded {
 		chev = "chevron-right"
 	}
+	nameCol := cText
+	bg := *cSide
+	if r.path == s.dragPath { // 正在拖的这一行：高亮 + 文字稍暗
+		nameCol, bg = cTextDim, *ftHover
+	}
 	kids := []widget.Widget{
 		widget.Lucide(chev, widget.IconSize(13), widget.IconColor(cTextDim)),
 		widget.Div(widget.Style{Width: 4}),
-		widget.Lucide("folder", widget.IconSize(14), widget.IconColor(cText)),
+		widget.Lucide("folder", widget.IconSize(14), widget.IconColor(nameCol)),
 		widget.Div(widget.Style{Width: 6}),
-		expand(label1(strings.ToUpper(r.name), cText, 11)),
+		expand(label1(strings.ToUpper(r.name), nameCol, 11)),
 	}
 	if idx == 0 { // 主文件夹（Agent 首选）：金色星标
-		kids = append(kids, widget.Lucide("star", widget.IconSize(12), widget.IconColor(types.ColorFromRGB(229, 192, 123))))
+		kids = append(kids,
+			widget.Lucide("star", widget.IconSize(12), widget.IconColor(types.ColorFromRGB(229, 192, 123))),
+			widget.Div(widget.Style{Width: 4}))
 	}
+	kids = append(kids, &widget.DragGrip{ // 拖拽手柄：按住上下拖排序
+		Icon: "chevrons-up-down", Box: 20, IconSz: 13, Color: cTextDim,
+		OnStart: func(x, y float64) { s.onRootDragStart(r.path, y) },
+		OnMove:  func(x, y float64) { s.onRootDragMove(y) },
+		OnEnd:   func(x, y float64) { s.onRootDragEnd() },
+	})
 	row := &widget.Clickable{
 		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
-			widget.Style{Height: 26, FlexDirection: "row", AlignItems: "center",
-				Padding: types.EdgeInsetsLTRB(6, 0, 8, 0), BackgroundColor: cSide},
+			widget.Style{Height: rootRowH, FlexDirection: "row", AlignItems: "center",
+				Padding: types.EdgeInsetsLTRB(6, 0, 4, 0), BackgroundColor: &bg},
 			kids,
 		)},
 		OnClick:    func() { s.toggle(r) },
@@ -294,6 +314,55 @@ func (s *fileTreeState) rootRow(r *fileNode, idx int) widget.Widget {
 		SingleChildWidget: widget.SingleChildWidget{Child: row},
 		OnContextMenu:     func(x, y float64) { workspaceRootMenu(x, y, r.path) },
 	}
+}
+
+// onRootDragStart 手柄按下开始拖某根文件夹。
+func (s *fileTreeState) onRootDragStart(path string, y float64) {
+	s.dragPath = path
+	s.dragLastY = y
+	s.dragStartPrimary = currentRoot()
+	s.SetState()
+}
+
+// onRootDragMove 拖动中：光标每移过一行高，就与相邻根实时换位（首个=主文件夹）。
+func (s *fileTreeState) onRootDragMove(y float64) {
+	if s.dragPath == "" {
+		return
+	}
+	for y <= s.dragLastY-rootRowH { // 向上够一行高 → 上移
+		i := indexOfFolder(s.dragPath)
+		if i <= 0 {
+			break
+		}
+		s.swapRoots(i, i-1)
+		s.dragLastY -= rootRowH
+	}
+	for y >= s.dragLastY+rootRowH { // 向下够一行高 → 下移
+		i := indexOfFolder(s.dragPath)
+		if i < 0 || i >= len(workspaceFolders)-1 {
+			break
+		}
+		s.swapRoots(i, i+1)
+		s.dragLastY += rootRowH
+	}
+}
+
+// onRootDragEnd 结束拖拽：落盘新顺序；主文件夹变了才重建 agent。
+func (s *fileTreeState) onRootDragEnd() {
+	if s.dragPath == "" {
+		return
+	}
+	s.dragPath = ""
+	syncWorkspace(currentRoot() != s.dragStartPrimary)
+}
+
+// swapRoots 拖拽中实时换两根（换 workspaceFolders + s.roots，保留展开态，不落盘——结束时统一落盘）。
+func (s *fileTreeState) swapRoots(i, j int) {
+	workspaceFolders[i], workspaceFolders[j] = workspaceFolders[j], workspaceFolders[i]
+	if i < len(s.roots) && j < len(s.roots) {
+		s.roots[i], s.roots[j] = s.roots[j], s.roots[i]
+	}
+	s.SetState()
 }
 
 // refresh 重读工作区各根的文件系统，保留展开状态。

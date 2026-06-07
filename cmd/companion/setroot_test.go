@@ -47,6 +47,25 @@ func TestWorkspaceBuildRoots(t *testing.T) {
 	}
 }
 
+// TestRootDragReorder 拖拽手柄重排：累积位移每过一行高与相邻根换位。
+func TestRootDragReorder(t *testing.T) {
+	prevFT, prevWF := theFileTree, workspaceFolders
+	defer func() { theFileTree, workspaceFolders = prevFT, prevWF }()
+	workspaceFolders = []string{"A", "B", "C"}
+	theFileTree = &fileTreeState{roots: []*fileNode{{path: "A"}, {path: "B"}, {path: "C"}}}
+
+	theFileTree.onRootDragStart("A", 100)
+	theFileTree.onRootDragMove(100 + 2*rootRowH) // 向下拖两行 → A 移到末尾
+	if got := workspaceFolders; !(got[0] == "B" && got[1] == "C" && got[2] == "A") {
+		t.Fatalf("下拖两行后 = %v，want [B C A]", got)
+	}
+	theFileTree.onRootDragMove(100 + rootRowH) // 向上回一行 → A 回中间
+	if workspaceFolders[1] != "A" {
+		t.Errorf("上拖一行后 = %v，A 应在中间", workspaceFolders)
+	}
+	theFileTree.dragPath = "" // 清理，勿触发 onRootDragEnd 落盘
+}
+
 // TestProjectName 工作区显示名：单根=文件夹名；多根=「工作区 (N)」。
 func TestProjectName(t *testing.T) {
 	prev := workspaceFolders

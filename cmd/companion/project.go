@@ -91,28 +91,6 @@ func indexOfFolder(p string) int {
 	return -1
 }
 
-// moveFolderUp 把文件夹上移一位（排序；首个=Agent 主文件夹）。
-func moveFolderUp(p string) {
-	i := indexOfFolder(p)
-	if i <= 0 {
-		return
-	}
-	old := currentRoot()
-	workspaceFolders[i-1], workspaceFolders[i] = workspaceFolders[i], workspaceFolders[i-1]
-	syncWorkspace(old != currentRoot())
-}
-
-// moveFolderDown 把文件夹下移一位。
-func moveFolderDown(p string) {
-	i := indexOfFolder(p)
-	if i < 0 || i >= len(workspaceFolders)-1 {
-		return
-	}
-	old := currentRoot()
-	workspaceFolders[i], workspaceFolders[i+1] = workspaceFolders[i+1], workspaceFolders[i]
-	syncWorkspace(old != currentRoot())
-}
-
 // setPrimaryFolder 把文件夹移到首位，成为 Agent 主文件夹。
 func setPrimaryFolder(p string) {
 	i := indexOfFolder(p)
