@@ -44,7 +44,34 @@ func newTerminalState() *terminalState {
 	if err != nil {
 		cwd = "."
 	}
-	return &terminalState{cwd: cwd}
+	return &terminalState{cwd: cwd, shell: "cmd"}
+}
+
+// shellLabel 当前 shell 的短标签。
+func shellLabel(shell string) string {
+	switch shell {
+	case "powershell":
+		return "PS"
+	case "gitbash":
+		return "Bash"
+	default:
+		return "CMD"
+	}
+}
+
+// shellCmd 据 shell 类型构造命令（cmd 强制 UTF-8；powershell -NoProfile；gitbash 走 bash -c）。
+func shellCmd(shell, line, dir string) *exec.Cmd {
+	var c *exec.Cmd
+	switch shell {
+	case "powershell":
+		c = exec.Command("powershell", "-NoProfile", "-Command", line)
+	case "gitbash":
+		c = exec.Command("bash", "-c", line) // 需 git bash 的 bash 在 PATH
+	default:
+		c = exec.Command("cmd", "/C", "chcp 65001 >nul & "+line)
+	}
+	c.Dir = dir
+	return c
 }
 
 // termRow 一行输出 + 颜色（命令回显蓝 / stdout 常规 / stderr 红 / 提示灰）。
@@ -59,6 +86,7 @@ type terminalState struct {
 	lines     []termRow             // 已显示输出（含命令回显）
 	pending   []termRow             // 读协程写、帧泵 drain 取
 	running   bool                  // 有命令在跑
+	shell     string                // 当前 shell：cmd / powershell / gitbash
 	cwd       string                // 当前工作目录（cd 改、仅 UI 线程）
 	draft     string                // 命令输入镜像（防 relayout 丢，仅 UI 线程）
 	inputTok  int                   // Input.ResetToken：执行后清空输入框
@@ -104,9 +132,18 @@ func (t *terminalState) Build(ctx widget.BuildContext) widget.Widget {
 	in.PlaceholderColor = cTextDim
 	in.CursorColor = cText
 
+	shellBadge := &widget.Clickable{ // 点击循环切换 shell（CMD→PS→Bash）
+		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
+			widget.Style{BackgroundColor: cStatusBar, BorderRadius: 3, Padding: types.EdgeInsetsLTRB(6, 2, 6, 2)},
+			label(shellLabel(t.shell), cTextDim, 10),
+		)},
+		OnClick: t.cycleShell,
+	}
 	inputRow := widget.Div(
-		widget.Style{Height: 30, BackgroundColor: cEditor, Padding: types.EdgeInsetsLTRB(10, 0, 8, 0),
+		widget.Style{Height: 30, BackgroundColor: cEditor, Padding: types.EdgeInsetsLTRB(8, 0, 8, 0),
 			FlexDirection: "row", AlignItems: "center", BorderColor: cBorder, BorderWidth: 1},
+		shellBadge,
+		widget.Div(widget.Style{Width: 8}),
 		widget.Lucide("chevron-right", widget.IconSize(14), widget.IconColor(*cStatus)),
 		widget.Div(widget.Style{Width: 6}),
 		expand(in),
@@ -177,6 +214,19 @@ func (t *terminalState) submit(line string) {
 	t.SetState()
 }
 
+// cycleShell 循环切换 shell：cmd → powershell → gitbash → cmd。
+func (t *terminalState) cycleShell() {
+	switch t.shell {
+	case "cmd":
+		t.shell = "powershell"
+	case "powershell":
+		t.shell = "gitbash"
+	default:
+		t.shell = "cmd"
+	}
+	t.SetState()
+}
+
 // changeDir 处理 cd：改 t.cwd（仅 UI 线程）。
 func (t *terminalState) changeDir(arg string) {
 	if arg == "" || arg == "~" {
@@ -201,9 +251,8 @@ func (t *terminalState) changeDir(arg string) {
 // run 执行命令（读协程）：cmd /C 起子进程，chcp 65001 统一 UTF-8 输出，
 // stdout/stderr 各起一读协程把行写进 pending；全部读完 + 进程退出 → running=false。
 func (t *terminalState) run(line string) {
-	// chcp 65001：让 cmd 内建命令（dir 等）也输出 UTF-8，与 Go 程序输出一致，避免中文乱码。
-	c := exec.Command("cmd", "/C", "chcp 65001 >nul & "+line)
-	c.Dir = t.cwd
+	// 据所选 shell 构造命令（cmd 强制 UTF-8 防中文乱码；powershell/gitbash 见 shellCmd）。
+	c := shellCmd(t.shell, line, t.cwd)
 	stdout, err1 := c.StdoutPipe()
 	stderr, err2 := c.StderrPipe()
 	if err1 != nil || err2 != nil {

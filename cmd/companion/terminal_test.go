@@ -15,6 +15,27 @@ import (
 	"github.com/user/goui/internal/widget"
 )
 
+// TestShellCmd 据 shell 类型构造正确命令 + 携带工作目录；shellLabel 短标签。
+func TestShellCmd(t *testing.T) {
+	for _, c := range []struct{ shell, want string }{
+		{"cmd", "cmd"}, {"powershell", "powershell"}, {"gitbash", "bash"},
+	} {
+		cmd := shellCmd(c.shell, "echo hi", `C:\`)
+		if !strings.Contains(cmd.Args[0], c.want) {
+			t.Errorf("shell %s → Args[0]=%q，期望含 %s", c.shell, cmd.Args[0], c.want)
+		}
+		if !strings.Contains(strings.Join(cmd.Args, " "), "echo hi") {
+			t.Errorf("shell %s 命令缺 'echo hi'：%v", c.shell, cmd.Args)
+		}
+		if cmd.Dir != `C:\` {
+			t.Errorf("shell %s Dir=%q", c.shell, cmd.Dir)
+		}
+	}
+	if shellLabel("powershell") != "PS" || shellLabel("gitbash") != "Bash" || shellLabel("cmd") != "CMD" {
+		t.Error("shellLabel 标签错")
+	}
+}
+
 // run() 是读协程体：cmd /C 执行 + 把 stdout 行写进 pending。直接同步调用验证 exec 闭环
 // （chcp 65001 + echo → 捕获到输出 + running 复位），不依赖 GUI。
 func TestTerminalRunCapturesOutput(t *testing.T) {
