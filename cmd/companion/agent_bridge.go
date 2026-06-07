@@ -123,7 +123,12 @@ func (b *agentBridge) start(task string) {
 		if cfgs := loadMCPConfigs(); len(cfgs) > 0 { // 外部 MCP 服务器（mcp.json；失败跳过、不阻断；首条消息时一次性连接）
 			agent.RegisterMCPServers(reg, cfgs)
 		}
-		b.loop = &agent.Loop{Provider: prov, Registry: reg, System: agent.DefaultSystemPrompt(root) + agent.ProjectRules(root), MaxIterations: 30}
+		sys := agent.DefaultSystemPrompt(root)
+		if si := strings.TrimSpace(theSettings.SystemInstructions); si != "" { // 设置里的系统级指令
+			sys += "\n\n# 系统级指令（务必遵守）\n" + si
+		}
+		sys += agent.ProjectRules(root)
+		b.loop = &agent.Loop{Provider: prov, Registry: reg, System: sys, MaxIterations: 30}
 	}
 	hist := b.history(th)
 

@@ -410,12 +410,11 @@ func (b *settingsBodyState) agentTab() widget.Widget {
 	)
 }
 
-// instructionsTab 项目指令编辑（存 .pair/rules.md，agent 经 ProjectRules 注入系统提示）。
-func (b *settingsBodyState) instructionsTab() widget.Widget {
-	ta := widget.NewTextarea("写给 agent 的项目规则/约定，例如：代码风格、命名、禁忌、构建与测试命令、目录约定…", 9,
-		func(t string) { editingInstructions = t })
-	ta.Text = editingInstructions
-	ta.ResetToken = b.resetTok
+// settingsTextarea 深色多行文本框（指令/哲学等用）。
+func settingsTextarea(placeholder, val string, rows, tok int, onChange func(string)) widget.Widget {
+	ta := widget.NewTextarea(placeholder, rows, onChange)
+	ta.Text = val
+	ta.ResetToken = tok
 	ta.Color = ghText
 	ta.CursorColor = ghText
 	ta.PlaceholderColor = ghTextMuted
@@ -423,13 +422,33 @@ func (b *settingsBodyState) instructionsTab() widget.Widget {
 	ta.BorderColor = *ghBorder
 	ta.FocusBorderColor = *ghAccent
 	ta.HoverBorderColor = *ghBorder
+	return ta
+}
+
+// sectionHeader 带图标的小节标题 + 灰色副标题（复刻参考指令/哲学小节样式）。
+func sectionHeader(icon, title, sub string) widget.Widget {
+	return widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"},
+		widget.Lucide(icon, widget.IconSize(13), widget.IconColor(ghTextMuted)),
+		widget.Div(widget.Style{Width: 6}),
+		label(title, ghText, 12),
+		widget.Div(widget.Style{Width: 6}),
+		label(sub, ghTextMuted, 10),
+	)
+}
+
+// instructionsTab 系统级指令(存设置) + 项目级指令(.pair/rules.md)，均随设置保存注入系统提示（复刻参考）。
+func (b *settingsBodyState) instructionsTab() widget.Widget {
 	return widget.Div(
 		widget.Style{FlexDirection: "column", AlignItems: "stretch"},
-		label("项目指令（agent 每轮读取并遵守）", ghTextMuted, 11),
+		sectionHeader("file-text", "系统级指令", "（对所有项目生效，存设置中）"),
 		widget.Div(widget.Style{Height: 6}),
-		ta,
+		settingsTextarea("通用编码规范、安全规则、工作流程…会与项目级指令合并注入 Agent 系统提示。", editingSettings.SystemInstructions, 7, b.resetTok, func(t string) { editingSettings.SystemInstructions = t }),
+		widget.Div(widget.Style{Height: 14}),
+		sectionHeader("book-open", "项目级指令", "（仅当前项目，存 .pair/rules.md）"),
+		widget.Div(widget.Style{Height: 6}),
+		settingsTextarea("项目特定的需求说明、技术栈约束、命名约定…", editingInstructions, 7, b.resetTok, func(t string) { editingInstructions = t }),
 		widget.Div(widget.Style{Height: 4}),
-		label("保存到当前工作区 .pair/rules.md；与项目根的 AGENTS.md/CLAUDE.md 一并注入系统提示。", ghTextMuted, 10),
+		label("保存设置即写入；项目级与项目根的 AGENTS.md/CLAUDE.md 一并注入系统提示。", ghTextMuted, 10),
 	)
 }
 
