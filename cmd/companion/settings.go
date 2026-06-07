@@ -184,7 +184,11 @@ func (b *settingsBodyState) Build(ctx widget.BuildContext) widget.Widget {
 			tabs,
 		),
 		widget.Div(widget.Style{Height: 12}),
-		b.content(),
+		// 固定高度内容区（超出滚动）：各 tab 内容高度不一，固定高度→对话框尺寸恒定，
+		// 切换标签不再因高度变化重新居中"跳动"，入场也不会因内容沉降"弹两次"。
+		widget.Div(widget.Style{Height: 420, FlexDirection: "column", AlignItems: "stretch"},
+			expand(widget.NewScrollView(b.content())),
+		),
 	)
 }
 
