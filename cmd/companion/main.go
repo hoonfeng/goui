@@ -128,10 +128,33 @@ type shellState struct {
 }
 
 func (s *shellState) Build(ctx widget.BuildContext) widget.Widget {
-	return widget.VBox(
+	shell := widget.VBox(
 		s.titleBar(),
 		expand(s.body()),
 		statusBar(),
+	)
+	if s.dragPanel == "" {
+		return shell
+	}
+	// 拖拽中：跟随光标的「拖影」（清晰的移动反馈），叠在最上层。
+	return widget.NewStack(
+		shell,
+		widget.NewPositioned(s.dragGhost()).WithLeft(s.dragCX+12).WithTop(s.dragCY+10).WithZIndex(999),
+	)
+}
+
+// dragGhost 拖拽中跟随光标的小标牌：显示正在移动的面板名。
+func (s *shellState) dragGhost() widget.Widget {
+	name := map[string]string{"files": "文件面板", "chat": "对话面板", "terminal": "终端面板"}[s.dragPanel]
+	if name == "" {
+		name = s.dragPanel
+	}
+	return widget.Div(
+		widget.Style{Width: 132, Height: 30, BackgroundColor: ghAccentEmph, BorderRadius: 5,
+			Padding: types.EdgeInsetsLTRB(10, 0, 10, 0), FlexDirection: "row", AlignItems: "center"},
+		widget.Lucide("move", widget.IconSize(13), widget.IconColor(cWhite)),
+		widget.Div(widget.Style{Width: 6}),
+		label("移动 "+name, cWhite, 12),
 	)
 }
 
@@ -558,16 +581,21 @@ func (s *shellState) filesGroup() widget.Widget {
 func (s *shellState) tabItem(id, title, icon, active string) widget.Widget {
 	on := id == active
 	tc, bg := cTextDim, *cSide
+	line := *cSide // 底部指示条：非激活=与底同色（隐形）
 	if on {
 		tc, bg = cText, *cTitle
+		line = *cStatus // 激活=强调蓝下划线（复刻参考侧栏标签）
 	}
 	return &widget.Clickable{
 		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
-			widget.Style{Padding: types.EdgeInsetsLTRB(12, 0, 12, 0), FlexDirection: "row", AlignItems: "center",
-				BackgroundColor: &bg},
-			widget.Lucide(icon, widget.IconSize(14), widget.IconColor(tc)),
-			widget.Div(widget.Style{Width: 6}),
-			label(title, tc, 12),
+			widget.Style{BackgroundColor: &bg, FlexDirection: "column", AlignItems: "stretch"},
+			expand(widget.Div(
+				widget.Style{Padding: types.EdgeInsetsLTRB(12, 0, 12, 0), FlexDirection: "row", AlignItems: "center"},
+				widget.Lucide(icon, widget.IconSize(14), widget.IconColor(tc)),
+				widget.Div(widget.Style{Width: 6}),
+				label(title, tc, 12),
+			)),
+			widget.Div(widget.Style{Height: 2, BackgroundColor: &line}), // 激活下划线
 		)},
 		OnClick:    func() { s.leftView = id; s.SetState() },
 		HoverColor: *ftHover,
