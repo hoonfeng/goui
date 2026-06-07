@@ -12,7 +12,11 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/user/goui/internal/animation"
+	"github.com/user/goui/internal/canvas"
 	"github.com/user/goui/internal/types"
 	"github.com/user/goui/internal/widget"
 )
@@ -62,13 +66,12 @@ type GitPanel struct{ widget.StatefulWidget }
 
 func (g *GitPanel) CreateState() widget.State { return theGit }
 
-type gitState struct {
-	widget.BaseState
+// gitData git 读出的数据。可在 goroutine 内独立计算（不碰 UI），作快照跨线程交给 UI 线程应用。
+type gitData struct {
 	root          string
 	branch        string
 	ahead, behind int
 	isRepo        bool
-	loaded        bool
 	errMsg        string
 	staged        []gitEntry
 	conflict      []gitEntry
@@ -76,39 +79,114 @@ type gitState struct {
 	untracked     []gitEntry
 	branches      []string
 	commits       []gitCommit
-	collapsed     map[string]bool
+}
+
+type gitState struct {
+	widget.BaseState
+	gitData               // 当前显示的数据（promoted：g.branch / g.staged …）
+	loaded      bool      // 是否已触发首次加载
+	hasData     bool      // 是否已成功载入一次（加载中显旧数据而非闪「非仓库」）
+	collapsed   map[string]bool
+	hoveredPath string    // 当前 hover 的文件行（hover 才显行内动作按钮）
+
+	// 异步：git CLI 在 goroutine 跑，结果经帧泵在 UI 线程 drain（复刻 agent bridge 跨线程模式）。
+	mu      sync.Mutex
+	loading bool
+	snap    *gitData // goroutine 算好的快照，待 UI 线程应用
+	actErr  string   // 待提示的动作错误（drain 里 ShowAlert）
+	pump    *animation.Controller
 }
 
 func (g *gitState) ensure() {
 	if g.loaded {
 		return
 	}
-	g.reload()
+	g.loaded = true
+	g.reloadAsync(nil)
 }
 
-// reload 重读 git 状态（首次/刷新/动作后）。同步调用 git CLI。
-func (g *gitState) reload() {
-	g.loaded = true
-	g.root = theFileTree.rootPath
-	g.branch, g.ahead, g.behind, g.errMsg = "", 0, 0, ""
-	g.staged, g.conflict, g.modified, g.untracked = nil, nil, nil, nil
-	g.branches, g.commits = nil, nil
+// reloadAsync 异步重读 git：可选先跑 action（add/commit/checkout…），再算快照；全程在 goroutine，
+// 结果经帧泵在 UI 线程 drain 应用 → 大仓刷新/动作不冻 UI。action 返回错误串（空=成功）。
+func (g *gitState) reloadAsync(action func() string) {
+	g.mu.Lock()
+	if g.loading { // 已在跑 → 跳过，避免并发 git
+		g.mu.Unlock()
+		return
+	}
+	g.loading = true
+	g.mu.Unlock()
 
-	if out, err := runGit(g.root, "rev-parse", "--is-inside-work-tree"); err != nil || strings.TrimSpace(out) != "true" {
-		g.isRepo = false
+	root := theFileTree.rootPath
+	g.startPump()
+	go func() {
+		ae := ""
+		if action != nil {
+			ae = action()
+		}
+		d := computeGitSnapshot(root)
+		g.mu.Lock()
+		g.snap, g.actErr, g.loading = d, ae, false
+		g.mu.Unlock()
+	}()
+}
+
+// drain 帧泵每帧（UI 线程）：有快照则应用 + 重排 + 文件树刷新 + 动作错误提示；goroutine 完成即停泵。
+func (g *gitState) drain() {
+	g.mu.Lock()
+	d, ae := g.snap, g.actErr
+	g.snap, g.actErr = nil, ""
+	loading := g.loading
+	g.mu.Unlock()
+
+	if d != nil {
+		g.gitData = *d
+		g.hasData = true
+		g.SetState()
+		theFileTree.refresh() // 文件可能因动作新增/删除
+		if ae != "" {
+			widget.ShowAlert("Git 出错", ae, widget.MsgWarning, nil)
+		}
+	}
+	if !loading { // goroutine 已结束 → 停泵
+		g.stopPump()
+	}
+}
+
+func (g *gitState) startPump() {
+	if g.pump != nil {
 		return
 	}
-	g.isRepo = true
-	if b, err := runGit(g.root, "branch", "--show-current"); err == nil {
-		g.branch = strings.TrimSpace(b)
+	p := animation.NewController(time.Second, animation.Linear)
+	p.Repeat = true
+	p.OnUpdate = func(float64) { g.drain() }
+	g.pump = p
+	p.Start()
+}
+
+func (g *gitState) stopPump() {
+	if g.pump != nil {
+		g.pump.Stop()
+		g.pump = nil
 	}
-	if out, err := runGit(g.root, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"); err == nil {
-		fmt.Sscanf(strings.TrimSpace(out), "%d\t%d", &g.ahead, &g.behind)
+}
+
+// computeGitSnapshot 在 goroutine 内同步跑 git CLI 算出数据快照（不碰 g/UI）。
+func computeGitSnapshot(root string) *gitData {
+	d := &gitData{root: root}
+	if out, err := runGit(root, "rev-parse", "--is-inside-work-tree"); err != nil || strings.TrimSpace(out) != "true" {
+		return d // isRepo=false
 	}
-	out, err := runGit(g.root, "status", "--porcelain")
+	d.isRepo = true
+	if b, err := runGit(root, "branch", "--show-current"); err == nil {
+		d.branch = strings.TrimSpace(b)
+	}
+	if out, err := runGit(root, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"); err == nil {
+		fmt.Sscanf(strings.TrimSpace(out), "%d\t%d", &d.ahead, &d.behind)
+	}
+	out, err := runGit(root, "status", "--porcelain")
 	if err != nil {
-		g.errMsg = err.Error()
-		return
+		d.errMsg = err.Error()
+		return d
 	}
 	for _, line := range strings.Split(out, "\n") {
 		if len(line) < 4 {
@@ -119,24 +197,23 @@ func (g *gitState) reload() {
 		if i := strings.Index(path, " -> "); i >= 0 { // 重命名：取新名
 			path = path[i+4:]
 		}
-		g.categorize(x, y, strings.TrimSpace(path))
+		d.categorize(x, y, strings.TrimSpace(path))
 	}
-	// 分支列表（切换用）
-	if out, err := runGit(g.root, "branch", "--format=%(refname:short)"); err == nil {
+	if out, err := runGit(root, "branch", "--format=%(refname:short)"); err == nil {
 		for _, b := range strings.Split(strings.TrimSpace(out), "\n") {
 			if b = strings.TrimSpace(b); b != "" {
-				g.branches = append(g.branches, b)
+				d.branches = append(d.branches, b)
 			}
 		}
 	}
-	// 提交历史（最近 20 条）：full|short|author|相对日期|主题
-	if out, err := runGit(g.root, "log", "--max-count=20", "--pretty=format:%H|%h|%an|%cr|%s"); err == nil {
+	if out, err := runGit(root, "log", "--max-count=20", "--pretty=format:%H|%h|%an|%cr|%s"); err == nil {
 		for _, ln := range strings.Split(out, "\n") {
 			if p := strings.SplitN(ln, "|", 5); len(p) == 5 {
-				g.commits = append(g.commits, gitCommit{hash: p[0], short: p[1], author: p[2], date: p[3], msg: p[4]})
+				d.commits = append(d.commits, gitCommit{hash: p[0], short: p[1], author: p[2], date: p[3], msg: p[4]})
 			}
 		}
 	}
+	return d
 }
 
 // checkoutBranch 切换分支（git checkout）。
@@ -147,19 +224,19 @@ func (g *gitState) checkoutBranch(b string) {
 	g.act("checkout", b)
 }
 
-func (g *gitState) categorize(x, y byte, path string) {
+func (d *gitData) categorize(x, y byte, path string) {
 	e := gitEntry{path: path, x: x, y: y}
 	switch {
 	case x == '?' && y == '?':
-		g.untracked = append(g.untracked, e)
+		d.untracked = append(d.untracked, e)
 	case x == 'U' || y == 'U' || (x == 'D' && y == 'D') || (x == 'A' && y == 'A'):
-		g.conflict = append(g.conflict, e)
+		d.conflict = append(d.conflict, e)
 	default:
 		if x != ' ' && x != '?' {
-			g.staged = append(g.staged, e)
+			d.staged = append(d.staged, e)
 		}
 		if y != ' ' && y != '?' {
-			g.modified = append(g.modified, e)
+			d.modified = append(d.modified, e)
 		}
 	}
 }
@@ -189,15 +266,16 @@ func badge(st byte, staged bool) (string, types.Color) {
 	}
 }
 
-// ─── 动作（git CLI；完成后 reload + relayout）──────────────────
+// ─── 动作（git CLI；全程异步：动作 + 重读都在 goroutine，结果经帧泵应用）──────────────
 
 func (g *gitState) act(args ...string) {
-	if _, err := runGit(g.root, args...); err != nil {
-		widget.ShowAlert("Git 出错", err.Error(), widget.MsgWarning, nil)
-	}
-	g.reload()
-	g.SetState()
-	theFileTree.refresh() // 文件可能新增/删除
+	root := theFileTree.rootPath
+	g.reloadAsync(func() string {
+		if _, err := runGit(root, args...); err != nil {
+			return err.Error()
+		}
+		return ""
+	})
 }
 
 func (g *gitState) stageAll()           { g.act("add", "-A") }
@@ -264,6 +342,9 @@ func (g *gitState) toggleSection(name string) { g.collapsed[name] = !g.collapsed
 
 func (g *gitState) Build(ctx widget.BuildContext) widget.Widget {
 	g.ensure()
+	if g.loading && !g.hasData { // 首次加载中：显加载提示（已有数据则继续显旧数据，不闪）
+		return gitMessage("refresh-cw", "加载 Git 状态...", "")
+	}
 	if !g.isRepo {
 		return gitMessage("git-branch", "非 Git 仓库", "此目录未初始化 Git")
 	}
@@ -310,7 +391,7 @@ func (g *gitState) repoBar() widget.Widget {
 	if g.behind > 0 {
 		kids = append(kids, widget.Div(widget.Style{Width: 6}), label(fmt.Sprintf("↓%d", g.behind), cTextDim, 10))
 	}
-	kids = append(kids, expand(widget.Div(widget.Style{})), ftIconBtn("refresh-cw", func() { g.reload(); g.SetState() }))
+	kids = append(kids, expand(widget.Div(widget.Style{})), ftIconBtn("refresh-cw", func() { g.reloadAsync(nil) }))
 	return widget.Div(
 		widget.Style{Height: 32, Padding: types.EdgeInsetsLTRB(10, 0, 6, 0), BackgroundColor: cSide,
 			BorderColor: cBorder, BorderWidth: 1, FlexDirection: "row", AlignItems: "center"},
@@ -432,26 +513,48 @@ func (g *gitState) fileRow(e gitEntry, stagedSec bool) widget.Widget {
 	}
 	sym, col := badge(st, stagedSec)
 	p := e.path
-	kids := []widget.Widget{
-		widget.Div(widget.Style{Width: 14, FlexDirection: "row", AlignItems: "center"}, label(sym, col, 12)),
-		widget.Div(widget.Style{Width: 4}),
-		expand(label(shortGitPath(p), cText, 12)),
+	// 行内动作按钮（hover 才显；非 hover 时用等宽空位占位，避免布局抖动）。
+	var actions []widget.Widget
+	switch {
+	case stagedSec:
+		actions = []widget.Widget{gitRowBtn("minus", "取消暂存", func() { g.unstageFile(p) })}
+	case e.x == '?' && e.y == '?':
+		actions = []widget.Widget{gitRowBtn("plus", "暂存", func() { g.stageFile(p) })}
+	default:
+		actions = []widget.Widget{
+			gitRowBtn("plus", "暂存", func() { g.stageFile(p) }),
+			gitRowBtn("trash-2", "丢弃", func() { g.discardFile(p) }),
+		}
 	}
-	if stagedSec {
-		kids = append(kids, gitRowBtn("minus", "取消暂存", func() { g.unstageFile(p) }))
-	} else if e.x == '?' && e.y == '?' {
-		kids = append(kids, gitRowBtn("plus", "暂存", func() { g.stageFile(p) }))
-	} else {
-		kids = append(kids, gitRowBtn("plus", "暂存", func() { g.stageFile(p) }),
-			gitRowBtn("trash-2", "丢弃", func() { g.discardFile(p) }))
+	trailW := float64(len(actions)) * 22
+	trailing := widget.Div(widget.Style{Width: trailW, FlexDirection: "row", AlignItems: "center", JustifyContent: "flex-end"})
+	if g.hoveredPath == p {
+		trailing = widget.Div(widget.Style{Width: trailW, FlexDirection: "row", AlignItems: "center", JustifyContent: "flex-end"}, actions)
 	}
 	return &widget.Clickable{
 		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
 			widget.Style{Height: 24, Padding: types.EdgeInsetsLTRB(16, 0, 6, 0), FlexDirection: "row", AlignItems: "center"},
-			kids,
+			widget.Div(widget.Style{Width: 14, FlexDirection: "row", AlignItems: "center"}, label(sym, col, 12)),
+			widget.Div(widget.Style{Width: 4}),
+			expand(label(shortGitPath(p), cText, 12)),
+			trailing,
 		)},
-		OnClick:    func() { openGitEntry(p) },
-		HoverColor: *ftHover,
+		OnClick:       func() { showGitDiff(p, stagedSec) }, // 点文件看差异（在编辑器打开走差异弹窗里的按钮）
+		OnHoverChange: func(h bool) { g.setHovered(p, h) },
+		HoverColor:    *ftHover,
+	}
+}
+
+// setHovered 记录/清除 hover 的文件行（仅变化时 SetState，避免无谓重排）。
+func (g *gitState) setHovered(p string, h bool) {
+	if h {
+		if g.hoveredPath != p {
+			g.hoveredPath = p
+			g.SetState()
+		}
+	} else if g.hoveredPath == p {
+		g.hoveredPath = ""
+		g.SetState()
 	}
 }
 
@@ -475,6 +578,66 @@ func openGitEntry(rel string) {
 	} else {
 		theEditor.open(abs)
 	}
+}
+
+// showGitDiff 弹出文件的统一彩色差异（适配参考 DiffView：companion 无 Monaco → 统一格式 + 行着色）。
+// staged=true 看已暂存的差异(--cached)，否则看工作区差异。
+func showGitDiff(rel string, staged bool) {
+	root := theGit.root
+	args := []string{"diff"}
+	if staged {
+		args = append(args, "--cached")
+	}
+	args = append(args, "--", rel)
+	out, err := runGit(root, args...)
+	if err != nil {
+		widget.ShowAlert("Git 出错", err.Error(), widget.MsgWarning, nil)
+		return
+	}
+	if strings.TrimSpace(out) == "" {
+		out = "（无文本差异：可能是新文件 / 二进制 / 仅模式变更）"
+	}
+	rows := make([]widget.Widget, 0, 64)
+	for _, ln := range strings.Split(out, "\n") {
+		rows = append(rows, diffLine(ln))
+	}
+	body := widget.Div(
+		widget.Style{Width: 720, Height: 460},
+		widget.NewScrollView(flexCol(rows...)),
+	)
+	var id int
+	dlg := widget.NewDialog("差异 — "+rel, body).WithWidth(760).WithFooter(
+		widget.NewButton("在编辑器打开", func() { widget.HideOverlay(id); openGitEntry(rel) }).WithColor(*ghBgTertiary).WithTextColor(ghText),
+		widget.NewButton("关闭", func() { widget.HideOverlay(id) }).WithColor(*ghAccentEmph).WithTextColor(cWhite),
+	)
+	id = widget.ShowDialog(dlg)
+}
+
+// diffLine 一行统一 diff，按前缀着色：+绿 / -红 / @@蓝 / 文件头灰 / 上下文常色。
+func diffLine(ln string) widget.Widget {
+	col := cText
+	switch {
+	case strings.HasPrefix(ln, "+++"), strings.HasPrefix(ln, "---"), strings.HasPrefix(ln, "diff "), strings.HasPrefix(ln, "index "):
+		col = cTextDim
+	case strings.HasPrefix(ln, "@@"):
+		col = gitBlue
+	case strings.HasPrefix(ln, "+"):
+		col = gitGreen
+	case strings.HasPrefix(ln, "-"):
+		col = gitRed
+	}
+	disp := strings.ReplaceAll(ln, "\t", "    ") // 等宽字体无 tab 字形会渲成□，展开为空格
+	return widget.Div(
+		widget.Style{Height: 16, Padding: types.EdgeInsetsLTRB(8, 0, 8, 0)},
+		monoLabel(disp, col, 12),
+	)
+}
+
+// monoLabel 等宽文本（diff 对齐用）。
+func monoLabel(s string, c types.Color, size float64) widget.Widget {
+	t := widget.NewText(s, c)
+	t.Font = canvas.Font{Family: "Consolas", Size: size}
+	return t
 }
 
 // firstChangedLine 取文件 git diff 首个 hunk 的新文件起始行（+N）；无改动/新文件返回 0（打开顶部）。

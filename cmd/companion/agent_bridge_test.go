@@ -18,6 +18,18 @@ import (
 	"github.com/user/goui/internal/widget"
 )
 
+// TestAutonomousParams 自主模式：追加计划提示 + 放宽迭代上限；非自主：原样 + 默认上限。
+func TestAutonomousParams(t *testing.T) {
+	tn, n := autonomousParams("做点事", false)
+	if tn != "做点事" || n != 30 {
+		t.Errorf("非自主 = (%q,%d)，期望原样 + 30", tn, n)
+	}
+	ta, a := autonomousParams("做点事", true)
+	if !strings.Contains(ta, "做点事") || !strings.Contains(ta, "update_plan") || a != 60 {
+		t.Errorf("自主 = (%q,%d)，期望含原任务 + 计划提示 + 60", ta, a)
+	}
+}
+
 // 端到端（无窗口、无网络）：注入 MockProvider 的 loop，send 一条任务 → goroutine 跑 TAOR →
 // 事件经动画帧泵 drain → 流式写进当前助手消息。手动 animation.Tick + EnsureLayout 模拟主循环。
 func TestAgentBridgeStreamsIntoChat(t *testing.T) {

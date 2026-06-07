@@ -204,6 +204,39 @@ func (s *searchState) doReplace() int {
 	return n
 }
 
+// replaceFile 只替换某个文件（增强：参考仅有全部替换）。改动后重搜。
+func (s *searchState) replaceFile(f searchFile) {
+	if s.doReplaceFile(f) {
+		s.run()
+	}
+}
+
+// doReplaceFile 对单个文件做整文件正则替换并写回；返回是否改动。
+func (s *searchState) doReplaceFile(f searchFile) bool {
+	re, err := s.compile()
+	if err != nil {
+		return false
+	}
+	data, e := os.ReadFile(f.abspath)
+	if e != nil {
+		return false
+	}
+	var out string
+	if s.regex {
+		out = re.ReplaceAllString(string(data), s.replaceText)
+	} else {
+		out = re.ReplaceAllLiteralString(string(data), s.replaceText)
+	}
+	if out == string(data) {
+		return false
+	}
+	if os.WriteFile(f.abspath, []byte(out), 0o644) != nil {
+		return false
+	}
+	theEditor.reloadIfOpen(f.abspath)
+	return true
+}
+
 // ─── UI ───────────────────────────────────────────────────────
 
 func (s *searchState) Build(ctx widget.BuildContext) widget.Widget {
@@ -309,7 +342,21 @@ func (s *searchState) fileBlock(out *[]widget.Widget, f searchFile) {
 		OnClick:    func() { s.toggleFile(f.rel) },
 		HoverColor: *ftHover,
 	}
-	*out = append(*out, header)
+	if s.previewRe != nil { // 替换模式：文件头右侧加「替换此文件」（在 Clickable 外，避免点按钮误折叠）
+		ff := f
+		*out = append(*out, widget.Div(
+			widget.Style{FlexDirection: "row", AlignItems: "center", BackgroundColor: cSide},
+			expand(header),
+			&widget.Button{
+				SingleChildWidget: widget.SingleChildWidget{Child: label("替换", cWhite, 10)},
+				OnClick:           func() { s.replaceFile(ff) },
+				Color:             gitOrange, MinHeight: 20, Padding: types.EdgeInsetsLTRB(7, 0, 7, 0),
+			},
+			widget.Div(widget.Style{Width: 6}),
+		))
+	} else {
+		*out = append(*out, header)
+	}
 	if s.collapsed[f.rel] {
 		return
 	}

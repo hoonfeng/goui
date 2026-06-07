@@ -48,6 +48,12 @@ var theChatState = &chatState{store: state.NewChatStore(), autoReview: true, hov
 
 func (c *ChatPanel) CreateState() widget.State { return theChatState }
 
+// planStep Agent 任务计划的一步（update_plan 工具传入；status: pending/in_progress/done）。
+type planStep struct {
+	Step   string `json:"step"`
+	Status string `json:"status"`
+}
+
 type chatState struct {
 	widget.BaseState
 	store        *state.ChatStore
@@ -59,6 +65,7 @@ type chatState struct {
 	sendSeq      int          // 递增 → 输入框清空 + 滚到底
 	inputAreaH   float64      // 输入区固定高（由 main.go 设为终端面板高 BottomH，使两者等高对齐）
 	bridge       *agentBridge // Agent 引擎接入（懒建，见 agent_bridge.go）
+	plan         []planStep   // 当前 Agent 任务计划清单（update_plan 工具更新；置顶可视）
 
 	hoveredMsg  int    // 当前 hover 的消息索引（-1=无）→ 揭示该消息的操作按钮
 	showSearch  bool   // Ctrl+F 搜索栏开
@@ -70,6 +77,9 @@ func (s *chatState) Build(ctx widget.BuildContext) widget.Widget {
 	mainKids := []widget.Widget{s.layoutToolbar()}
 	if s.showSearch {
 		mainKids = append(mainKids, s.searchBar())
+	}
+	if len(s.plan) > 0 {
+		mainKids = append(mainKids, s.planCard())
 	}
 	mainKids = append(mainKids, expand(s.scrollMessages()), s.inputArea())
 	main := widget.Div(
@@ -91,6 +101,57 @@ func (s *chatState) scrollMessages() widget.Widget {
 	sv := widget.NewScrollView(s.messageList())
 	sv.ScrollEndToken = s.sendSeq
 	return sv
+}
+
+// planCard 置顶任务计划清单（update_plan 工具更新）：标题 + 进度 + 每步状态图标。
+func (s *chatState) planCard() widget.Widget {
+	done := 0
+	for _, p := range s.plan {
+		if p.Status == "done" {
+			done++
+		}
+	}
+	rows := []widget.Widget{
+		widget.Div(
+			widget.Style{FlexDirection: "row", AlignItems: "center", Padding: types.EdgeInsetsLTRB(0, 0, 0, 5)},
+			widget.Lucide("list-checks", widget.IconSize(13), widget.IconColor(*ghAccent)),
+			widget.Div(widget.Style{Width: 6}),
+			label("计划", ghText, 12),
+			widget.Div(widget.Style{Width: 6}),
+			label(fmt.Sprintf("%d/%d", done, len(s.plan)), ghTextMuted, 10),
+		),
+	}
+	for _, p := range s.plan {
+		rows = append(rows, planRow(p))
+	}
+	return widget.Div(
+		widget.Style{Padding: types.EdgeInsetsLTRB(8, 6, 8, 6)},
+		widget.Div(
+			widget.Style{Padding: types.EdgeInsets(8), BackgroundColor: ghBgSecondary, BorderColor: ghBorder,
+				BorderWidth: 1, BorderRadius: 6, FlexDirection: "column", AlignItems: "stretch"},
+			rows,
+		),
+	)
+}
+
+func planRow(p planStep) widget.Widget {
+	icon, col := "circle", ghTextMuted // pending
+	switch p.Status {
+	case "done":
+		icon, col = "circle-check", gitGreen
+	case "in_progress":
+		icon, col = "loader-circle", *ghAccent
+	}
+	txtCol := ghText
+	if p.Status == "done" {
+		txtCol = ghTextMuted
+	}
+	return widget.Div(
+		widget.Style{Height: 20, FlexDirection: "row", AlignItems: "center"},
+		widget.Lucide(icon, widget.IconSize(13), widget.IconColor(col)),
+		widget.Div(widget.Style{Width: 6}),
+		expand(label(p.Step, txtCol, 11.5)),
+	)
 }
 
 // ─── 顶部布局工具栏（List 显隐侧栏，靠右）─────────────────
@@ -598,6 +659,7 @@ func (s *chatState) send() {
 		return
 	}
 	s.sendSeq++ // 清输入框 + 滚到底
+	s.plan = nil // 新任务 → 清旧计划清单（Agent 会用 update_plan 重列）
 	if s.bridge == nil {
 		s.bridge = &agentBridge{cs: s}
 	}

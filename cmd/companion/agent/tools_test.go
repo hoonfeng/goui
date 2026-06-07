@@ -84,12 +84,42 @@ func TestToolRunCommand(t *testing.T) {
 	}
 }
 
+func TestMoveAndDeleteFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRegistry()
+	RegisterDefaultTools(r, dir)
+	ctx := context.Background()
+
+	if _, err := r.Execute(ctx, "move_file", `{"from":"a.txt","to":"sub/b.txt"}`); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.txt")); !os.IsNotExist(err) {
+		t.Error("a.txt 应已移走")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sub", "b.txt")); err != nil {
+		t.Errorf("sub/b.txt 应存在：%v", err)
+	}
+
+	if _, err := r.Execute(ctx, "delete_file", `{"path":"sub/b.txt"}`); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sub", "b.txt")); !os.IsNotExist(err) {
+		t.Error("b.txt 应已删除")
+	}
+	if _, err := r.Execute(ctx, "delete_file", `{"path":"sub"}`); err == nil {
+		t.Error("delete_file 应拒绝目录")
+	}
+}
+
 func TestRegistryDefinitions(t *testing.T) {
 	reg := NewRegistry()
 	RegisterDefaultTools(reg, t.TempDir())
 	defs := reg.Definitions()
-	if len(defs) != 10 {
-		t.Fatalf("应有 10 个工具定义，得 %d", len(defs))
+	if len(defs) != 14 { // read/write/edit/list/run + move/delete + search×2 + git×3 + web_fetch + update_plan
+		t.Fatalf("应有 14 个工具定义，得 %d", len(defs))
 	}
 	if defs[0].Type != "function" || defs[0].Function.Name != "read_file" {
 		t.Errorf("首个定义 = %+v", defs[0])

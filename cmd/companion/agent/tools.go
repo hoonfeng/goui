@@ -246,8 +246,58 @@ func RegisterDefaultTools(r *Registry, root string) {
 		},
 	})
 
+	r.Register(&Tool{
+		Name:             "move_file",
+		Description:      "把文件/目录从 from 移动或重命名到 to（都在工作区内；目标父目录自动创建）。",
+		Parameters:       objSchema(props{"from": strProp("源路径"), "to": strProp("目标路径")}, "from", "to"),
+		RequiresApproval: true,
+		Handler: func(ctx context.Context, args map[string]any) (string, error) {
+			from, err := resolvePath(root, argStr(args, "from"))
+			if err != nil {
+				return "", err
+			}
+			to, err := resolvePath(root, argStr(args, "to"))
+			if err != nil {
+				return "", err
+			}
+			if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+				return "", err
+			}
+			if err := os.Rename(from, to); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("已移动 %s → %s", argStr(args, "from"), argStr(args, "to")), nil
+		},
+	})
+
+	r.Register(&Tool{
+		Name:             "delete_file",
+		Description:      "删除一个文件（工作区内，不可恢复，谨慎）。为安全不删目录。",
+		Parameters:       objSchema(props{"path": strProp("要删除的文件路径")}, "path"),
+		RequiresApproval: true,
+		Handler: func(ctx context.Context, args map[string]any) (string, error) {
+			p, err := resolvePath(root, argStr(args, "path"))
+			if err != nil {
+				return "", err
+			}
+			info, err := os.Stat(p)
+			if err != nil {
+				return "", err
+			}
+			if info.IsDir() {
+				return "", fmt.Errorf("delete_file 不删目录：%s", argStr(args, "path"))
+			}
+			if err := os.Remove(p); err != nil {
+				return "", err
+			}
+			return "已删除 " + argStr(args, "path"), nil
+		},
+	})
+
 	registerSearchTools(r, root) // search_content / search_files（见 search.go）
 	registerGitTools(r, root)    // git_status / git_diff / git_log（只读，见 git.go）
+	registerWebTools(r)          // web_fetch（联网读，见 web.go）
+	registerPlanTool(r)          // update_plan（任务清单，见 plan.go）
 }
 
 // ─── 辅助 ────────────────────────────────────────────────────

@@ -72,6 +72,15 @@ func (b *agentBridge) stop() {
 	}
 }
 
+// autonomousParams 据自主开关算（实际下发给 LLM 的任务文本, 迭代上限）。
+// 自主：追加「列计划→连续完成所有步骤→全部完成再 [FINAL]」提示 + 放宽迭代上限（一气呵成多步任务）。
+func autonomousParams(task string, autonomous bool) (string, int) {
+	if autonomous {
+		return task + "\n\n（自主模式：先用 update_plan 列出完整计划，然后连续完成所有步骤、中途不要停下等我，全部完成后再输出 [FINAL]。）", 60
+	}
+	return task, 30
+}
+
 // start 异步跑一轮 Agent 任务（UI 线程调用）。无 API key 则只提示、不跑。
 func (b *agentBridge) start(task string) {
 	task = strings.TrimSpace(task)
@@ -105,6 +114,9 @@ func (b *agentBridge) start(task string) {
 	} else {
 		b.loop.Approve = nil
 	}
+
+	// 自主模式：放宽迭代上限 + 提示连续完成整份计划（配合 update_plan 清单一气呵成，不中途停等）。
+	task, b.loop.MaxIterations = autonomousParams(task, b.cs.autonomous)
 
 	// 流式助手消息（占位，事件到来时填充）。
 	th.Messages = append(th.Messages, state.Message{Role: state.Assistant, Streaming: true})
@@ -266,6 +278,16 @@ func (b *agentBridge) streamingMsg() *state.Message {
 	return &b.runThread.Messages[b.runIdx]
 }
 
+// applyPlan 解析 update_plan 工具参数里的计划清单，存入 chatState（置顶渲染）。
+func (b *agentBridge) applyPlan(argsJSON string) {
+	var p struct {
+		Plan []planStep `json:"plan"`
+	}
+	if json.Unmarshal([]byte(argsJSON), &p) == nil && len(p.Plan) > 0 {
+		b.cs.plan = p.Plan
+	}
+}
+
 func (b *agentBridge) applyEvent(e agent.Event) {
 	m := b.streamingMsg()
 	if m == nil {
@@ -277,7 +299,11 @@ func (b *agentBridge) applyEvent(e agent.Event) {
 	case agent.EventContent:
 		m.Text += e.Content
 	case agent.EventToolCall:
-		m.Activities = append(m.Activities, state.Activity{CallID: e.CallID, Tool: e.Tool, Args: e.Args})
+		if e.Tool == "update_plan" { // 计划单独渲染为置顶清单卡，不作通用工具活动行
+			b.applyPlan(e.Args)
+		} else {
+			m.Activities = append(m.Activities, state.Activity{CallID: e.CallID, Tool: e.Tool, Args: e.Args})
+		}
 	case agent.EventApproval:
 		// 标记对应活动为「待批准」（tool_call 已建活动，按 CallID 找；兜底补建）。
 		found := false
@@ -613,6 +639,12 @@ func iconForTool(name string) string {
 		return "git-branch"
 	case "run_command":
 		return "terminal"
+	case "web_fetch":
+		return "globe"
+	case "move_file":
+		return "square-pen"
+	case "delete_file":
+		return "trash-2"
 	}
 	return "braces"
 }

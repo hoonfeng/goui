@@ -58,6 +58,35 @@ func TestSearchReplace(t *testing.T) {
 	}
 }
 
+// TestSearchReplaceFile 验证单文件替换：只改命中的第一个文件，另一个不动。
+func TestSearchReplaceFile(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "a.go"), "foo\n")
+	mustWrite(t, filepath.Join(dir, "b.go"), "foo\n")
+
+	pf, ps, pe := theFileTree, theSearch, theEditor
+	defer func() { theFileTree, theSearch, theEditor = pf, ps, pe }()
+	theFileTree = &fileTreeState{rootPath: dir}
+	theEditor = &editorState{}
+	theSearch = &searchState{collapsed: map[string]bool{}, query: "foo", replaceText: "bar"}
+
+	theSearch.run()
+	if len(theSearch.files) != 2 {
+		t.Fatalf("files=%d, want 2", len(theSearch.files))
+	}
+	if !theSearch.doReplaceFile(theSearch.files[0]) { // a.go（WalkDir 字母序在前）
+		t.Fatal("doReplaceFile returned false")
+	}
+	a, _ := os.ReadFile(filepath.Join(dir, "a.go"))
+	b, _ := os.ReadFile(filepath.Join(dir, "b.go"))
+	if string(a) != "bar\n" {
+		t.Errorf("a.go=%q, want bar", string(a))
+	}
+	if string(b) != "foo\n" {
+		t.Errorf("b.go=%q, want unchanged foo", string(b))
+	}
+}
+
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

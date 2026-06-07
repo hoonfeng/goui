@@ -22,6 +22,38 @@ func TestParseHunkNewLine(t *testing.T) {
 	}
 }
 
+// TestComputeGitSnapshot 真起临时 git 仓：改 1 文件 + 新增 1 文件 → 快照应含 1 修改 + 1 未跟踪 + 1 提交。
+func TestComputeGitSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	runGit(dir, "init")
+	runGit(dir, "config", "user.email", "t@t.dev")
+	runGit(dir, "config", "user.name", "t")
+	mustWrite(t, filepath.Join(dir, "a.txt"), "hello\n")
+	runGit(dir, "add", "-A")
+	if _, err := runGit(dir, "commit", "-m", "init"); err != nil {
+		t.Skipf("git commit 不可用，跳过：%v", err)
+	}
+	mustWrite(t, filepath.Join(dir, "a.txt"), "hello world\n") // 改
+	mustWrite(t, filepath.Join(dir, "b.txt"), "new\n")         // 新增
+
+	d := computeGitSnapshot(dir)
+	if !d.isRepo {
+		t.Fatal("isRepo=false")
+	}
+	if len(d.modified) != 1 {
+		t.Errorf("modified=%d, want 1", len(d.modified))
+	}
+	if len(d.untracked) != 1 {
+		t.Errorf("untracked=%d, want 1", len(d.untracked))
+	}
+	if len(d.commits) != 1 {
+		t.Errorf("commits=%d, want 1", len(d.commits))
+	}
+	if d.branch == "" {
+		t.Error("branch empty")
+	}
+}
+
 // TestFirstChangedLine 真起一个临时 git 仓：提交后改第 3 行，firstChangedLine 应返回 3。
 func TestFirstChangedLine(t *testing.T) {
 	dir := t.TempDir()
