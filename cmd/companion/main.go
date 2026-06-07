@@ -294,16 +294,16 @@ func (s *shellState) titleMenus() []widget.Widget {
 	p := s.panels
 	return []widget.Widget{
 		menuBarBtn("文件", []widget.DropdownItem{
-			{Label: "新建项目", Disabled: true},
+			{Label: "新建项目", Command: "file.newProject"},
 			{Label: "新建文件", Shortcut: "Ctrl+N", Command: "file.new"},
 			{Label: "打开文件", Shortcut: "Ctrl+O", Command: "file.open"},
 			{Label: "打开文件夹", Shortcut: "Ctrl+K Ctrl+O", Command: "file.openFolder"},
 			{Label: "添加文件夹到工作区", Shortcut: "Ctrl+Shift+O", Command: "file.addFolder"},
 			{Label: "保存", Shortcut: "Ctrl+S", Command: "file.save", Divided: true},
-			{Label: "保存工作区", Disabled: true, Divided: true},
-			{Label: "管理工作区...", Disabled: true},
-			{Label: "关闭项目", Disabled: true, Divided: true},
-			{Label: "关闭工作区", Disabled: true},
+			{Label: "保存工作区", Command: "file.saveWorkspace", Divided: true},
+			{Label: "管理工作区...", Command: "file.manageWorkspace"},
+			{Label: "关闭项目", Command: "file.closeProject", Divided: true},
+			{Label: "关闭工作区", Command: "file.closeWorkspace"},
 			{Label: "退出", Shortcut: "Alt+F4", Command: "file.quit", Divided: true},
 		}, s.onFileMenu),
 		menuBarBtn("编辑", []widget.DropdownItem{
@@ -350,6 +350,8 @@ func (s *shellState) titleMenus() []widget.Widget {
 
 func (s *shellState) onFileMenu(cmd string) {
 	switch cmd {
+	case "file.newProject":
+		newProjectViaDialog()
 	case "file.new":
 		newEntryIn(currentRoot(), false)
 	case "file.open":
@@ -360,6 +362,14 @@ func (s *shellState) onFileMenu(cmd string) {
 		addFolderViaDialog()
 	case "file.save":
 		theEditor.save()
+	case "file.saveWorkspace":
+		saveWorkspaceMenu()
+	case "file.manageWorkspace":
+		showWorkspaceManager()
+	case "file.closeProject":
+		closeProjectMenu()
+	case "file.closeWorkspace":
+		closeWorkspaceMenu()
 	case "file.quit":
 		application.Close()
 	}

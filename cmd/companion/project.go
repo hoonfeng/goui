@@ -10,6 +10,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -126,4 +127,31 @@ func syncWorkspace(primaryChanged bool) {
 	theSettings.LastProject = currentRoot() // 兼容旧字段
 	settingsLoaded = true
 	saveSettings()
+}
+
+// clearWorkspace 关闭整个工作区：清空所有文件夹（回到运行目录兜底）。
+func clearWorkspace() {
+	workspaceFolders = nil
+	syncWorkspace(true)
+}
+
+// closeProject 关闭当前项目：移除主（首个）文件夹；多根时下一个成为主，单根则清空。
+func closeProject() {
+	if len(workspaceFolders) == 0 {
+		return
+	}
+	removeFolder(workspaceFolders[0])
+}
+
+// saveWorkspaceFile 把工作区文件夹列表存成可移植/可入库的 .pair/workspace.json（在主文件夹下）。
+func saveWorkspaceFile() error {
+	dir := filepath.Join(currentRoot(), ".pair")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(map[string]any{"folders": workspaceFolders}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "workspace.json"), data, 0o644)
 }
