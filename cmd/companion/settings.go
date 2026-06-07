@@ -259,7 +259,7 @@ func defaultModelFor(id string) string {
 
 var settingsTabs = []struct{ id, label string }{
 	{"model", "模型"}, {"agent", "Agent"}, {"instructions", "指令"}, {"appearance", "外观"},
-	{"terminal", "终端"}, {"mcp", "MCP"}, {"skills", "Skills"},
+	{"terminal", "终端"}, {"philosophy", "思想"}, {"mcp", "MCP"}, {"skills", "Skills"},
 }
 
 var theSettingsBody = &settingsBodyState{tab: "model"}
@@ -271,8 +271,9 @@ func (b *SettingsBody) CreateState() widget.State { return theSettingsBody }
 
 type settingsBodyState struct {
 	widget.BaseState
-	tab      string
-	resetTok int // 预设填充时 +1，强制输入框刷新显示新值
+	tab         string
+	resetTok    int    // 预设填充时 +1，强制输入框刷新显示新值
+	editingRole string // 思想 tab：当前展开编辑的子 Agent 角色 id（""=都收起）
 }
 
 // openSettings 打开设置模态对话框（帮助→打开设置 / Ctrl+,）。
@@ -355,6 +356,8 @@ func (b *settingsBodyState) content() widget.Widget {
 		return b.appearanceTab()
 	case "terminal":
 		return b.terminalTab()
+	case "philosophy":
+		return b.philosophyTab()
 	case "mcp":
 		return b.mcpTab()
 	}
@@ -502,6 +505,138 @@ func (b *settingsBodyState) terminalTab() widget.Widget {
 		}, func(v string) { editingSettings.TermEncoding = v; b.SetState() })),
 		widget.Div(widget.Style{Height: 6}),
 		label("运行中也可点终端输入行左侧的徽标临时切换 shell。Git Bash 需 git 的 bash 在 PATH；GBK 转码待接入。", ghTextMuted, 10),
+	)
+}
+
+// 思想 tab 数据（复刻参考：经文 + 7 子 Agent 角色）。
+var philoClassics = []struct{ id, name string }{
+	{"tao-te-ching", "道德经"}, {"huangdi-yinfu-jing", "黄帝阴符经"}, {"sunzi-bingfa", "孙子兵法"},
+}
+var philoRoles = []struct{ id, name string }{
+	{"planner", "规划 Agent"}, {"implementer", "执行 Agent"}, {"explorer", "探索 Agent"},
+	{"reviewer", "审核 Agent"}, {"verifier", "验证 Agent"}, {"debugger", "调试 Agent"}, {"general", "通用 Agent"},
+}
+
+func containsStr(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+func toggleStr(ss []string, s string) []string {
+	out := ss[:0:0]
+	found := false
+	for _, x := range ss {
+		if x == s {
+			found = true
+			continue
+		}
+		out = append(out, x)
+	}
+	if !found {
+		out = append(out, s)
+	}
+	return out
+}
+
+// philosophyTab 指导思想（复刻参考：主 Agent 经文开关 + 7 子 Agent 角色可折叠哲学编辑器）。
+func (b *settingsBodyState) philosophyTab() widget.Widget {
+	kids := []widget.Widget{
+		label("指导思想", ghTextMuted, 11),
+		settingsToggle("启用主 Agent 哲学指导", editingSettings.PhilosophyEnabled, func() {
+			editingSettings.PhilosophyEnabled = !editingSettings.PhilosophyEnabled
+			b.SetState()
+		}),
+	}
+	if editingSettings.PhilosophyEnabled { // 勾选才显经文选择
+		for _, c := range philoClassics {
+			cc := c
+			on := containsStr(editingSettings.PhilosophySelected, cc.id)
+			st, tcol, bg := "未选", ghTextMuted, *ghBgTertiary
+			if on {
+				st, tcol, bg = "已选", cWhite, *ghAccentEmph
+			}
+			kids = append(kids, widget.Div(
+				widget.Style{FlexDirection: "row", AlignItems: "center", Padding: types.EdgeInsetsLTRB(16, 8, 0, 0)},
+				expand(label("· "+cc.name, ghText, 12)),
+				&widget.Button{
+					SingleChildWidget: widget.SingleChildWidget{Child: label(st, tcol, 11)},
+					OnClick:           func() { editingSettings.PhilosophySelected = toggleStr(editingSettings.PhilosophySelected, cc.id); b.SetState() },
+					Color:             bg, MinHeight: 22, MinWidth: 44, Padding: types.EdgeInsetsLTRB(10, 0, 10, 0),
+				},
+			))
+		}
+	}
+	kids = append(kids,
+		widget.Div(widget.Style{Height: 14}),
+		label("子 Agent 哲学（每个角色独立配置）", ghTextMuted, 11),
+		widget.Div(widget.Style{Height: 4}),
+		label("点击角色名展开编辑其专属哲学内容。", ghTextMuted, 10),
+	)
+	for _, r := range philoRoles {
+		kids = append(kids, b.roleCard(r.id, r.name))
+	}
+	kids = append(kids,
+		widget.Div(widget.Style{Height: 6}),
+		label("说明：子 Agent 哲学独立于主 Agent；每个角色专属配置，修改后下次创建子 Agent 时生效。", ghTextMuted, 10),
+	)
+	return widget.Div(widget.Style{FlexDirection: "column", AlignItems: "stretch"}, kids)
+}
+
+// roleCard 子 Agent 角色可折叠哲学编辑器（点标题展开/收起；展开 textarea + 保存/恢复默认）。
+func (b *settingsBodyState) roleCard(id, name string) widget.Widget {
+	expanded := b.editingRole == id
+	hint := "编辑"
+	hbg := *ghBgSecondary
+	if expanded {
+		hint, hbg = "收起", *ghBgTertiary
+	}
+	header := &widget.Clickable{
+		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
+			widget.Style{Height: 30, FlexDirection: "row", AlignItems: "center", Padding: types.EdgeInsetsLTRB(8, 0, 8, 0), BackgroundColor: &hbg},
+			expand(label(name, ghText, 12)),
+			label(hint, ghTextMuted, 11),
+		)},
+		OnClick: func() {
+			if b.editingRole == id {
+				b.editingRole = ""
+			} else {
+				b.editingRole = id
+			}
+			b.SetState()
+		},
+		HoverColor: *ghBgTertiary,
+	}
+	if !expanded {
+		return widget.Div(widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(0, 4, 0, 0)}, header)
+	}
+	ta := settingsTextarea("该角色专属哲学内容（留空=用内置默认）…", editingSettings.PhilosophyRoles[id], 10, b.resetTok, func(t string) {
+		if editingSettings.PhilosophyRoles == nil {
+			editingSettings.PhilosophyRoles = map[string]string{}
+		}
+		editingSettings.PhilosophyRoles[id] = t
+	})
+	return widget.Div(widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(0, 4, 0, 0)},
+		header,
+		widget.Div(widget.Style{Height: 6}),
+		ta,
+		widget.Div(widget.Style{Height: 6}),
+		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"},
+			&widget.Button{
+				SingleChildWidget: widget.SingleChildWidget{Child: label("保存", cWhite, 11)},
+				OnClick:           func() { widget.MessageSuccess("已保存（保存设置即持久化）") },
+				Color:             *ghAccentEmph, MinHeight: 24, Padding: types.EdgeInsetsLTRB(12, 0, 12, 0),
+			},
+			widget.Div(widget.Style{Width: 8}),
+			&widget.Button{
+				SingleChildWidget: widget.SingleChildWidget{Child: label("恢复默认", ghText, 11)},
+				OnClick:           func() { delete(editingSettings.PhilosophyRoles, id); b.resetTok++; b.SetState() },
+				Color:             *ghBgTertiary, MinHeight: 24, Padding: types.EdgeInsetsLTRB(12, 0, 12, 0),
+			},
+		),
 	)
 }
 
