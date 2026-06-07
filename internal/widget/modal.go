@@ -22,7 +22,7 @@ func ShowDialog(d *Dialog) int {
 			userClose()
 		}
 	}
-	id = ShowOverlay(&OverlayEntry{Content: d, Fullscreen: true, Transition: "zoom"}) // 缩放+淡入，比纯淡入更平滑、不"跳"
+	id = ShowOverlay(&OverlayEntry{Content: d, Fullscreen: true}) // 无过渡：直接显示/关闭（按用户要求取消模态动画）
 	return id
 }
 
