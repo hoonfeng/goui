@@ -133,13 +133,18 @@ func TestControllerStartDelay(t *testing.T) {
 
 	base := time.Unix(300, 0)
 	Tick(base)
-	Tick(base.Add(30 * time.Millisecond)) // 仍在延迟内
+	Tick(base.Add(30 * time.Millisecond)) // 仍在延迟内（dt=30）
 	if !almost(c.Value(), 0) {
 		t.Errorf("during delay value=%.3f, want 0", c.Value())
 	}
-	Tick(base.Add(100 * time.Millisecond)) // 延迟 50ms + 50ms 进度 → t=0.5
-	if !almost(c.Value(), 0.5) {
-		t.Errorf("after delay value=%.3f, want 0.5", c.Value())
+	// 用 ≤maxFrameDt(50ms) 的步进推进（避免单帧钳制干扰）：
+	Tick(base.Add(70 * time.Millisecond)) // dt=40：消耗剩余 20ms 延迟 + 20ms 进度 → 0.2
+	if !almost(c.Value(), 0.2) {
+		t.Errorf("after delay value=%.3f, want 0.2", c.Value())
+	}
+	Tick(base.Add(110 * time.Millisecond)) // dt=40：再 40ms 进度 → 60ms → 0.6
+	if !almost(c.Value(), 0.6) {
+		t.Errorf("value=%.3f, want 0.6", c.Value())
 	}
 }
 

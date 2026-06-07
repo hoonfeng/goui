@@ -78,6 +78,10 @@ func (e *dragRowElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		p.Color = bg
 		cvs.DrawRect(pos.X, pos.Y, e.size.Width, e.size.Height, p)
 	}
+	if w.Active { // 拖拽中：内容半透明（"拎起来"的影子感）
+		cvs.SaveLayerAlpha(0.5)
+		defer cvs.Restore()
+	}
 	cy := pos.Y + e.size.Height/2
 	x := pos.X + pad
 	if w.LeadIcon != "" {

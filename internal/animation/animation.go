@@ -315,6 +315,11 @@ var (
 // register 把动画单元加入活跃集合，并通知宿主需要开始连续出帧。
 func register(t ticker) {
 	schedMu.Lock()
+	if len(activeSet) == 0 {
+		// 空闲→活跃：重置基准时间，使下次 Tick 的 dt≈0。否则首帧会吃掉整段空闲间隔
+		// （动画一上来就被推进甚至直接完成）→ 模态/拖拽"跳一下"。
+		haveLastTick = false
+	}
 	activeSet[t] = struct{}{}
 	cb := frameCallback
 	schedMu.Unlock()
@@ -352,6 +357,9 @@ func ResetScheduler() {
 	schedMu.Unlock()
 }
 
+// maxFrameDt 单帧最大时间增量：超出按它算，避免空闲/卡顿后动画一帧跳太多。
+const maxFrameDt = 50 * time.Millisecond
+
 // Tick 按当前时间推进所有活跃动画。宿主主循环每帧调用一次。
 // 首次调用仅记录基准时间，不产生时间增量。
 func Tick(now time.Time) {
@@ -366,6 +374,9 @@ func Tick(now time.Time) {
 	lastTick = now
 	if dt < 0 {
 		dt = 0
+	}
+	if dt > maxFrameDt { // 钳制单帧增量：卡顿/掉帧/GC 时不让动画一帧跳一大段（平滑降级）
+		dt = maxFrameDt
 	}
 	// 拷贝活跃集合，避免回调中修改集合引发并发问题
 	list := make([]ticker, 0, len(activeSet))

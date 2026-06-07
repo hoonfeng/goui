@@ -136,25 +136,27 @@ func (s *shellState) Build(ctx widget.BuildContext) widget.Widget {
 	if s.dragPanel == "" {
 		return shell
 	}
-	// 拖拽中：跟随光标的「拖影」（清晰的移动反馈），叠在最上层。
+	// 拖拽中：跟随光标的半透明「面板影子」（居中于光标，像把面板拿起来移动），叠在最上层。
 	return widget.NewStack(
 		shell,
-		widget.NewPositioned(s.dragGhost()).WithLeft(s.dragCX+12).WithTop(s.dragCY+10).WithZIndex(999),
+		widget.NewPositioned(s.dragGhost()).WithLeft(s.dragCX-105).WithTop(s.dragCY-70).WithZIndex(999),
 	)
 }
 
-// dragGhost 拖拽中跟随光标的小标牌：显示正在移动的面板名。
+// dragGhost 拖拽中跟随光标的半透明面板预览：面板形状 + 名称（不是小按钮）。
 func (s *shellState) dragGhost() widget.Widget {
 	name := map[string]string{"files": "文件面板", "chat": "对话面板", "terminal": "终端面板"}[s.dragPanel]
 	if name == "" {
 		name = s.dragPanel
 	}
 	return widget.Div(
-		widget.Style{Width: 132, Height: 30, BackgroundColor: ghAccentEmph, BorderRadius: 5,
-			Padding: types.EdgeInsetsLTRB(10, 0, 10, 0), FlexDirection: "row", AlignItems: "center"},
-		widget.Lucide("move", widget.IconSize(13), widget.IconColor(cWhite)),
-		widget.Div(widget.Style{Width: 6}),
-		label("移动 "+name, cWhite, 12),
+		widget.Style{Width: 210, Height: 140, BorderRadius: 8,
+			BackgroundColor: &types.Color{R: 88, G: 166, B: 255, A: 66}, // 半透明强调蓝（面板影）
+			BorderColor:     ghAccentEmph, BorderWidth: 2,
+			FlexDirection: "column", AlignItems: "center", JustifyContent: "center"},
+		widget.Lucide("move", widget.IconSize(26), widget.IconColor(cWhite)),
+		widget.Div(widget.Style{Height: 10}),
+		label("移动 "+name, cWhite, 13),
 	)
 }
 
