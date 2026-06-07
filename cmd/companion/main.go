@@ -655,6 +655,14 @@ func label(s string, c types.Color, size float64) widget.Widget {
 	return t
 }
 
+// label1 单行文本（过长自动省略号，不换行）——用于固定行高的列表行（提交历史等），避免换行撑破行高重叠。
+func label1(s string, c types.Color, size float64) widget.Widget {
+	t := widget.NewText(s, c)
+	t.Font.Size = size
+	t.MaxLines = 1
+	return t
+}
+
 // rightColW 右栏宽度：展开对话列表时额外加宽（列表在对话右侧腾出，对话主区不变）。
 func rightColW(base float64) float64 {
 	if theChatState.showThreads {

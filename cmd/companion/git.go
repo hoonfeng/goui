@@ -486,7 +486,7 @@ func (g *gitState) commitRow(c gitCommit) widget.Widget {
 		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
 			widget.Style{Height: 22, Padding: types.EdgeInsetsLTRB(16, 0, 6, 0), FlexDirection: "row", AlignItems: "center"},
 			widget.Div(widget.Style{Width: 48, FlexDirection: "row", AlignItems: "center"}, label(c.short, gitBlue, 10)),
-			expand(label(c.msg, cText, 11)),
+			expand(label1(c.msg, cText, 11)), // 单行省略，避免长消息换行撑破固定行高→重叠
 			widget.Div(widget.Style{Width: 6}),
 			label(c.date, cTextDim, 10),
 		)},

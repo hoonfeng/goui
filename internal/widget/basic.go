@@ -3,6 +3,7 @@ package widget
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/user/goui/internal/animation"
@@ -569,6 +570,36 @@ func (e *TextElement) splitLines(maxWidth float64) []string {
 	return result
 }
 
+// visibleLines 在 splitLines 基础上应用 MaxLines：超出则截到 MaxLines 行、末行加省略号。
+// MaxLines<=0 表示不限制。Layout 与 Paint 都用它，保证测高与渲染一致。
+func (e *TextElement) visibleLines(maxWidth float64) []string {
+	lines := e.splitLines(maxWidth)
+	ml := e.text.MaxLines
+	if ml <= 0 || len(lines) <= ml {
+		return lines
+	}
+	out := make([]string, ml)
+	copy(out, lines[:ml])
+	out[ml-1] = ellipsizeToWidth(out[ml-1], e.text.Font, maxWidth) // 末行省略号
+	return out
+}
+
+// ellipsizeToWidth 给单行末尾加省略号，必要时削减字符以容纳 … 不超过 maxWidth。
+func ellipsizeToWidth(s string, font canvas.Font, maxWidth float64) string {
+	const ell = "…"
+	if maxWidth <= 0 || canvas.MeasureTextGlobal(s+ell, font).Width <= maxWidth {
+		return s + ell
+	}
+	runes := []rune(strings.TrimRight(s, " \t"))
+	for len(runes) > 0 {
+		runes = runes[:len(runes)-1]
+		if canvas.MeasureTextGlobal(string(runes)+ell, font).Width <= maxWidth {
+			return string(runes) + ell
+		}
+	}
+	return ell
+}
+
 // splitByNewline 按换行符分割文本
 func splitByNewline(text string) []string {
 	var result []string
@@ -608,7 +639,7 @@ func (e *TextElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult {
 	// 计算实际行数：用与 Paint 完全相同的换行算法（splitLines），保证测高与渲染行数一致。
 	// 否则两套算法（Layout 按字符二分、Paint 按空格单词换行）对中英混排会算出不同行数，高度
 	// 算少就把多出来的行裁掉。
-	totalLines := len(e.splitLines(maxWidth))
+	totalLines := len(e.visibleLines(maxWidth)) // 受 MaxLines 限制后的行数（测高与渲染一致）
 	if totalLines < 1 {
 		totalLines = 1
 	}
@@ -652,8 +683,8 @@ func (e *TextElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		maxWidth = 800
 	}
 
-	// 计算换行
-	lines := e.splitLines(maxWidth)
+	// 计算换行（受 MaxLines 限制，末行省略号）
+	lines := e.visibleLines(maxWidth)
 	if len(lines) == 0 {
 		return
 	}
