@@ -340,13 +340,18 @@ func menuBarBtn(name string, items []widget.DropdownItem, onCmd func(string)) wi
 	return widget.NewDropdown(trigger, items...).WithOnCommand(onCmd).WithPlacement(widget.PlacementBottomStart)
 }
 
-// body 主体：左栏 | 中列（编辑区+底部）| 右栏。按面板状态增减，分隔条可拖动调尺寸（兼作分隔线）。
+// body 主体：左栏 | 中列（编辑区+底部）| 右栏。各区放哪个面板组由 Panels.*Panel 决定（可拖拽换位，
+// 一区一组、移动=互换；编辑器恒居中）。分隔条可拖动调尺寸（兼作分隔线）。
 func (s *shellState) body() widget.Widget {
 	p := s.panels
+	theChatState.inputAreaH = p.BottomH // 对话输入区高 = 底部区高，使两者底部对齐
 	cols := []widget.Widget{}
 	if p.Left {
 		cols = append(cols,
-			s.leftPanel(p.LeftW),
+			widget.Div(
+				widget.Style{Width: p.LeftW, BackgroundColor: cSide, FlexDirection: "column", AlignItems: "stretch"},
+				expand(s.zoneInner(state.ZoneLeft)),
+			),
 			vDivide(func(d float64) {
 				p.LeftW = state.Clamp(p.LeftW+d, state.MinSideW, state.MaxSideW)
 				s.SetState()
@@ -355,22 +360,25 @@ func (s *shellState) body() widget.Widget {
 	}
 	cols = append(cols, expand(s.midColumn()))
 	if p.Right {
-		theChatState.inputAreaH = p.BottomH // 输入区高 = 终端面板高，使两者底部等高对齐（拖动终端高度时跟随）
+		rw := p.RightW
+		if p.RightPanel == "chat" { // 对话在右栏：展开对话列表时整栏加宽
+			rw = rightColW(p.RightW)
+		}
 		cols = append(cols,
 			vDivide(func(d float64) {
 				p.RightW = state.Clamp(p.RightW-d, state.MinSideW, state.MaxSideW) // 右栏左侧条：右拖变窄
 				s.SetState()
 			}),
-			widget.Div( // 右栏：对话面板（GitHub 深色）。展开对话列表时右栏整体加宽，列表在对话右侧腾出，对话主区不变。
-				widget.Style{Width: rightColW(p.RightW), BackgroundColor: ghBgPrimary, FlexDirection: "column", AlignItems: "stretch"},
-				&ChatPanel{},
+			widget.Div(
+				widget.Style{Width: rw, BackgroundColor: ghBgPrimary, FlexDirection: "column", AlignItems: "stretch"},
+				expand(s.zoneInner(state.ZoneRight)),
 			),
 		)
 	}
 	return flexRow(cols...)
 }
 
-// midColumn 中间列：编辑区（撑满）+ 底部面板（按状态）。
+// midColumn 中间列：编辑区（撑满，恒居中）+ 底部区面板（按状态）。
 func (s *shellState) midColumn() widget.Widget {
 	p := s.panels
 	rows := []widget.Widget{expand(editorArea())}
@@ -380,10 +388,57 @@ func (s *shellState) midColumn() widget.Widget {
 				p.BottomH = state.Clamp(p.BottomH-d, state.MinBotH, state.MaxBotH) // 底栏上侧条：下拖变矮
 				s.SetState()
 			}),
-			bottomPanel("terminal", "终端", "terminal", p.BottomH),
+			widget.Div(
+				widget.Style{Height: p.BottomH, BackgroundColor: cSide, FlexDirection: "column", AlignItems: "stretch"},
+				expand(s.zoneInner(state.ZoneBottom)),
+			),
 		)
 	}
 	return flexCol(rows...)
+}
+
+// zoneInner 某区的内容：所放面板组 + 右上角「移动」按钮（点击循环换到下一区）。
+func (s *shellState) zoneInner(z state.Zone) widget.Widget {
+	id := s.panels.PanelIn(z)
+	return widget.NewStack(
+		s.panelGroup(id),
+		widget.NewPositioned(s.moveBtn(id)).WithTop(5).WithRight(7).WithZIndex(50),
+	)
+}
+
+// panelGroup 据面板组 id 返回内容（files=文件/搜索/Git 标签组；chat=对话；其余走 panelBody）。
+func (s *shellState) panelGroup(id string) widget.Widget {
+	switch id {
+	case "files":
+		return s.filesGroup()
+	case "chat":
+		return &ChatPanel{}
+	default:
+		return panelBody(id) // terminal 等
+	}
+}
+
+// moveBtn 面板右上角「移动」按钮：点击把该面板组换到下一区（左→右→底→左，与目标区互换）。
+func (s *shellState) moveBtn(panelID string) widget.Widget {
+	return &widget.Clickable{
+		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
+			widget.Style{Padding: types.EdgeInsets(3), BorderRadius: 3, BackgroundColor: cTitle},
+			widget.Lucide("move", widget.IconSize(13), widget.IconColor(cTextDim)),
+		)},
+		OnClick:    func() { s.panels.Move(panelID, nextZone(s.panels.ZoneOf(panelID))); s.SetState() },
+		HoverColor: *ftHover,
+	}
+}
+
+func nextZone(z state.Zone) state.Zone {
+	switch z {
+	case state.ZoneLeft:
+		return state.ZoneRight
+	case state.ZoneRight:
+		return state.ZoneBottom
+	default:
+		return state.ZoneLeft
+	}
 }
 
 // showLeft 显示左栏并切到 view；若已可见且正是该 view，则隐藏左栏（toggle）。
@@ -401,8 +456,8 @@ func (s *shellState) showLeft(view string) {
 	s.SetState()
 }
 
-// leftPanel 左栏：顶部视图标签条（文件 / Git）+ 当前视图内容（复刻参考左区多面板 tab 切换）。
-func (s *shellState) leftPanel(w float64) widget.Widget {
+// filesGroup 文件面板组：顶部视图标签条（文件/搜索/Git）+ 当前视图内容（宽/高由所在区包裹决定）。
+func (s *shellState) filesGroup() widget.Widget {
 	view := s.leftView
 	if view == "" {
 		view = "files"
@@ -415,8 +470,8 @@ func (s *shellState) leftPanel(w float64) widget.Widget {
 		content = &SearchPanel{}
 	}
 	return widget.Div(
-		widget.Style{Width: w, BackgroundColor: cSide, FlexDirection: "column", AlignItems: "stretch"},
-		widget.Div( // 标签条
+		widget.Style{BackgroundColor: cSide, FlexDirection: "column", AlignItems: "stretch"},
+		widget.Div( // 视图标签条（右端留空给「移动」按钮叠加）
 			widget.Style{Height: 32, BackgroundColor: cSide, BorderColor: cBorder, BorderWidth: 1,
 				FlexDirection: "row", AlignItems: "stretch"},
 			s.tabItem("files", "文件", "folder", view),
@@ -447,24 +502,6 @@ func (s *shellState) tabItem(id, title, icon, active string) widget.Widget {
 	}
 }
 
-// sidePanel 左/右停靠面板：固定宽，高度随父拉伸。
-func sidePanel(id, title, icon string, w float64) widget.Widget {
-	return widget.Div(
-		widget.Style{Width: w, BackgroundColor: cSide, FlexDirection: "column", AlignItems: "stretch"},
-		panelHeader(title, icon),
-		expand(panelBody(id)),
-	)
-}
-
-// bottomPanel 底部停靠面板：固定高，宽度随父拉伸。
-func bottomPanel(id, title, icon string, h float64) widget.Widget {
-	return widget.Div(
-		widget.Style{Height: h, BackgroundColor: cSide, FlexDirection: "column", AlignItems: "stretch"},
-		panelHeader(title, icon),
-		expand(panelBody(id)),
-	)
-}
-
 func panelBody(id string) widget.Widget {
 	switch id {
 	case "files":
@@ -475,18 +512,6 @@ func panelBody(id string) widget.Widget {
 	return widget.Div(
 		widget.Style{Padding: types.EdgeInsets(12)},
 		label("〔"+id+" 面板占位〕", cTextDim, 12),
-	)
-}
-
-// panelHeader 面板顶部标签条（图标+标题，垂直居中）。
-func panelHeader(title, icon string) widget.Widget {
-	return widget.Div(
-		// 显式行容器 + 垂直居中：否则 HBox 默认 CrossStart 会把内容顶到 30px 条的顶部。
-		widget.Style{Height: 30, Padding: types.EdgeInsetsLTRB(10, 0, 8, 0), BackgroundColor: cSide,
-			FlexDirection: "row", AlignItems: "center"},
-		widget.Lucide(icon, widget.IconSize(15), widget.IconColor(cTextDim)),
-		widget.Div(widget.Style{Width: 7}),
-		label(title, cText, 12),
 	)
 }
 

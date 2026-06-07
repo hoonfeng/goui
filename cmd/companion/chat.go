@@ -210,7 +210,7 @@ func (s *chatState) askCard() widget.Widget {
 // ─── 顶部布局工具栏（List 显隐侧栏，靠右）─────────────────
 func (s *chatState) layoutToolbar() widget.Widget {
 	return widget.Div(
-		widget.Style{Padding: types.EdgeInsetsLTRB(6, 3, 6, 3), BackgroundColor: ghBgPrimary,
+		widget.Style{Padding: types.EdgeInsetsLTRB(6, 3, 30, 3), BackgroundColor: ghBgPrimary, // 右留 30 给区角「移动」按钮
 			BorderColor: ghBorder, BorderWidth: 1, FlexDirection: "row", AlignItems: "center"},
 		expand(widget.Div(widget.Style{})), // 弹性占位把按钮顶到右侧（justify-end 单子项不撑空间）
 		toolBtn("list", s.showThreads, func() { s.showThreads = !s.showThreads; s.SetState() }),
