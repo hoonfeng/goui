@@ -384,6 +384,7 @@ func RegisterDefaultTools(r *Registry, root string) {
 	registerWebTools(r)          // web_fetch（联网读，见 web.go）
 	registerPlanTool(r)          // update_plan（任务清单，见 plan.go）
 	registerShellTools(r, root)  // run_background / read_output / kill_process（后台命令，见 shell.go）
+	registerMemoryTools(r, root) // memory_write/read/list/search（跨会话记忆，见 memory.go）
 }
 
 // ─── 辅助 ────────────────────────────────────────────────────
@@ -424,6 +425,21 @@ func argInt(args map[string]any, key string, def int) int {
 		return v
 	}
 	return def
+}
+
+// argStrSlice 取字符串数组参数（JSON 数组 unmarshal 为 []any）；非数组返回 nil。
+func argStrSlice(args map[string]any, key string) []string {
+	raw, ok := args[key].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // resolvePath 把相对/绝对路径解析为工作区内的绝对路径，越界则报错（安全底线）。

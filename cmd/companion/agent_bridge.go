@@ -629,6 +629,12 @@ func resolveApprovalUI(callID string, ok bool) {
 }
 
 func iconForTool(name string) string {
+	switch { // 前缀族：git_* / memory_* / mcp.*
+	case strings.HasPrefix(name, "git_"):
+		return "git-branch"
+	case strings.HasPrefix(name, "memory_"):
+		return "file-text"
+	}
 	switch name {
 	case "read_file", "write_file":
 		return "file-text"
@@ -638,8 +644,6 @@ func iconForTool(name string) string {
 		return "folder"
 	case "search_content", "search_files":
 		return "search"
-	case "git_status", "git_diff", "git_log":
-		return "git-branch"
 	case "run_command", "run_background", "read_output":
 		return "terminal"
 	case "kill_process":

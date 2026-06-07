@@ -40,6 +40,39 @@ func TestGitTools(t *testing.T) {
 	}
 }
 
+// TestGitWriteTools 真临时仓：git_add → git_commit → git_log 见提交 → git_branch 创建并切换。
+func TestGitWriteTools(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git 不在 PATH")
+	}
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "-C", dir, "init").CombinedOutput(); err != nil {
+		t.Skipf("git init 失败: %v (%s)", err, out)
+	}
+	_ = exec.Command("git", "-C", dir, "config", "user.email", "t@t.dev").Run()
+	_ = exec.Command("git", "-C", dir, "config", "user.name", "t").Run()
+	reg := NewRegistry()
+	RegisterDefaultTools(reg, dir)
+	ctx := context.Background()
+	mustWrite(t, dir, "a.txt", "hello")
+
+	if _, err := reg.Execute(ctx, "git_add", `{"files":["a.txt"]}`); err != nil {
+		t.Fatalf("git_add: %v", err)
+	}
+	if _, err := reg.Execute(ctx, "git_commit", `{"message":"init commit"}`); err != nil {
+		t.Fatalf("git_commit: %v", err)
+	}
+	if out, err := reg.Execute(ctx, "git_log", `{}`); err != nil || !strings.Contains(out, "init commit") {
+		t.Errorf("git_log 应含提交：%v\n%s", err, out)
+	}
+	if _, err := reg.Execute(ctx, "git_branch", `{"name":"dev","checkout":true}`); err != nil {
+		t.Fatalf("git_branch: %v", err)
+	}
+	if st, _ := reg.Execute(ctx, "git_status", `{}`); !strings.Contains(st, "dev") {
+		t.Errorf("应在 dev 分支：\n%s", st)
+	}
+}
+
 // 非 git 仓库目录：git 输出 fatal 信息，runGit 有输出即连同返回（不报 Go error），
 // git_status 不误标「工作区干净」。
 func TestGitNotARepo(t *testing.T) {
