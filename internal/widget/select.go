@@ -58,6 +58,52 @@ func (s *Select) WithOnChangedMulti(fn func([]string)) *Select { s.OnChangedMult
 func (s *Select) WithFilterable(b bool) *Select               { s.Filterable = b; return s }
 func (s *Select) WithClearable(b bool) *Select                { s.Clearable = b; return s }
 
+// 包级深色主题（同 SetMenuTheme/SetDialogTheme 思路；零值=默认 el 浅色，不破坏其他用户）。
+var (
+	selectThemeBG     types.Color
+	selectThemeText   types.Color
+	selectThemeBorder types.Color
+	selectThemeHover  types.Color
+	selectThemeMuted  types.Color
+)
+
+// SetSelectTheme 包级设置下拉选择器深色（bg 底 / text 文字 / border 边 / hover 悬停项底 / muted 占位与箭头）。
+// 零值恢复默认 el 浅色。一次调用统一所有 Select 深色（含弹出选项浮层）。
+func SetSelectTheme(bg, text, border, hover, muted types.Color) {
+	selectThemeBG, selectThemeText, selectThemeBorder, selectThemeHover, selectThemeMuted = bg, text, border, hover, muted
+}
+
+func selBG() types.Color {
+	if selectThemeBG.A > 0 {
+		return selectThemeBG
+	}
+	return elSurface()
+}
+func selText() types.Color {
+	if selectThemeText.A > 0 {
+		return selectThemeText
+	}
+	return elTextRegular()
+}
+func selBorder() types.Color {
+	if selectThemeBorder.A > 0 {
+		return selectThemeBorder
+	}
+	return elBorder()
+}
+func selHover() types.Color {
+	if selectThemeHover.A > 0 {
+		return selectThemeHover
+	}
+	return elFill()
+}
+func selMuted() types.Color {
+	if selectThemeMuted.A > 0 {
+		return selectThemeMuted
+	}
+	return elPlaceholder()
+}
+
 func (s *Select) height() float64 {
 	switch s.Size {
 	case "large":
@@ -174,7 +220,7 @@ func (e *SelectElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	s := e.sel
 	W, H := e.size.Width, e.size.Height
 
-	border := s.borderOr(elBorder())
+	border := s.borderOr(selBorder())
 	if (e.hovered || e.open) && !s.Disabled {
 		if e.open {
 			border = s.focusBorderOr(elPrimary()) // 展开≈聚焦激活态
@@ -183,7 +229,7 @@ func (e *SelectElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		}
 	}
 	bg := paint.DefaultPaint()
-	bg.Color = elSurface()
+	bg.Color = selBG()
 	if s.Disabled {
 		bg.Color = elFill()
 	}
@@ -209,10 +255,10 @@ func (e *SelectElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		}
 	} else {
 		label := s.selectedLabel()
-		textColor := elTextRegular()
+		textColor := selText()
 		if label == "" {
 			label = placeholder
-			textColor = elPlaceholder()
+			textColor = selMuted()
 		}
 		if s.Disabled {
 			textColor = elPlaceholder()
@@ -234,7 +280,7 @@ func (e *SelectElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		cvs.DrawLine(acx-4, acy+4, acx+4, acy-4, xp)
 	} else {
 		arrow := paint.DefaultStrokePaint()
-		arrow.Color = elPlaceholder()
+		arrow.Color = selMuted()
 		arrow.StrokeWidth = 1.4
 		if e.open {
 			cvs.DrawLine(acx-4, acy+2, acx, acy-2, arrow)
@@ -465,10 +511,10 @@ func (e *selectDropdownElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	shadow.Color = types.ColorFromRGBA(0, 0, 0, 22)
 	cvs.DrawRoundedRect(pos.X, pos.Y+2, W, H, 4, shadow)
 	bg := paint.DefaultPaint()
-	bg.Color = elSurface()
+	bg.Color = selBG()
 	cvs.DrawRoundedRect(pos.X, pos.Y, W, H, 4, bg)
 	bp := paint.DefaultStrokePaint()
-	bp.Color = elBorderLight()
+	bp.Color = selBorder()
 	bp.StrokeWidth = 1
 	cvs.DrawRoundedRect(pos.X+0.5, pos.Y+0.5, W-1, H-1, 4, bp)
 
@@ -494,16 +540,16 @@ func (e *selectDropdownElement) Paint(cvs canvas.Canvas, offset types.Point) {
 
 		if i == e.hoverIdx && !opt.Disabled {
 			hp := paint.DefaultPaint()
-			hp.Color = elFill()
+			hp.Color = selHover()
 			cvs.DrawRect(pos.X+1, iy, W-2, selectItemH, hp)
 		}
 
-		color := elTextRegular()
+		color := selText()
 		if selected {
 			color = elPrimary()
 		}
 		if opt.Disabled {
-			color = elPlaceholder()
+			color = selMuted()
 		}
 		f := font
 		if selected {

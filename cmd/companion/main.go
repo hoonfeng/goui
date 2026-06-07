@@ -62,6 +62,8 @@ func main() {
 	widget.SetMenuTheme(*ghBgTertiary, ghText, *ghAccentEmph, *ghBorder, ghTextMuted)
 	// 对话框/抽屉也统一深色（设置面板、新建/重命名输入框、确认框等），否则白底面板与深色内容冲突。
 	widget.SetDialogTheme(*ghBgSecondary, ghText, ghTextMuted)
+	// 下拉选择器（设置里的 服务商/模型 选择框）统一深色，否则 el 浅色白底与深色对话框冲突。
+	widget.SetSelectTheme(*ghBgPrimary, ghText, *ghBorder, *ghBgTertiary, ghTextMuted)
 
 	// Ctrl+S 保存当前编辑器标签（全局快捷键，优先于焦点 Widget）。VK_S=0x53。
 	application.ShortcutManager.Register(0x53, event.ModCtrl, func() { theEditor.save() }, "Ctrl+S 保存")

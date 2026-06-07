@@ -121,13 +121,38 @@ func settingsTemperature() float64 {
 	return -1
 }
 
-var providerPresets = []struct{ name, label, base, model string }{
-	{"deepseek", "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"},
-	{"openai", "OpenAI", "https://api.openai.com/v1", "gpt-4o"},
-	{"dashscope", "通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"},
-	{"moonshot", "Moonshot", "https://api.moonshot.cn/v1", "moonshot-v1-8k"},
-	{"openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "anthropic/claude-3.5-sonnet"},
-	{"custom", "自定义", "", ""},
+// providerPresets 服务商表：每个含 id/显示名/baseURL + 该服务商的模型列表（下拉选项）。
+// custom（自定义）无固定列表 → 模型改为手填输入框。
+var providerPresets = []struct {
+	name, label, base string
+	models            []string
+}{
+	{"deepseek", "DeepSeek", "https://api.deepseek.com/v1", []string{"deepseek-chat", "deepseek-reasoner"}},
+	{"openai", "OpenAI", "https://api.openai.com/v1", []string{"gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o3", "o4-mini"}},
+	{"dashscope", "通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", []string{"qwen-max", "qwen-plus", "qwen-turbo", "qwen2.5-coder-32b-instruct"}},
+	{"zhipu", "智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", []string{"glm-4-plus", "glm-4", "glm-4-air", "glm-4-flash"}},
+	{"moonshot", "Moonshot (Kimi)", "https://api.moonshot.cn/v1", []string{"moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"}},
+	{"openrouter", "OpenRouter", "https://openrouter.ai/api/v1", []string{"anthropic/claude-3.5-sonnet", "openai/gpt-4o", "google/gemini-pro-1.5", "deepseek/deepseek-chat"}},
+	{"custom", "自定义 (OpenAI 兼容)", "", nil},
+}
+
+// providerByID 取服务商表项（找不到→custom 兜底，即最后一项）。
+func providerByID(id string) (name, label, base string, models []string) {
+	for _, p := range providerPresets {
+		if p.name == id {
+			return p.name, p.label, p.base, p.models
+		}
+	}
+	last := providerPresets[len(providerPresets)-1]
+	return last.name, last.label, last.base, last.models
+}
+
+// defaultModelFor 服务商的默认模型（列表首个；custom 为空）。
+func defaultModelFor(id string) string {
+	if _, _, _, models := providerByID(id); len(models) > 0 {
+		return models[0]
+	}
+	return ""
 }
 
 // ─── 设置对话框 ────────────────────────────────────────────────
@@ -153,6 +178,15 @@ type settingsBodyState struct {
 // openSettings 打开设置模态对话框（帮助→打开设置 / Ctrl+,）。
 func openSettings() {
 	editingSettings = theSettings
+	if editingSettings.Provider == "" { // 默认值：首次未配置时给 DeepSeek + 默认模型 + 对应接口地址
+		editingSettings.Provider = "deepseek"
+	}
+	if editingSettings.BaseURL == "" {
+		_, _, editingSettings.BaseURL, _ = providerByID(editingSettings.Provider)
+	}
+	if editingSettings.Model == "" {
+		editingSettings.Model = defaultModelFor(editingSettings.Provider)
+	}
 	editingInstructions = loadInstructions()
 	theSettingsBody.tab = "model"
 	theSettingsBody.resetTok++
@@ -397,48 +431,54 @@ func settingsToggle(lbl string, on bool, toggle func()) widget.Widget {
 	)
 }
 
+const settingsCtlW = 536 // 设置控件（下拉/输入）宽度，对齐内容区（556 - 左右内边距 10）
+
 func (b *settingsBodyState) modelTab() widget.Widget {
-	// 预设按钮（点选填充 接口地址 + 模型）
-	presets := make([]widget.Widget, 0, len(providerPresets)*2)
-	for i, p := range providerPresets {
-		pp := p
-		if i > 0 {
-			presets = append(presets, widget.Div(widget.Style{Width: 6}))
-		}
-		on := editingSettings.Provider == pp.name
-		tc, bg := ghText, *ghBgTertiary
-		if on {
-			tc, bg = cWhite, *ghAccentEmph
-		}
-		presets = append(presets, &widget.Button{
-			SingleChildWidget: widget.SingleChildWidget{Child: label(pp.label, tc, 11)},
-			OnClick: func() {
-				editingSettings.Provider = pp.name
-				if pp.name != "custom" {
-					editingSettings.BaseURL, editingSettings.Model = pp.base, pp.model
-				}
-				b.resetTok++
-				b.SetState()
-			},
-			Color: bg, MinHeight: 24, Padding: types.EdgeInsetsLTRB(9, 0, 9, 0),
-		})
+	// 服务商下拉
+	provOpts := make([]widget.SelectOption, 0, len(providerPresets))
+	for _, p := range providerPresets {
+		provOpts = append(provOpts, widget.SelectOption{Label: p.label, Value: p.name})
 	}
+	provSel := widget.NewSelect(provOpts).WithValue(editingSettings.Provider).WithWidth(settingsCtlW).
+		WithOnChanged(func(v string) {
+			editingSettings.Provider = v
+			if v != "custom" { // 选服务商→自动填 baseURL + 默认模型（默认值）
+				_, _, base, _ := providerByID(v)
+				editingSettings.BaseURL = base
+				editingSettings.Model = defaultModelFor(v)
+			}
+			b.resetTok++
+			b.SetState()
+		})
+
+	// 模型：标准服务商=下拉（该商的模型列表）；custom=手填输入
+	var modelCtl widget.Widget
+	if editingSettings.Provider == "custom" {
+		modelCtl = settingsInput("自定义模型 ID", editingSettings.Model, b.resetTok, func(t string) { editingSettings.Model = t })
+	} else {
+		_, _, _, models := providerByID(editingSettings.Provider)
+		mOpts := make([]widget.SelectOption, 0, len(models))
+		for _, m := range models {
+			mOpts = append(mOpts, widget.SelectOption{Label: m, Value: m})
+		}
+		modelCtl = widget.NewSelect(mOpts).WithValue(editingSettings.Model).WithWidth(settingsCtlW).
+			WithOnChanged(func(v string) { editingSettings.Model = v; b.SetState() })
+	}
+
 	maxTokStr := ""
 	if editingSettings.MaxTokens > 0 {
 		maxTokStr = itoa(editingSettings.MaxTokens)
 	}
 	return widget.Div(
 		widget.Style{FlexDirection: "column", AlignItems: "stretch"},
-		label("服务商预设", ghTextMuted, 11),
-		widget.Div(widget.Style{Height: 6}),
-		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"}, presets),
+		settingsField("服务商 (Provider)", provSel),
+		settingsField("模型 (Model)", modelCtl),
 		settingsField("接口地址 (Base URL)", settingsInput("https://...", editingSettings.BaseURL, b.resetTok, func(t string) { editingSettings.BaseURL = t })),
 		settingsField("API Key", settingsInput("sk-...", editingSettings.APIKey, b.resetTok, func(t string) { editingSettings.APIKey = t })),
-		settingsField("模型 (Model)", settingsInput("deepseek-chat", editingSettings.Model, b.resetTok, func(t string) { editingSettings.Model = t })),
 		settingsField("温度 Temperature（留空=服务端默认，0~2）", settingsInput("留空=默认", editingSettings.Temperature, b.resetTok, func(t string) { editingSettings.Temperature = t })),
 		settingsField("最大输出 Token（0=不下发）", settingsInput("0", maxTokStr, b.resetTok, func(t string) { editingSettings.MaxTokens, _ = strconv.Atoi(strings.TrimSpace(t)) })),
 		widget.Div(widget.Style{Height: 4}),
-		label("提示：保存后对话即用此配置；留空则回退到环境变量（DEEPSEEK_API_KEY 等）。温度越高越发散。", ghTextMuted, 10),
+		label("提示：选服务商自动填接口地址与默认模型；留空 Key 则回退环境变量（DEEPSEEK_API_KEY 等）。", ghTextMuted, 10),
 	)
 }
 
