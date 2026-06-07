@@ -8,6 +8,21 @@ import (
 	"testing"
 )
 
+// TestProjectRules 工作区有 AGENTS.md → 作为项目约定拼进提示；无则空。
+func TestProjectRules(t *testing.T) {
+	dir := t.TempDir()
+	if got := ProjectRules(dir); got != "" {
+		t.Errorf("无约定文件应返回空，得 %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("# 规矩\n用 4 空格缩进"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := ProjectRules(dir)
+	if !strings.Contains(got, "用 4 空格缩进") || !strings.Contains(got, "AGENTS.md") {
+		t.Errorf("应含约定内容与来源，得 %q", got)
+	}
+}
+
 // 端到端 TAOR：MockProvider 脚本「第1轮调 read_file → 第2轮 [FINAL] 答复」，
 // 验证 think→act→observe(结果回灌)→think→final 全链路。
 func TestLoopToolThenFinal(t *testing.T) {

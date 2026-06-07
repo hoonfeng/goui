@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -169,4 +171,24 @@ func DefaultSystemPrompt(workspaceRoot string) string {
 		"先用 search_* 定位、read_file 细读，再动手；改动优先 edit_file/multi_edit（小而准），大改才 write_file。\n" +
 		"不确定的库用法/报错/最新信息，用 web_search / web_fetch 查证，别凭记忆臆测。\n" +
 		"写类操作（写/改/删/移文件、运行命令）在手动审核模式下需用户批准；若被拒绝，换思路或先解释原因，勿反复重试同一操作。"
+}
+
+// ProjectRules 读工作区根的项目约定文件（AGENTS.md / CLAUDE.md / .companion/rules.md），
+// 拼成系统提示附加段供 agent 遵守；都没有则返回空串。内容超长截断。
+func ProjectRules(root string) string {
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md", ".companion/rules.md"} {
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
+		if err != nil {
+			continue
+		}
+		s := strings.TrimSpace(string(data))
+		if s == "" {
+			continue
+		}
+		if len(s) > 8000 {
+			s = s[:8000] + "\n…（项目约定已截断）"
+		}
+		return "\n\n# 项目约定（来自 " + name + "，务必遵守）\n" + s
+	}
+	return ""
 }
