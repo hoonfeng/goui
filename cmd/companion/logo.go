@@ -303,3 +303,18 @@ func pairLogo() widget.Widget {
 	}
 	return widget.NewImage(pairLogoSrc).WithSize(20, 20).WithFit(widget.ImageFitContain)
 }
+
+var pairLogoBigSrc image.Image
+
+// pairLogoBig 大号 logo（欢迎页用，128px 光栅下采样到 64 显示）。
+func pairLogoBig() widget.Widget {
+	if pairLogoBigSrc == nil {
+		if data, err := os.ReadFile(assetPath("icon.svg")); err == nil {
+			pairLogoBigSrc = renderPairIcon(string(data), 128)
+		}
+	}
+	if pairLogoBigSrc == nil {
+		return widget.Div(widget.Style{Width: 64, Height: 64})
+	}
+	return widget.NewImage(pairLogoBigSrc).WithSize(64, 64).WithFit(widget.ImageFitContain)
+}

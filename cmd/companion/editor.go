@@ -188,12 +188,22 @@ func isBinaryExt(ext string) bool {
 }
 
 func (e *editorState) Build(ctx widget.BuildContext) widget.Widget {
-	if len(e.tabs) == 0 {
+	if len(e.tabs) == 0 { // 欢迎页（空状态）：居中大 logo + 标题 + 提示 + 打开文件夹
 		return widget.Div(
-			widget.Style{BackgroundColor: cEditor, Padding: types.EdgeInsets(24), FlexDirection: "column", AlignItems: "stretch"},
-			label("编辑区", cTextDim, 13),
-			widget.Div(widget.Style{Height: 8}),
-			label("〔点击左侧文件树的文件，在此打开〕", cTextDim, 12),
+			widget.Style{BackgroundColor: cEditor, FlexDirection: "column", AlignItems: "center", JustifyContent: "center"},
+			pairLogoBig(),
+			widget.Div(widget.Style{Height: 16}),
+			label("Pair CodeAgent", cText, 22),
+			widget.Div(widget.Style{Height: 6}),
+			label("AI 结对编程助手", cTextDim, 13),
+			widget.Div(widget.Style{Height: 22}),
+			label("点击左侧文件树打开文件，或", cTextDim, 12),
+			widget.Div(widget.Style{Height: 10}),
+			&widget.Button{
+				SingleChildWidget: widget.SingleChildWidget{Child: label("打开文件夹", cWhite, 12)},
+				OnClick:           openFolderViaDialog,
+				Color:             *ghAccentEmph, BorderRadius: 5, Padding: types.EdgeInsetsLTRB(14, 6, 14, 6),
+			},
 		)
 	}
 	t := e.activeTab()
