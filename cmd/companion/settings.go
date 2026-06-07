@@ -16,27 +16,57 @@ import (
 	"github.com/user/goui/internal/widget"
 )
 
-// appSettings 持久化设置（API Key 敏感，存用户配置目录，权限 0600，不入库）。
+// appSettings 持久化设置 —— 字段对齐参考 settings.ts（扁平存储；分组注释）。API Key 敏感，存安装目录 config/，不入库。
 type appSettings struct {
-	Provider    string `json:"provider"`
-	BaseURL     string `json:"baseURL"`
-	APIKey      string `json:"apiKey"`
-	Model       string `json:"model"`
-	Temperature string `json:"temperature"` // 字符串：留空=用服务端默认（区分于显式 0）
-	MaxTokens   int    `json:"maxTokens"`   // 0=不下发
-	LastProject      string   `json:"lastProject"`      // 兼容旧版单文件夹（迁移用）
-	WorkspaceFolders []string `json:"workspaceFolders"` // 工作区文件夹列表（VS Code 多根，启动时恢复）
-	// Agent 行为（默认值；对话输入区开关可临时覆盖本轮）
-	AutoReview    bool `json:"autoReview"`
-	Autonomous    bool `json:"autonomous"`
-	AutoCollapse  bool `json:"autoCollapse"`
-	MaxIterations int  `json:"maxIterations"`
+	// 主模型（model）
+	Provider         string `json:"provider"`
+	BaseURL          string `json:"baseURL"`
+	APIKey           string `json:"apiKey"`
+	Model            string `json:"model"` // 兼容旧单模型字段（迁移→ExecuteModel）
+	PlanModel        string `json:"planModel"`
+	ExecuteModel     string `json:"executeModel"`
+	ReviewModel      string `json:"reviewModel"`
+	Temperature      string `json:"temperature"`      // 字符串：留空=用服务端默认（区分显式 0）
+	ThinkingMode     string `json:"thinkingMode"`     // non-thinking / thinking / thinking_max
+	MaxTokens        int    `json:"maxTokens"`        // 0=不下发
+	ContextMaxTokens int    `json:"contextMaxTokens"` // 上下文窗口上限
+	// 压缩模型（compressModel）
+	CompressEnabled      bool   `json:"compressEnabled"`
+	CompressProvider     string `json:"compressProvider"`
+	CompressAPIKey       string `json:"compressApiKey"`
+	CompressBaseURL      string `json:"compressBaseURL"`
+	CompressModel        string `json:"compressModel"`
+	CompressThinkingMode string `json:"compressThinkingMode"`
+	// 工作区
+	LastProject      string   `json:"lastProject"`
+	WorkspaceFolders []string `json:"workspaceFolders"`
+	// Agent 行为
+	AutoReview         bool   `json:"autoReview"`
+	Autonomous         bool   `json:"autonomous"`
+	AutoCollapse       bool   `json:"autoCollapse"`
+	MaxIterations      int    `json:"maxIterations"`
+	MaxParallel        int    `json:"maxParallelAgents"`
+	ReviewRetries      int    `json:"maxReviewRetries"`
+	AutoIterate        bool   `json:"autoIterateOnRejection"`
+	RequireApproval    bool   `json:"requireHumanApprovalForDestructive"`
+	Benchmark          bool   `json:"enableBenchmarking"`
+	SystemInstructions string `json:"systemInstructions"`
+	SearxngURL         string `json:"searxngUrl"`
 	// 终端
-	DefaultShell string `json:"defaultShell"` // cmd / powershell / gitbash
+	DefaultShell string `json:"defaultShell"` // auto / cmd / powershell / git-bash
 	TermFontSize int    `json:"termFontSize"` // 0=默认 13
-	// 外观（深色固定；这里调编辑器）
-	EditorFontSize int  `json:"editorFontSize"` // 0=默认 14
-	HideMinimap    bool `json:"hideMinimap"`    // 反向存：零值=显示 minimap（默认）
+	TermEncoding string `json:"termEncoding"` // auto / utf-8 / gbk
+	// 外观
+	Theme          string `json:"theme"` // dark / light / high-contrast / solarized-light / dracula
+	FontFamily     string `json:"fontFamily"`
+	EditorFontSize int    `json:"editorFontSize"` // 0=默认 14
+	HideMinimap    bool   `json:"hideMinimap"`    // 反向存：零值=显示 minimap
+	// 思想（philosophy）
+	PhilosophyEnabled  bool              `json:"philosophyEnabled"`
+	PhilosophySelected []string          `json:"philosophySelected"`
+	PhilosophyRoles    map[string]string `json:"philosophyRoles"`
+	// MCP
+	AutoConnectMCP bool `json:"autoConnectMCP"`
 }
 
 var (
@@ -88,11 +118,33 @@ func configDir() string {
 
 func settingsPath() string { return filepath.Join(configDir(), "settings.json") }
 
+// defaultSettings 默认值 —— 对齐参考 settings.ts 的 DEFAULTS。
+func defaultSettings() appSettings {
+	return appSettings{
+		Provider: "deepseek", BaseURL: "https://api.deepseek.com/v1",
+		PlanModel: "deepseek-v4-pro", ExecuteModel: "deepseek-v4-flash", ReviewModel: "deepseek-v4-pro",
+		ThinkingMode: "thinking", MaxTokens: 131072, ContextMaxTokens: 1000000,
+		CompressEnabled: true, CompressProvider: "deepseek", CompressBaseURL: "https://api.deepseek.com/v1",
+		CompressModel: "deepseek-v4-flash", CompressThinkingMode: "non-thinking",
+		MaxIterations: 50, MaxParallel: 3, ReviewRetries: 3, AutoIterate: true, RequireApproval: true, Benchmark: true,
+		DefaultShell: "auto", TermEncoding: "auto",
+		Theme: "dark", FontFamily: "'Cascadia Code', 'Fira Code', Consolas, monospace",
+		PhilosophySelected: []string{"tao-te-ching", "huangdi-yinfu-jing", "sunzi-bingfa"},
+		AutoConnectMCP:     true,
+	}
+}
+
 func loadSettings() {
+	theSettings = defaultSettings() // 先铺默认值，再用存档覆盖（缺字段保留默认）
 	if data, err := os.ReadFile(settingsPath()); err == nil {
 		_ = json.Unmarshal(data, &theSettings)
 		settingsLoaded = true
-		applyAgentSettings() // 有存档 → 用存档的 Agent 默认覆盖 chat 内置默认
+	}
+	if theSettings.ExecuteModel == "" && theSettings.Model != "" { // 迁移旧单模型字段
+		theSettings.ExecuteModel = theSettings.Model
+	}
+	if settingsLoaded {
+		applyAgentSettings()
 	}
 }
 
@@ -104,9 +156,17 @@ func saveSettings() {
 	}
 }
 
+// mainModel 主循环用的模型：执行模型优先（参考的 executeModel），回退旧 Model 字段。
+func mainModel() string {
+	if theSettings.ExecuteModel != "" {
+		return theSettings.ExecuteModel
+	}
+	return theSettings.Model
+}
+
 // settingsConfigured 是否已在设置里配好可用 Provider。
 func settingsConfigured() bool {
-	return theSettings.APIKey != "" && theSettings.BaseURL != "" && theSettings.Model != ""
+	return theSettings.APIKey != "" && theSettings.BaseURL != "" && mainModel() != ""
 }
 
 // settingsTemperature 解析温度：留空/非法→-1（不下发，用服务端默认）。

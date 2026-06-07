@@ -490,7 +490,7 @@ func (b *agentBridge) toolPath(root, callID string) string {
 // buildProvider 选 Provider：优先用「设置」里配的（帮助→打开设置），否则回退环境变量。无 key 返回 nil。
 func buildProvider() agent.Provider {
 	if settingsConfigured() {
-		return &agent.OpenAIProvider{BaseURL: theSettings.BaseURL, APIKey: theSettings.APIKey, Model: theSettings.Model,
+		return &agent.OpenAIProvider{BaseURL: theSettings.BaseURL, APIKey: theSettings.APIKey, Model: mainModel(),
 			Temperature: settingsTemperature(), MaxTokens: theSettings.MaxTokens}
 	}
 	for _, c := range []struct{ env, base, model string }{
