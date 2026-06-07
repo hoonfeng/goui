@@ -54,10 +54,12 @@ func (m *MockProvider) Chat(ctx context.Context, messages []Message, tools []Too
 // OpenAIProvider OpenAI 兼容 /chat/completions 适配器。各家差异仅 BaseURL+Model+APIKey。
 // SSE 流式：逐行解析 data:，累积 content/reasoning_content 与 tool_calls（按 index 拼 arguments）。
 type OpenAIProvider struct {
-	BaseURL string // 如 https://api.deepseek.com/v1（不含 /chat/completions）
-	APIKey  string
-	Model   string
-	Client  *http.Client // nil → 默认 120s 超时
+	BaseURL     string // 如 https://api.deepseek.com/v1（不含 /chat/completions）
+	APIKey      string
+	Model       string
+	Temperature float64      // <0 = 不下发（用服务端默认）；>=0 下发
+	MaxTokens   int          // >0 时下发 max_tokens
+	Client      *http.Client // nil → 默认 120s 超时
 }
 
 func (p *OpenAIProvider) Name() string { return "openai:" + p.Model }
@@ -78,6 +80,12 @@ func (p *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 	}
 	if len(tools) > 0 {
 		body["tools"] = tools
+	}
+	if p.Temperature >= 0 {
+		body["temperature"] = p.Temperature
+	}
+	if p.MaxTokens > 0 {
+		body["max_tokens"] = p.MaxTokens
 	}
 	buf, err := json.Marshal(body)
 	if err != nil {

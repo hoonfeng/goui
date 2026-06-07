@@ -10,6 +10,37 @@ import (
 	"testing"
 )
 
+// TestOpenAIProviderParams 温度/maxTokens：>=0 / >0 时下发请求体；-1 / 0 时不下发（用服务端默认）。
+func TestOpenAIProviderParams(t *testing.T) {
+	sse := "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+	capture := func(prov *OpenAIProvider) map[string]any {
+		var body map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, sse)
+		}))
+		defer srv.Close()
+		prov.BaseURL = srv.URL
+		prov.Chat(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, nil, func(Chunk) {})
+		return body
+	}
+	b := capture(&OpenAIProvider{APIKey: "k", Model: "m", Temperature: 0.3, MaxTokens: 200})
+	if b["temperature"] != 0.3 {
+		t.Errorf("temperature = %v，期望 0.3", b["temperature"])
+	}
+	if b["max_tokens"] != float64(200) {
+		t.Errorf("max_tokens = %v，期望 200", b["max_tokens"])
+	}
+	b2 := capture(&OpenAIProvider{APIKey: "k", Model: "m", Temperature: -1, MaxTokens: 0})
+	if _, ok := b2["temperature"]; ok {
+		t.Error("Temperature<0 不应下发 temperature")
+	}
+	if _, ok := b2["max_tokens"]; ok {
+		t.Error("MaxTokens=0 不应下发 max_tokens")
+	}
+}
+
 // OpenAI 兼容 SSE 适配器：用 httptest 喂 canned 流（正文分 2 片 + 一个跨 2 片拼接的 tool_call + usage + [DONE]），
 // 验证 content 累积、tool_call arguments 按 index 拼接、流式 onChunk、请求体正确。全离线、无真网络。
 func TestOpenAIProviderSSE(t *testing.T) {

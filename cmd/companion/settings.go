@@ -18,10 +18,12 @@ import (
 
 // appSettings 持久化设置（API Key 敏感，存用户配置目录，权限 0600，不入库）。
 type appSettings struct {
-	Provider string `json:"provider"`
-	BaseURL  string `json:"baseURL"`
-	APIKey   string `json:"apiKey"`
-	Model    string `json:"model"`
+	Provider    string `json:"provider"`
+	BaseURL     string `json:"baseURL"`
+	APIKey      string `json:"apiKey"`
+	Model       string `json:"model"`
+	Temperature string `json:"temperature"` // 字符串：留空=用服务端默认（区分于显式 0）
+	MaxTokens   int    `json:"maxTokens"`   // 0=不下发
 	// Agent 行为（默认值；对话输入区开关可临时覆盖本轮）
 	AutoReview    bool `json:"autoReview"`
 	Autonomous    bool `json:"autonomous"`
@@ -99,6 +101,18 @@ func saveSettings() {
 // settingsConfigured 是否已在设置里配好可用 Provider。
 func settingsConfigured() bool {
 	return theSettings.APIKey != "" && theSettings.BaseURL != "" && theSettings.Model != ""
+}
+
+// settingsTemperature 解析温度：留空/非法→-1（不下发，用服务端默认）。
+func settingsTemperature() float64 {
+	s := strings.TrimSpace(theSettings.Temperature)
+	if s == "" {
+		return -1
+	}
+	if v, err := strconv.ParseFloat(s, 64); err == nil {
+		return v
+	}
+	return -1
 }
 
 var providerPresets = []struct{ name, label, base, model string }{
@@ -397,6 +411,10 @@ func (b *settingsBodyState) modelTab() widget.Widget {
 			Color: bg, MinHeight: 24, Padding: types.EdgeInsetsLTRB(9, 0, 9, 0),
 		})
 	}
+	maxTokStr := ""
+	if editingSettings.MaxTokens > 0 {
+		maxTokStr = itoa(editingSettings.MaxTokens)
+	}
 	return widget.Div(
 		widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(2, 0, 2, 0)},
 		label("服务商预设", ghTextMuted, 11),
@@ -405,8 +423,10 @@ func (b *settingsBodyState) modelTab() widget.Widget {
 		settingsField("接口地址 (Base URL)", settingsInput("https://...", editingSettings.BaseURL, b.resetTok, func(t string) { editingSettings.BaseURL = t })),
 		settingsField("API Key", settingsInput("sk-...", editingSettings.APIKey, b.resetTok, func(t string) { editingSettings.APIKey = t })),
 		settingsField("模型 (Model)", settingsInput("deepseek-chat", editingSettings.Model, b.resetTok, func(t string) { editingSettings.Model = t })),
+		settingsField("温度 Temperature（留空=服务端默认，0~2）", settingsInput("留空=默认", editingSettings.Temperature, b.resetTok, func(t string) { editingSettings.Temperature = t })),
+		settingsField("最大输出 Token（0=不下发）", settingsInput("0", maxTokStr, b.resetTok, func(t string) { editingSettings.MaxTokens, _ = strconv.Atoi(strings.TrimSpace(t)) })),
 		widget.Div(widget.Style{Height: 4}),
-		label("提示：保存后对话即用此配置；留空则回退到环境变量（DEEPSEEK_API_KEY 等）。", ghTextMuted, 10),
+		label("提示：保存后对话即用此配置；留空则回退到环境变量（DEEPSEEK_API_KEY 等）。温度越高越发散。", ghTextMuted, 10),
 	)
 }
 

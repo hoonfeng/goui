@@ -481,7 +481,8 @@ func (b *agentBridge) toolPath(root, callID string) string {
 // buildProvider 选 Provider：优先用「设置」里配的（帮助→打开设置），否则回退环境变量。无 key 返回 nil。
 func buildProvider() agent.Provider {
 	if settingsConfigured() {
-		return &agent.OpenAIProvider{BaseURL: theSettings.BaseURL, APIKey: theSettings.APIKey, Model: theSettings.Model}
+		return &agent.OpenAIProvider{BaseURL: theSettings.BaseURL, APIKey: theSettings.APIKey, Model: theSettings.Model,
+			Temperature: settingsTemperature(), MaxTokens: theSettings.MaxTokens}
 	}
 	for _, c := range []struct{ env, base, model string }{
 		{"DEEPSEEK_API_KEY", "https://api.deepseek.com/v1", "deepseek-chat"},
@@ -491,7 +492,7 @@ func buildProvider() agent.Provider {
 		{"OPENROUTER_API_KEY", "https://openrouter.ai/api/v1", "anthropic/claude-3.5-sonnet"},
 	} {
 		if k := os.Getenv(c.env); k != "" {
-			return &agent.OpenAIProvider{BaseURL: c.base, APIKey: k, Model: c.model}
+			return &agent.OpenAIProvider{BaseURL: c.base, APIKey: k, Model: c.model, Temperature: -1}
 		}
 	}
 	return nil
