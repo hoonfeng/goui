@@ -163,8 +163,8 @@ func (s *fileTreeState) Build(ctx widget.BuildContext) widget.Widget {
 	if len(s.roots) == 1 {
 		s.flatten(s.roots[0].children, 0, &rows) // 单文件夹：直接显示内容（名字在头部）
 	} else {
-		for _, r := range s.roots { // 多根：每个文件夹作可折叠根节（VS Code 风格）
-			rows = append(rows, s.rootRow(r))
+		for idx, r := range s.roots { // 多根：每个文件夹作可折叠根节（VS Code 风格；首个带主文件夹星标）
+			rows = append(rows, s.rootRow(r, idx))
 			if r.expanded {
 				s.flatten(r.children, 1, &rows)
 			}
@@ -265,21 +265,27 @@ func (s *fileTreeState) onClick(n *fileNode) {
 	s.SetState()
 }
 
-// rootRow 多根工作区里，每个文件夹的可折叠根行（大写名 + chevron；右键可从工作区移除）。
-func (s *fileTreeState) rootRow(r *fileNode) widget.Widget {
+// rootRow 多根工作区里，每个文件夹的可折叠根行（大写名 + chevron；idx==0 带金色星标=Agent 主文件夹；右键排序/移除）。
+func (s *fileTreeState) rootRow(r *fileNode, idx int) widget.Widget {
 	chev := "chevron-down"
 	if !r.expanded {
 		chev = "chevron-right"
+	}
+	kids := []widget.Widget{
+		widget.Lucide(chev, widget.IconSize(13), widget.IconColor(cTextDim)),
+		widget.Div(widget.Style{Width: 4}),
+		widget.Lucide("folder", widget.IconSize(14), widget.IconColor(cText)),
+		widget.Div(widget.Style{Width: 6}),
+		expand(label1(strings.ToUpper(r.name), cText, 11)),
+	}
+	if idx == 0 { // 主文件夹（Agent 首选）：金色星标
+		kids = append(kids, widget.Lucide("star", widget.IconSize(12), widget.IconColor(types.ColorFromRGB(229, 192, 123))))
 	}
 	row := &widget.Clickable{
 		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
 			widget.Style{Height: 26, FlexDirection: "row", AlignItems: "center",
 				Padding: types.EdgeInsetsLTRB(6, 0, 8, 0), BackgroundColor: cSide},
-			widget.Lucide(chev, widget.IconSize(13), widget.IconColor(cTextDim)),
-			widget.Div(widget.Style{Width: 4}),
-			widget.Lucide("folder", widget.IconSize(14), widget.IconColor(cText)),
-			widget.Div(widget.Style{Width: 6}),
-			expand(label1(strings.ToUpper(r.name), cText, 11)),
+			kids,
 		)},
 		OnClick:    func() { s.toggle(r) },
 		HoverColor: *ftHover,

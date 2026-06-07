@@ -58,17 +58,33 @@ func addFolderViaDialog() {
 	}
 }
 
-// workspaceRootMenu 多根工作区里，右键某个根文件夹的菜单：从工作区移除。
+// workspaceRootMenu 多根工作区里，右键某个根文件夹的菜单：排序（首个=Agent 主文件夹）+ 移除。
 func workspaceRootMenu(x, y float64, path string) {
-	showMenu(x, y, []widget.MenuItem{
+	i := indexOfFolder(path)
+	items := []widget.MenuItem{
 		mi("plus", "新建文件", func() { newEntryIn(path, false) }),
 		mi("folder-plus", "新建文件夹", func() { newEntryIn(path, true) }),
 		sep(),
 		mi("terminal", "在终端打开", func() { theTerminal.openDir(path) }),
 		mi("folder-open", "在资源管理器中显示", func() { revealInExplorer(path, true) }),
-		sep(),
-		miD("circle-x", "从工作区移除文件夹", func() { removeFolder(path) }),
-	})
+	}
+	// 排序（首个文件夹 = Agent 主文件夹）
+	var order []widget.MenuItem
+	if i > 0 {
+		order = append(order,
+			mi("star", "设为首选项目（Agent 主文件夹）", func() { setPrimaryFolder(path) }),
+			mi("chevron-up", "上移", func() { moveFolderUp(path) }),
+		)
+	}
+	if i >= 0 && i < len(workspaceFolders)-1 {
+		order = append(order, mi("chevron-down", "下移", func() { moveFolderDown(path) }))
+	}
+	if len(order) > 0 {
+		items = append(items, sep())
+		items = append(items, order...)
+	}
+	items = append(items, sep(), miD("circle-x", "从工作区移除文件夹", func() { removeFolder(path) }))
+	showMenu(x, y, items)
 }
 
 // mi 菜单项（icon=Lucide 图标名，空=无图标）。

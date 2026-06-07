@@ -81,6 +81,49 @@ func addFolder(p string) {
 	syncWorkspace(false) // 加文件夹不重置 agent 主根（主文件夹未变）
 }
 
+// indexOfFolder 返回文件夹在工作区中的下标（不在=-1）。
+func indexOfFolder(p string) int {
+	for i, f := range workspaceFolders {
+		if f == p {
+			return i
+		}
+	}
+	return -1
+}
+
+// moveFolderUp 把文件夹上移一位（排序；首个=Agent 主文件夹）。
+func moveFolderUp(p string) {
+	i := indexOfFolder(p)
+	if i <= 0 {
+		return
+	}
+	old := currentRoot()
+	workspaceFolders[i-1], workspaceFolders[i] = workspaceFolders[i], workspaceFolders[i-1]
+	syncWorkspace(old != currentRoot())
+}
+
+// moveFolderDown 把文件夹下移一位。
+func moveFolderDown(p string) {
+	i := indexOfFolder(p)
+	if i < 0 || i >= len(workspaceFolders)-1 {
+		return
+	}
+	old := currentRoot()
+	workspaceFolders[i], workspaceFolders[i+1] = workspaceFolders[i+1], workspaceFolders[i]
+	syncWorkspace(old != currentRoot())
+}
+
+// setPrimaryFolder 把文件夹移到首位，成为 Agent 主文件夹。
+func setPrimaryFolder(p string) {
+	i := indexOfFolder(p)
+	if i <= 0 {
+		return
+	}
+	workspaceFolders = append(workspaceFolders[:i], workspaceFolders[i+1:]...)
+	workspaceFolders = append([]string{p}, workspaceFolders...)
+	syncWorkspace(true) // 主文件夹变 → agent 重建
+}
+
 // removeFolder 从工作区移除某文件夹。
 func removeFolder(p string) {
 	out := workspaceFolders[:0:0]
