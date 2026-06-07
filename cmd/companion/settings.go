@@ -125,8 +125,8 @@ func defaultSettings() appSettings {
 		CompressEnabled: true, CompressProvider: "deepseek", CompressBaseURL: "https://api.deepseek.com/v1",
 		CompressModel: "deepseek-v4-flash", CompressThinkingMode: "non-thinking",
 		MaxIterations: 50, MaxParallel: 3, ReviewRetries: 3, AutoIterate: true, RequireApproval: true, Benchmark: true,
-		DefaultShell: "auto", TermEncoding: "auto",
-		Theme: "dark", FontFamily: "'Cascadia Code', 'Fira Code', Consolas, monospace",
+		DefaultShell: "auto", TermFontSize: 13, TermEncoding: "auto",
+		Theme: "dark", EditorFontSize: 14, FontFamily: "'Cascadia Code', 'Fira Code', Consolas, monospace",
 		PhilosophySelected: []string{"tao-te-ching", "huangdi-yinfu-jing", "sunzi-bingfa"},
 		AutoConnectMCP:     true,
 	}
@@ -433,72 +433,56 @@ func (b *settingsBodyState) instructionsTab() widget.Widget {
 	)
 }
 
-// appearanceTab 外观设置：主题（深色固定）+ 编辑器字号 + Minimap 开关。
+// appearanceTab 外观设置（复刻参考：主题/字号/字体/Minimap）。
 func (b *settingsBodyState) appearanceTab() widget.Widget {
-	fsz := ""
-	if editingSettings.EditorFontSize > 0 {
-		fsz = itoa(editingSettings.EditorFontSize)
-	}
 	return widget.Div(
 		widget.Style{FlexDirection: "column", AlignItems: "stretch"},
-		label("主题", ghTextMuted, 11),
-		widget.Div(widget.Style{Height: 6}),
-		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"},
-			&widget.Button{
-				SingleChildWidget: widget.SingleChildWidget{Child: label("深色", cWhite, 11)},
-				OnClick:           func() {}, Color: *ghAccentEmph, MinHeight: 24, Padding: types.EdgeInsetsLTRB(10, 0, 10, 0),
-			},
-			widget.Div(widget.Style{Width: 8}),
-			label("（目前固定深色主题）", ghTextMuted, 10),
-		),
-		settingsToggle("显示编辑器 Minimap（右侧缩略图）", !editingSettings.HideMinimap, func() {
+		label("外观", ghTextMuted, 11),
+		settingsField("主题", settingsSelect(editingSettings.Theme, []widget.SelectOption{
+			{Label: "暗色 (GitHub Dark)", Value: "dark"},
+			{Label: "亮色 (GitHub Light)", Value: "light"},
+			{Label: "高对比度", Value: "high-contrast"},
+			{Label: "暖阳 (Solarized Light)", Value: "solarized-light"},
+			{Label: "暗紫 (Dracula)", Value: "dracula"},
+		}, func(v string) { editingSettings.Theme = v; b.SetState() })),
+		settingsSlider("编辑器字号: "+itoa(editingSettings.EditorFontSize)+"px", float64(editingSettings.EditorFontSize), 11, 24, 1, func(v float64) {
+			editingSettings.EditorFontSize = int(v)
+			b.SetState()
+		}),
+		settingsField("字体", settingsInput("'Cascadia Code', 'Fira Code', Consolas, monospace", editingSettings.FontFamily, b.resetTok, func(t string) {
+			editingSettings.FontFamily = t
+		})),
+		settingsToggle("启用 Minimap", !editingSettings.HideMinimap, func() {
 			editingSettings.HideMinimap = !editingSettings.HideMinimap
 			b.SetState()
 		}),
-		settingsField("编辑器字号（默认 14）", settingsInput("14", fsz, b.resetTok, func(t string) {
-			editingSettings.EditorFontSize, _ = strconv.Atoi(strings.TrimSpace(t))
-		})),
 		widget.Div(widget.Style{Height: 6}),
-		label("提示：保存后重开文件生效（或切换标签）。", ghTextMuted, 10),
+		label("提示：目前仅深色主题真正生效（其它主题已存值，渲染待接入）；字号/Minimap 重开文件生效。", ghTextMuted, 10),
 	)
 }
 
-// terminalTab 终端设置：默认 shell（终端启动时用；运行中仍可点徽标临时切换）。
+// terminalTab 终端设置（复刻参考：默认 Shell/字号/编码）。
 func (b *settingsBodyState) terminalTab() widget.Widget {
-	cur := editingSettings.DefaultShell
-	if cur == "" {
-		cur = "cmd"
-	}
-	termFsz := ""
-	if editingSettings.TermFontSize > 0 {
-		termFsz = itoa(editingSettings.TermFontSize)
-	}
-	var btns []widget.Widget
-	for i, s := range []struct{ id, label string }{{"cmd", "CMD"}, {"powershell", "PowerShell"}, {"gitbash", "Git Bash"}} {
-		ss := s
-		if i > 0 {
-			btns = append(btns, widget.Div(widget.Style{Width: 6}))
-		}
-		tc, bg := ghText, *ghBgTertiary
-		if cur == ss.id {
-			tc, bg = cWhite, *ghAccentEmph
-		}
-		btns = append(btns, &widget.Button{
-			SingleChildWidget: widget.SingleChildWidget{Child: label(ss.label, tc, 11)},
-			OnClick:           func() { editingSettings.DefaultShell = ss.id; b.SetState() },
-			Color:             bg, MinHeight: 24, Padding: types.EdgeInsetsLTRB(10, 0, 10, 0),
-		})
-	}
 	return widget.Div(
 		widget.Style{FlexDirection: "column", AlignItems: "stretch"},
-		label("默认 Shell（终端启动时使用）", ghTextMuted, 11),
+		label("终端", ghTextMuted, 11),
+		settingsField("默认 Shell", settingsSelect(editingSettings.DefaultShell, []widget.SelectOption{
+			{Label: "自动检测", Value: "auto"},
+			{Label: "CMD", Value: "cmd"},
+			{Label: "PowerShell", Value: "powershell"},
+			{Label: "Git Bash", Value: "gitbash"},
+		}, func(v string) { editingSettings.DefaultShell = v; b.SetState() })),
+		settingsSlider("字号: "+itoa(editingSettings.TermFontSize)+"px", float64(editingSettings.TermFontSize), 10, 20, 1, func(v float64) {
+			editingSettings.TermFontSize = int(v)
+			b.SetState()
+		}),
+		settingsField("编码", settingsSelect(editingSettings.TermEncoding, []widget.SelectOption{
+			{Label: "自动检测", Value: "auto"},
+			{Label: "UTF-8", Value: "utf-8"},
+			{Label: "GBK", Value: "gbk"},
+		}, func(v string) { editingSettings.TermEncoding = v; b.SetState() })),
 		widget.Div(widget.Style{Height: 6}),
-		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"}, btns),
-		settingsField("终端字号（默认 13）", settingsInput("13", termFsz, b.resetTok, func(t string) {
-			editingSettings.TermFontSize, _ = strconv.Atoi(strings.TrimSpace(t))
-		})),
-		widget.Div(widget.Style{Height: 8}),
-		label("运行中也可点终端输入行左侧的徽标临时切换 shell。Git Bash 需 git 的 bash 在 PATH。", ghTextMuted, 10),
+		label("运行中也可点终端输入行左侧的徽标临时切换 shell。Git Bash 需 git 的 bash 在 PATH；GBK 转码待接入。", ghTextMuted, 10),
 	)
 }
 
@@ -689,11 +673,16 @@ func modelSelectFor(provider, value string, tok int, onChange func(string)) widg
 
 // thinkingSelect 思考模式下拉（关闭 / 开启推荐 / 最大推理深度）。
 func thinkingSelect(value string, onChange func(string)) widget.Widget {
-	return widget.NewSelect([]widget.SelectOption{
+	return settingsSelect(value, []widget.SelectOption{
 		{Label: "关闭", Value: "non-thinking"},
 		{Label: "开启（推荐）", Value: "thinking"},
 		{Label: "最大推理深度", Value: "thinking_max"},
-	}).WithValue(value).WithWidth(settingsCtlW).WithOnChanged(onChange)
+	}, onChange)
+}
+
+// settingsSelect 通用深色下拉（主题/shell/编码等用）。
+func settingsSelect(value string, opts []widget.SelectOption, onChange func(string)) widget.Widget {
+	return widget.NewSelect(opts).WithValue(value).WithWidth(settingsCtlW).WithOnChanged(onChange)
 }
 
 func parseTempOr(s string, def float64) float64 {
