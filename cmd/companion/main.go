@@ -42,6 +42,8 @@ const (
 	toggleW   = 40 // 标题栏面板开关按钮宽
 	winBtnW   = 46 // 标题栏窗口按钮宽
 	dividerW  = 4  // 停靠分隔条粗细（细、低调；hover/拖动显蓝）
+
+	appVersion = "v0.1.0" // 状态栏版本号
 )
 
 func main() {
@@ -614,6 +616,8 @@ func statusBar() widget.Widget {
 		statusItem("", model, cText),
 		widget.Div(widget.Style{Width: 16}),
 		statusItem("", "UTF-8", cText),
+		widget.Div(widget.Style{Width: 16}),
+		statusItem("", appVersion, cTextDim),
 	)
 }
 

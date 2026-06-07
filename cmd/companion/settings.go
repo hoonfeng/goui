@@ -29,6 +29,9 @@ type appSettings struct {
 	MaxIterations int  `json:"maxIterations"`
 	// 终端
 	DefaultShell string `json:"defaultShell"` // cmd / powershell / gitbash
+	// 外观（深色固定；这里调编辑器）
+	EditorFontSize int  `json:"editorFontSize"` // 0=默认 14
+	HideMinimap    bool `json:"hideMinimap"`    // 反向存：零值=显示 minimap（默认）
 }
 
 var (
@@ -187,6 +190,8 @@ func (b *settingsBodyState) content() widget.Widget {
 		return b.agentTab()
 	case "instructions":
 		return b.instructionsTab()
+	case "appearance":
+		return b.appearanceTab()
 	case "terminal":
 		return b.terminalTab()
 	case "mcp":
@@ -250,6 +255,36 @@ func (b *settingsBodyState) instructionsTab() widget.Widget {
 		ta,
 		widget.Div(widget.Style{Height: 4}),
 		label("保存到当前工作区 .companion/rules.md；与项目根的 AGENTS.md/CLAUDE.md 一并注入系统提示。", ghTextMuted, 10),
+	)
+}
+
+// appearanceTab 外观设置：主题（深色固定）+ 编辑器字号 + Minimap 开关。
+func (b *settingsBodyState) appearanceTab() widget.Widget {
+	fsz := ""
+	if editingSettings.EditorFontSize > 0 {
+		fsz = itoa(editingSettings.EditorFontSize)
+	}
+	return widget.Div(
+		widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(2, 0, 2, 0)},
+		label("主题", ghTextMuted, 11),
+		widget.Div(widget.Style{Height: 6}),
+		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"},
+			&widget.Button{
+				SingleChildWidget: widget.SingleChildWidget{Child: label("深色", cWhite, 11)},
+				OnClick:           func() {}, Color: *ghAccentEmph, MinHeight: 24, Padding: types.EdgeInsetsLTRB(10, 0, 10, 0),
+			},
+			widget.Div(widget.Style{Width: 8}),
+			label("（目前固定深色主题）", ghTextMuted, 10),
+		),
+		settingsToggle("显示编辑器 Minimap（右侧缩略图）", !editingSettings.HideMinimap, func() {
+			editingSettings.HideMinimap = !editingSettings.HideMinimap
+			b.SetState()
+		}),
+		settingsField("编辑器字号（默认 14）", settingsInput("14", fsz, b.resetTok, func(t string) {
+			editingSettings.EditorFontSize, _ = strconv.Atoi(strings.TrimSpace(t))
+		})),
+		widget.Div(widget.Style{Height: 6}),
+		label("提示：保存后重开文件生效（或切换标签）。", ghTextMuted, 10),
 	)
 }
 

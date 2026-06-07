@@ -55,6 +55,7 @@ type CodeEditor struct {
 	OnEnter     func()             // 按回车换行后触发（StructEditor 用作「回车自动声明变量」时机）
 	ExtraIdents func() []CECompletion // 外部补全源（StructEditor 注入：已声明变量/子程序/命令库）
 	Minimap     bool               // 是否显示右侧缩略图（默认开）
+	FontSize    float64            // 等宽字号（<=0 用默认 14）
 	Embedded bool // 嵌入模式：去掉独立白卡圆角/聚焦蓝框，无缝融入父容器（StructEditor 用）
 
 	LineNumberOffset int            // 行号起始偏移：显示行号 = 实际行 + 此值（StructEditor 全局连续行号用）
@@ -81,6 +82,7 @@ func NewCodeEditor(language, initial string) *CodeEditor {
 func (c *CodeEditor) WithSize(w, h float64) *CodeEditor     { c.Width, c.Height = w, h; return c }
 func (c *CodeEditor) OnChanged(fn func(string)) *CodeEditor { c.OnChange = fn; return c }
 func (c *CodeEditor) WithMinimap(on bool) *CodeEditor       { c.Minimap = on; return c }
+func (c *CodeEditor) WithFontSize(s float64) *CodeEditor    { c.FontSize = s; return c }
 
 // expandTabs 把制表符展开为 4 空格（字体无 tab 字形会渲染成豆腐块，统一在数据层换成空格）。
 func expandTabs(s string) string { return strings.ReplaceAll(s, "\t", "    ") }
@@ -118,6 +120,10 @@ func (c *CodeEditor) CreateElement() Element {
 	if len(lines) == 0 {
 		lines = []string{""}
 	}
+	fsz := c.FontSize
+	if fsz <= 0 {
+		fsz = 14
+	}
 	e := &CodeEditorElement{
 		BaseElement: BaseElement{widget: c},
 		ed:          c,
@@ -125,7 +131,7 @@ func (c *CodeEditor) CreateElement() Element {
 		lastReveal:  c.RevealToken,
 		lines:       lines,
 		lang:        ceLangFor(c.Language),
-		font:        canvas.Font{Family: "Consolas", Size: 14},
+		font:        canvas.Font{Family: "Consolas", Size: fsz},
 		folded:      map[int]bool{},
 		showMinimap: c.Minimap,
 	}

@@ -213,6 +213,8 @@ func (e *editorState) Build(ctx widget.BuildContext) widget.Widget {
 	ed.RevealLine = e.gotoLine
 	ed.RevealToken = e.reveal
 	ed.OnChange = e.onEdit
+	ed.FontSize = float64(theSettings.EditorFontSize) // 外观设置：字号（0=默认 14）
+	ed.Minimap = !theSettings.HideMinimap             // 外观设置：minimap（默认开）
 	return widget.Div(
 		widget.Style{BackgroundColor: cEditor, FlexDirection: "column", AlignItems: "stretch"},
 		e.tabBar(),
