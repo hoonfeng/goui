@@ -74,6 +74,7 @@ type chatState struct {
 	bridge       *agentBridge // Agent 引擎接入（懒建，见 agent_bridge.go）
 	plan         []planStep   // 当前 Agent 任务计划清单（update_plan 工具更新；置顶可视）
 	ask          *pendingAsk  // 当前 agent 的提问（ask_user）；非空时显问答卡、对话阻塞等回答
+	attachments  []string     // 待发送的附件文件路径（回形针添加，发送时随任务作上下文给 agent）
 
 	hoveredMsg  int    // 当前 hover 的消息索引（-1=无）→ 揭示该消息的操作按钮
 	showSearch  bool   // Ctrl+F 搜索栏开
@@ -504,14 +505,16 @@ func (s *chatState) inputArea() widget.Widget {
 	ta.FocusBorderColor = *ghBgPrimary
 	ta.HoverBorderColor = *ghBgPrimary
 
-	// 输入框包裹盒：圆角 8、1px 边框，含 textarea（撑满剩余高）+ 底部工具按钮栏。
-	box := widget.Div(
-		widget.Style{BackgroundColor: ghBgPrimary, BorderColor: ghBorder, BorderWidth: 1, BorderRadius: 8,
-			FlexDirection: "column", AlignItems: "stretch"},
+	// 输入框包裹盒：圆角 8、1px 边框，含 [附件 chips] + textarea（撑满剩余高）+ 底部工具按钮栏。
+	boxKids := []widget.Widget{}
+	if len(s.attachments) > 0 {
+		boxKids = append(boxKids, s.attachmentChips())
+	}
+	boxKids = append(boxKids,
 		expand(ta), // textarea 撑满包裹盒减按钮栏的剩余高度
 		widget.Div(
 			widget.Style{Padding: types.EdgeInsetsLTRB(8, 4, 8, 8), FlexDirection: "row", AlignItems: "center"},
-			iconGhost("paperclip", func() {}),
+			iconGhost("paperclip", s.addAttachment),
 			expand(widget.Div(widget.Style{})),
 			s.reviewToggle(),
 			widget.Div(widget.Style{Width: 5}),
@@ -521,6 +524,11 @@ func (s *chatState) inputArea() widget.Widget {
 			widget.Div(widget.Style{Width: 8}),
 			s.sendOrStop(),
 		),
+	)
+	box := widget.Div(
+		widget.Style{BackgroundColor: ghBgPrimary, BorderColor: ghBorder, BorderWidth: 1, BorderRadius: 8,
+			FlexDirection: "column", AlignItems: "stretch"},
+		boxKids,
 	)
 	// 输入区固定高 = 终端面板高（inputAreaH），与中列底部终端面板等高对齐；包裹盒撑满。
 	inputH := s.inputAreaH
@@ -532,6 +540,81 @@ func (s *chatState) inputArea() widget.Widget {
 			BackgroundColor: ghBgPrimary, FlexDirection: "column", AlignItems: "stretch"},
 		expand(box),
 	)
+}
+
+// addAttachment 回形针：选文件加入待发送附件。
+func (s *chatState) addAttachment() {
+	if widget.OpenFileDialog == nil {
+		return
+	}
+	if p := widget.OpenFileDialog("添加附件", "所有文件|*.*"); p != "" {
+		s.attachments = append(s.attachments, p)
+		s.SetState()
+	}
+}
+
+func (s *chatState) removeAttachment(i int) {
+	if i >= 0 && i < len(s.attachments) {
+		s.attachments = append(s.attachments[:i], s.attachments[i+1:]...)
+		s.SetState()
+	}
+}
+
+// attachmentChips 待发送附件 chips（文件名 + 移除按钮）。
+func (s *chatState) attachmentChips() widget.Widget {
+	var chips []widget.Widget
+	for i, p := range s.attachments {
+		idx := i
+		chips = append(chips,
+			widget.Div(
+				widget.Style{FlexDirection: "row", AlignItems: "center", BackgroundColor: ghBgTertiary,
+					BorderRadius: 4, Padding: types.EdgeInsetsLTRB(6, 3, 4, 3)},
+				widget.Lucide("file-text", widget.IconSize(11), widget.IconColor(ghTextMuted)),
+				widget.Div(widget.Style{Width: 4}),
+				label(filepath.Base(p), ghText, 11),
+				widget.Div(widget.Style{Width: 3}),
+				&widget.Clickable{
+					SingleChildWidget: widget.SingleChildWidget{Child: widget.Lucide("x", widget.IconSize(11), widget.IconColor(ghTextMuted))},
+					OnClick:           func() { s.removeAttachment(idx) },
+				},
+			),
+			widget.Div(widget.Style{Width: 6}),
+		)
+	}
+	return widget.Div(
+		widget.Style{FlexDirection: "row", AlignItems: "center", Padding: types.EdgeInsetsLTRB(8, 8, 8, 0)},
+		chips,
+	)
+}
+
+// attachmentContext 把附件内容拼成给 agent 的上下文段（各截 20k）。
+func attachmentContext(atts []string) string {
+	if len(atts) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n# 用户附件")
+	for _, p := range atts {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		content := string(data)
+		if len(content) > 20000 {
+			content = content[:20000] + "\n…（已截断）"
+		}
+		fmt.Fprintf(&b, "\n\n## %s\n%s", p, content)
+	}
+	return b.String()
+}
+
+// attachmentNames 附件文件名（逗号分隔，用于显示）。
+func attachmentNames(atts []string) string {
+	names := make([]string, len(atts))
+	for i, p := range atts {
+		names[i] = filepath.Base(p)
+	}
+	return strings.Join(names, ", ")
 }
 
 // ─── Ctrl+F 搜索 ──────────────────────────────────────────
@@ -707,14 +790,23 @@ func (s *chatState) send() {
 		return // 上一轮还在跑，不重复发
 	}
 	draft := s.store.Draft
-	if !s.store.Send(draft) { // 只加 user 消息（Send 内部 trim+空判）
+	atts := s.attachments
+	display := draft // 显示给用户的消息：正文 + 附件名（不含内容）
+	if len(atts) > 0 {
+		if display != "" {
+			display += "\n"
+		}
+		display += "[附件：" + attachmentNames(atts) + "]"
+	}
+	if !s.store.Send(display) { // 只加 user 消息（Send 内部 trim+空判）
 		return
 	}
-	s.sendSeq++ // 清输入框 + 滚到底
+	s.sendSeq++  // 清输入框 + 滚到底
 	s.plan = nil // 新任务 → 清旧计划清单（Agent 会用 update_plan 重列）
+	s.attachments = nil
 	if s.bridge == nil {
 		s.bridge = &agentBridge{cs: s}
 	}
-	s.bridge.start(draft) // 异步跑 Agent 引擎，流式回复（start 内 trim）
+	s.bridge.start(draft + attachmentContext(atts)) // agent 任务含附件内容（内容只给 LLM、不污染显示）
 	s.SetState()
 }
