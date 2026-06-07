@@ -278,41 +278,22 @@ func (s *fileTreeState) rootRow(r *fileNode, idx int) widget.Widget {
 	if !r.expanded {
 		chev = "chevron-right"
 	}
-	nameCol := cText
-	bg := *cSide
-	if r.path == s.dragPath { // 正在拖的这一行：高亮 + 文字稍暗
-		nameCol, bg = cTextDim, *ftHover
-	}
-	kids := []widget.Widget{
-		widget.Lucide(chev, widget.IconSize(13), widget.IconColor(cTextDim)),
-		widget.Div(widget.Style{Width: 4}),
-		widget.Lucide("folder", widget.IconSize(14), widget.IconColor(nameCol)),
-		widget.Div(widget.Style{Width: 6}),
-		expand(label1(strings.ToUpper(r.name), nameCol, 11)),
-	}
+	trail, trailCol := "", types.Color{}
 	if idx == 0 { // 主文件夹（Agent 首选）：金色星标
-		kids = append(kids,
-			widget.Lucide("star", widget.IconSize(12), widget.IconColor(types.ColorFromRGB(229, 192, 123))),
-			widget.Div(widget.Style{Width: 4}))
+		trail, trailCol = "star", types.ColorFromRGB(229, 192, 123)
 	}
-	kids = append(kids, &widget.DragGrip{ // 拖拽手柄：按住上下拖排序
-		Icon: "chevrons-up-down", Box: 20, IconSz: 13, Color: cTextDim,
-		OnStart: func(x, y float64) { s.onRootDragStart(r.path, y) },
-		OnMove:  func(x, y float64) { s.onRootDragMove(y) },
-		OnEnd:   func(x, y float64) { s.onRootDragEnd() },
-	})
-	row := &widget.Clickable{
-		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
-			widget.Style{Height: rootRowH, FlexDirection: "row", AlignItems: "center",
-				Padding: types.EdgeInsetsLTRB(6, 0, 4, 0), BackgroundColor: &bg},
-			kids,
-		)},
-		OnClick:    func() { s.toggle(r) },
-		HoverColor: *ftHover,
-	}
-	return &widget.ContextArea{
-		SingleChildWidget: widget.SingleChildWidget{Child: row},
-		OnContextMenu:     func(x, y float64) { workspaceRootMenu(x, y, r.path) },
+	// 整行可拖（DragRow 自绘叶子）：点行折叠/展开；长按或拖动→重排（首个=主文件夹）；右键菜单。
+	return &widget.DragRow{
+		LeadIcon: chev, LeadColor: cTextDim,
+		Icon: "folder", Text: strings.ToUpper(r.name), TextColor: cText, TextSize: 11,
+		TrailIcon: trail, TrailColor: trailCol,
+		Height: rootRowH, Indent: 6,
+		Bg: *cSide, HoverBg: *ftHover, Active: r.path == s.dragPath,
+		OnTap:       func() { s.toggle(r) },
+		OnContext:   func(x, y float64) { workspaceRootMenu(x, y, r.path) },
+		OnDragStart: func(y float64) { s.onRootDragStart(r.path, y) },
+		OnDragMove:  func(y float64) { s.onRootDragMove(y) },
+		OnDragEnd:   func() { s.onRootDragEnd() },
 	}
 }
 
