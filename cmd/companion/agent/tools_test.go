@@ -114,12 +114,38 @@ func TestMoveAndDeleteFile(t *testing.T) {
 	}
 }
 
+func TestMultiEdit(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "f.go"), []byte("aaa bbb ccc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRegistry()
+	RegisterDefaultTools(r, dir)
+	ctx := context.Background()
+
+	if _, err := r.Execute(ctx, "multi_edit", `{"path":"f.go","edits":[{"old_string":"aaa","new_string":"A"},{"old_string":"ccc","new_string":"C"}]}`); err != nil {
+		t.Fatalf("multi_edit: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "f.go"))
+	if string(got) != "A bbb C" {
+		t.Errorf("内容 = %q，期望 'A bbb C'", string(got))
+	}
+	// 非唯一 old_string 应报错且不写
+	os.WriteFile(filepath.Join(dir, "g.go"), []byte("x x"), 0o644)
+	if _, err := r.Execute(ctx, "multi_edit", `{"path":"g.go","edits":[{"old_string":"x","new_string":"y"}]}`); err == nil {
+		t.Error("不唯一 old_string 应报错")
+	}
+	if g, _ := os.ReadFile(filepath.Join(dir, "g.go")); string(g) != "x x" {
+		t.Errorf("失败时不应写入，g.go = %q", string(g))
+	}
+}
+
 func TestRegistryDefinitions(t *testing.T) {
 	reg := NewRegistry()
 	RegisterDefaultTools(reg, t.TempDir())
 	defs := reg.Definitions()
-	if len(defs) != 14 { // read/write/edit/list/run + move/delete + search×2 + git×3 + web_fetch + update_plan
-		t.Fatalf("应有 14 个工具定义，得 %d", len(defs))
+	if len(defs) != 19 { // 15 + run_background/read_output/kill_process + web_search
+		t.Fatalf("应有 19 个工具定义，得 %d", len(defs))
 	}
 	if defs[0].Type != "function" || defs[0].Function.Name != "read_file" {
 		t.Errorf("首个定义 = %+v", defs[0])

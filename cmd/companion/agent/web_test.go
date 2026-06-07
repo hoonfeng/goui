@@ -30,6 +30,36 @@ func TestWebFetch(t *testing.T) {
 	}
 }
 
+// TestWebSearch 离线（httptest 替换 ddgSearchURL）：解析 DDG HTML 结果 → 标题/真实链接/摘要。
+func TestWebSearch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `<div class="result">`+
+			`<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fgo.dev%2F&rut=x">Go 官网</a>`+
+			`<a class="result__snippet" href="#">Build simple &amp; reliable software</a></div>`)
+	}))
+	defer srv.Close()
+	old := ddgSearchURL
+	ddgSearchURL = srv.URL
+	defer func() { ddgSearchURL = old }()
+
+	out, err := webSearch(context.Background(), map[string]any{"query": "golang"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Go 官网") || !strings.Contains(out, "https://go.dev/") {
+		t.Errorf("标题/解码链接缺失：%q", out)
+	}
+	if !strings.Contains(out, "Build simple & reliable software") {
+		t.Errorf("摘要缺失：%q", out)
+	}
+}
+
+func TestWebSearchEmptyQuery(t *testing.T) {
+	if _, err := webSearch(context.Background(), map[string]any{"query": "  "}); err == nil {
+		t.Error("空 query 应报错")
+	}
+}
+
 // TestWebFetchRejectsNonHTTP 非 http(s) URL 应拒绝（挡 file:// 等）。
 func TestWebFetchRejectsNonHTTP(t *testing.T) {
 	if _, err := webFetch(context.Background(), map[string]any{"url": "file:///etc/passwd"}); err == nil {

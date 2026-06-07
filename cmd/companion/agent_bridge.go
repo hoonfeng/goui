@@ -629,7 +629,7 @@ func iconForTool(name string) string {
 	switch name {
 	case "read_file", "write_file":
 		return "file-text"
-	case "edit_file":
+	case "edit_file", "multi_edit":
 		return "file-code"
 	case "list_files":
 		return "folder"
@@ -637,9 +637,11 @@ func iconForTool(name string) string {
 		return "search"
 	case "git_status", "git_diff", "git_log":
 		return "git-branch"
-	case "run_command":
+	case "run_command", "run_background", "read_output":
 		return "terminal"
-	case "web_fetch":
+	case "kill_process":
+		return "circle-x"
+	case "web_fetch", "web_search":
 		return "globe"
 	case "move_file":
 		return "square-pen"

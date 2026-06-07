@@ -158,11 +158,15 @@ func DefaultSystemPrompt(workspaceRoot string) string {
 		"- 【完成标记】任务彻底完成时，在最终答复末尾输出 [FINAL]。\n\n" +
 		"# 工具\n" +
 		"- 浏览定位：search_files（按通配符找文件）、search_content（按正则搜内容，返回 路径:行号）、list_files。\n" +
-		"- 读改：read_file（改前必读）、edit_file（小处精确替换，首选）、write_file（整文件覆盖/新建）。\n" +
-		"- 运行：run_command（构建/测试/任意命令）。\n" +
-		"- 仓库（只读）：git_status / git_diff / git_log，查改动与历史。\n\n" +
+		"- 读改：read_file（改前必读）、edit_file（小处精确替换，首选）、multi_edit（一个文件多处替换、一次搞定）、write_file（整文件覆盖/新建）、move_file（移动/重命名）、delete_file（删文件）。\n" +
+		"- 运行：run_command（构建/测试等同步命令，会等结果）；长命令（dev server/watch）改用 run_background 后台启动，再 read_output 看输出、kill_process 停。\n" +
+		"- 联网：web_fetch（抓网页转纯文本）、web_search（搜索引擎查资料）——查文档/报错/库用法时用。\n" +
+		"- 仓库（只读）：git_status / git_diff / git_log，查改动与历史。\n" +
+		"- 规划：复杂任务先用 update_plan 列出步骤清单（每步 pending/in_progress/done），执行中更新状态——清单会展示给用户。\n\n" +
 		"# 工作方式\n" +
 		"按「思考 → 调用工具 → 观察结果 → 再决策」循环推进，直至完成。\n" +
-		"先用 search_* 定位、read_file 细读，再动手；改动优先 edit_file（小而准），大改才 write_file。\n" +
-		"写类操作（写文件/改文件/运行命令）在手动审核模式下需用户批准；若被拒绝，换思路或先解释原因，勿反复重试同一操作。"
+		"复杂或多步任务先用 update_plan 列计划，再逐步执行并更新状态。\n" +
+		"先用 search_* 定位、read_file 细读，再动手；改动优先 edit_file/multi_edit（小而准），大改才 write_file。\n" +
+		"不确定的库用法/报错/最新信息，用 web_search / web_fetch 查证，别凭记忆臆测。\n" +
+		"写类操作（写/改/删/移文件、运行命令）在手动审核模式下需用户批准；若被拒绝，换思路或先解释原因，勿反复重试同一操作。"
 }

@@ -165,6 +165,71 @@ func RegisterDefaultTools(r *Registry, root string) {
 	})
 
 	r.Register(&Tool{
+		Name: "multi_edit",
+		Description: "对一个文件按顺序应用多处替换（edits：每项 old_string→new_string；每个 old_string 须在「应用到该步时」的内容中恰好出现一次）。" +
+			"比多次 edit_file 高效、原子（任一步失败则全部不写）。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": props{
+				"path": strProp("文件路径"),
+				"edits": map[string]any{
+					"type":        "array",
+					"description": "按顺序应用的替换列表",
+					"items": map[string]any{
+						"type": "object",
+						"properties": props{
+							"old_string": strProp("待替换的原文（须唯一）"),
+							"new_string": strProp("替换后的新文"),
+						},
+						"required": []string{"old_string", "new_string"},
+					},
+				},
+			},
+			"required": []string{"path", "edits"},
+		},
+		RequiresApproval: true,
+		Handler: func(ctx context.Context, args map[string]any) (string, error) {
+			p, err := resolvePath(root, argStr(args, "path"))
+			if err != nil {
+				return "", err
+			}
+			data, err := os.ReadFile(p)
+			if err != nil {
+				return "", err
+			}
+			edits, _ := args["edits"].([]any)
+			if len(edits) == 0 {
+				return "", fmt.Errorf("edits 不能为空")
+			}
+			content := string(data)
+			for i, it := range edits {
+				m, ok := it.(map[string]any)
+				if !ok {
+					return "", fmt.Errorf("edits[%d] 格式错误", i)
+				}
+				old, _ := m["old_string"].(string)
+				neu, _ := m["new_string"].(string)
+				if old == "" {
+					return "", fmt.Errorf("edits[%d] old_string 不能为空", i)
+				}
+				switch strings.Count(content, old) {
+				case 0:
+					return "", fmt.Errorf("edits[%d] 未找到 old_string", i)
+				case 1:
+					// ok
+				default:
+					return "", fmt.Errorf("edits[%d] old_string 不唯一——请提供更长上下文", i)
+				}
+				content = strings.Replace(content, old, neu, 1)
+			}
+			if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("已对 %s 应用 %d 处编辑", argStr(args, "path"), len(edits)), nil
+		},
+	})
+
+	r.Register(&Tool{
 		Name:        "list_files",
 		Description: "列出目录下的文件/子目录（目录在前）。path 省略则列工作区根；pattern 可选（如 *.go）。",
 		Parameters:  objSchema(props{"path": strProp("目录路径（省略=工作区根）"), "pattern": strProp("可选通配符过滤，如 *.go")}, ),
@@ -298,6 +363,7 @@ func RegisterDefaultTools(r *Registry, root string) {
 	registerGitTools(r, root)    // git_status / git_diff / git_log（只读，见 git.go）
 	registerWebTools(r)          // web_fetch（联网读，见 web.go）
 	registerPlanTool(r)          // update_plan（任务清单，见 plan.go）
+	registerShellTools(r, root)  // run_background / read_output / kill_process（后台命令，见 shell.go）
 }
 
 // ─── 辅助 ────────────────────────────────────────────────────
