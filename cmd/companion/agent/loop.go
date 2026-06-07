@@ -175,22 +175,32 @@ func DefaultSystemPrompt(workspaceRoot string) string {
 		"写类操作（写/改/删/移文件、运行命令）在手动审核模式下需用户批准；若被拒绝，换思路或先解释原因，勿反复重试同一操作。"
 }
 
-// ProjectRules 读工作区根的项目约定文件（AGENTS.md / CLAUDE.md / .companion/rules.md），
-// 拼成系统提示附加段供 agent 遵守；都没有则返回空串。内容超长截断。
+// ProjectRules 读工作区根的项目约定，拼成系统提示附加段供 agent 遵守：
+// 项目文档（AGENTS.md / CLAUDE.md 取首个）+ 用户在设置「指令」tab 写的 .companion/rules.md（两者都注入）。
+// 都没有则返回空串。每份内容超长截断。
 func ProjectRules(root string) string {
-	for _, name := range []string{"AGENTS.md", "CLAUDE.md", ".companion/rules.md"} {
-		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
-		if err != nil {
-			continue
+	var b strings.Builder
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} { // 项目文档取首个
+		if s := readCapped(root, name); s != "" {
+			b.WriteString("\n\n# 项目约定（来自 " + name + "，务必遵守）\n" + s)
+			break
 		}
-		s := strings.TrimSpace(string(data))
-		if s == "" {
-			continue
-		}
-		if len(s) > 8000 {
-			s = s[:8000] + "\n…（项目约定已截断）"
-		}
-		return "\n\n# 项目约定（来自 " + name + "，务必遵守）\n" + s
 	}
-	return ""
+	if s := readCapped(root, ".companion/rules.md"); s != "" { // 设置「指令」tab 写的
+		b.WriteString("\n\n# 项目指令（务必遵守）\n" + s)
+	}
+	return b.String()
+}
+
+// readCapped 读 root/name 并裁到 8000 字；不存在/空返回 ""。
+func readCapped(root, name string) string {
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
+	if err != nil {
+		return ""
+	}
+	s := strings.TrimSpace(string(data))
+	if len(s) > 8000 {
+		s = s[:8000] + "\n…（已截断）"
+	}
+	return s
 }

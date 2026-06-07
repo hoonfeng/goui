@@ -30,10 +30,31 @@ type appSettings struct {
 }
 
 var (
-	theSettings     appSettings // 生效设置
-	editingSettings appSettings // 对话框编辑副本
-	settingsLoaded  bool        // settings.json 是否存在（决定启动时是否覆盖 chat 内置默认）
+	theSettings        appSettings // 生效设置
+	editingSettings    appSettings // 对话框编辑副本
+	settingsLoaded     bool        // settings.json 是否存在（决定启动时是否覆盖 chat 内置默认）
+	editingInstructions string     // 「指令」tab 编辑副本（存 <工作区>/.companion/rules.md）
 )
+
+// instructionsPath 工作区的项目指令文件（agent 经 ProjectRules 注入）。
+func instructionsPath() string {
+	root, err := os.Getwd()
+	if err != nil {
+		root = "."
+	}
+	return filepath.Join(root, ".companion", "rules.md")
+}
+
+func loadInstructions() string {
+	data, _ := os.ReadFile(instructionsPath())
+	return string(data)
+}
+
+func saveInstructions(s string) {
+	p := instructionsPath()
+	_ = os.MkdirAll(filepath.Dir(p), 0o755)
+	_ = os.WriteFile(p, []byte(s), 0o644)
+}
 
 // applyAgentSettings 把 Agent 设置应用到对话状态（启动时若有存档 + 保存后调用）。
 func applyAgentSettings() {
@@ -103,6 +124,7 @@ type settingsBodyState struct {
 // openSettings 打开设置模态对话框（帮助→打开设置 / Ctrl+,）。
 func openSettings() {
 	editingSettings = theSettings
+	editingInstructions = loadInstructions()
 	theSettingsBody.tab = "model"
 	theSettingsBody.resetTok++
 	var id int
@@ -111,6 +133,7 @@ func openSettings() {
 		widget.NewButton("保存", func() {
 			theSettings = editingSettings
 			saveSettings()
+			saveInstructions(editingInstructions) // 项目指令 → .companion/rules.md
 			settingsLoaded = true
 			applyAgentSettings() // 保存即应用 Agent 设置到对话
 			widget.HideOverlay(id)
@@ -157,6 +180,8 @@ func (b *settingsBodyState) content() widget.Widget {
 		return b.modelTab()
 	case "agent":
 		return b.agentTab()
+	case "instructions":
+		return b.instructionsTab()
 	case "mcp":
 		return b.mcpTab()
 	}
@@ -195,6 +220,29 @@ func (b *settingsBodyState) agentTab() widget.Widget {
 		})),
 		widget.Div(widget.Style{Height: 6}),
 		label("提示：这些是默认值，保存即生效；对话输入区的开关可临时切换本轮。", ghTextMuted, 10),
+	)
+}
+
+// instructionsTab 项目指令编辑（存 .companion/rules.md，agent 经 ProjectRules 注入系统提示）。
+func (b *settingsBodyState) instructionsTab() widget.Widget {
+	ta := widget.NewTextarea("写给 agent 的项目规则/约定，例如：代码风格、命名、禁忌、构建与测试命令、目录约定…", 9,
+		func(t string) { editingInstructions = t })
+	ta.Text = editingInstructions
+	ta.ResetToken = b.resetTok
+	ta.Color = ghText
+	ta.CursorColor = ghText
+	ta.PlaceholderColor = ghTextMuted
+	ta.BGColor = *ghBgPrimary
+	ta.BorderColor = *ghBorder
+	ta.FocusBorderColor = *ghAccent
+	ta.HoverBorderColor = *ghBorder
+	return widget.Div(
+		widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(2, 0, 2, 0)},
+		label("项目指令（agent 每轮读取并遵守）", ghTextMuted, 11),
+		widget.Div(widget.Style{Height: 6}),
+		ta,
+		widget.Div(widget.Style{Height: 4}),
+		label("保存到当前工作区 .companion/rules.md；与项目根的 AGENTS.md/CLAUDE.md 一并注入系统提示。", ghTextMuted, 10),
 	)
 }
 
