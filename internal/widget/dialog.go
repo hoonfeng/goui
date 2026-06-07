@@ -162,12 +162,18 @@ type DialogElement struct {
 	enterCtrl  *animation.Controller
 }
 
-// ensureEnter 首次绘制时启动面板进场缩放(配合 Overlay 的 fade，做出"蹦出来"的弹出感)。
+// ensureEnter 首次绘制时启动面板进场缩放。**仅当调用方设了 Transition 才播**——
+// 动画是调用方偏好；Transition=="" 时直接显示(panelScale=1)，不播任何进场动画。
+// 这样它与 Overlay 过渡受同一开关控制，不会"取消了过渡却还自顾自缩放/每次重布局又蹦一下"。
 func (e *DialogElement) ensureEnter() {
 	if e.enterInit {
 		return
 	}
 	e.enterInit = true
+	if e.dialog.Transition == "" { // 调用方未要动画 → 直接显示，无缩放进场
+		e.panelScale = 1
+		return
+	}
 	e.panelScale = 0.85
 	e.enterCtrl = animation.NewController(320*time.Millisecond, animation.EaseOutCubic)
 	e.enterCtrl.OnUpdate = func(v float64) {
