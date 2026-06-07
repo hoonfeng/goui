@@ -148,12 +148,15 @@ func (s *fileTreeState) Build(ctx widget.BuildContext) widget.Widget {
 	}
 }
 
-// toolbar 文件树工具条：当前仅刷新（新建文件/文件夹待接 Prompt 对话框）。
+// toolbar 文件树头部：工作区图标 + 工作区名（醒目，让用户看到打开的是哪个项目）+ 打开文件夹 + 刷新。
 func (s *fileTreeState) toolbar() widget.Widget {
 	return widget.Div(
-		widget.Style{Height: 28, Padding: types.EdgeInsetsLTRB(6, 0, 6, 0), FlexDirection: "row", AlignItems: "center",
+		widget.Style{Height: 30, Padding: types.EdgeInsetsLTRB(8, 0, 6, 0), FlexDirection: "row", AlignItems: "center",
 			BackgroundColor: cSide, BorderColor: cBorder, BorderWidth: 1},
-		expand(label(filepath.Base(s.rootPath), cTextDim, 11)),
+		widget.Lucide("folder", widget.IconSize(13), widget.IconColor(cText)),
+		widget.Div(widget.Style{Width: 6}),
+		expand(label1(filepath.Base(s.rootPath), cText, 12)), // 工作区名：醒目（亮色），过长省略
+		ftIconBtn("folder-open", openFolderViaDialog),        // 打开/切换工作区
 		ftIconBtn("refresh-cw", s.refresh),
 	)
 }

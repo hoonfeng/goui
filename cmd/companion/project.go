@@ -5,7 +5,10 @@
 
 package main
 
-import "os"
+import (
+	"os"
+	"path/filepath"
+)
 
 // projectRoot 当前项目根目录（打开的文件夹）；空=未设，用运行目录兜底。
 var projectRoot string
@@ -20,6 +23,11 @@ func currentRoot() string {
 		return "."
 	}
 	return wd
+}
+
+// projectName 当前工作区显示名（项目根的目录名）。
+func projectName() string {
+	return filepath.Base(currentRoot())
 }
 
 // loadLastProject 启动时从配置恢复上次项目（须是有效目录）。

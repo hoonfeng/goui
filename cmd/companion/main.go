@@ -171,9 +171,14 @@ func (s *shellState) titleBar() widget.Widget {
 		),
 	}
 	kids = append(kids, s.titleMenus()...)
-	// 居中标题：两侧等弹性占位夹住标题 → 居中（复刻参考的居中 "Pair CodeAgent"）；占位空白兼作拖动区。
+	// 居中标题：当前工作区名 + 应用名（让用户一眼看到打开的是哪个项目）；占位空白兼作拖动区。
 	kids = append(kids, expand(widget.Div(widget.Style{})))
-	kids = append(kids, label("Pair CodeAgent", cText, 12))
+	kids = append(kids,
+		widget.Lucide("folder", widget.IconSize(13), widget.IconColor(cText)),
+		widget.Div(widget.Style{Width: 6}),
+		label(projectName(), cText, 12),
+		label("  —  Pair CodeAgent", cTextDim, 12),
+	)
 	kids = append(kids, expand(widget.Div(widget.Style{})))
 	kids = append(kids,
 		s.toggleBtn("panel-left", state.ZoneLeft, p.Left),
