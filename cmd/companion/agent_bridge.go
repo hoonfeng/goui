@@ -103,6 +103,9 @@ func (b *agentBridge) start(task string) {
 		b.root = root
 		reg := agent.NewRegistry()
 		agent.RegisterDefaultTools(reg, root)
+		if cfgs := loadMCPConfigs(); len(cfgs) > 0 { // 外部 MCP 服务器（mcp.json；失败跳过、不阻断；首条消息时一次性连接）
+			agent.RegisterMCPServers(reg, cfgs)
+		}
 		b.loop = &agent.Loop{Provider: prov, Registry: reg, System: agent.DefaultSystemPrompt(root), MaxIterations: 30}
 	}
 	hist := b.history(th)
