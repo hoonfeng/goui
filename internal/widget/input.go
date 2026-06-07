@@ -68,6 +68,9 @@ type Input struct {
 	Placeholder      string
 	OnTextChanged    func(text string)
 	OnSubmit         func(text string)
+	// 单行输入按上/下键回调（终端命令历史用）：返回 (要回填的文本, 是否处理)；处理则替换输入内容。
+	OnArrowUp   func() (string, bool)
+	OnArrowDown func() (string, bool)
 	MaxLength        int
 	Font             canvas.Font
 	Color            types.Color
@@ -1341,11 +1344,29 @@ func (e *InputElement) HandleEvent(ev event.Event) bool {
 			if in.Multiline {
 				e.moveCursorVertical(-1)
 				changed = true
+			} else if in.OnArrowUp != nil {
+				if txt, ok := in.OnArrowUp(); ok {
+					e.SetText(txt)
+					e.cursorPos = len([]rune(txt))
+					if in.OnTextChanged != nil {
+						in.OnTextChanged(txt)
+					}
+					changed = true
+				}
 			}
 		case "ArrowDown":
 			if in.Multiline {
 				e.moveCursorVertical(1)
 				changed = true
+			} else if in.OnArrowDown != nil {
+				if txt, ok := in.OnArrowDown(); ok {
+					e.SetText(txt)
+					e.cursorPos = len([]rune(txt))
+					if in.OnTextChanged != nil {
+						in.OnTextChanged(txt)
+					}
+					changed = true
+				}
 			}
 		}
 		if changed {

@@ -87,6 +87,8 @@ type terminalState struct {
 	pending   []termRow             // 读协程写、帧泵 drain 取
 	running   bool                  // 有命令在跑
 	shell     string                // 当前 shell：cmd / powershell / gitbash
+	history   []string              // 命令历史（上下键回溯）
+	histIdx   int                   // 历史游标（== len 表示「当前空输入」）
 	cwd       string                // 当前工作目录（cd 改、仅 UI 线程）
 	draft     string                // 命令输入镜像（防 relayout 丢，仅 UI 线程）
 	inputTok  int                   // Input.ResetToken：执行后清空输入框
@@ -100,6 +102,9 @@ type TerminalPanel struct{ widget.StatefulWidget }
 func (t *TerminalPanel) CreateState() widget.State { return theTerminal }
 
 func (t *terminalState) Build(ctx widget.BuildContext) widget.Widget {
+	if theSettings.TermFontSize > 0 { // 外观/终端设置：字号（单终端，直接调共享 termFont）
+		termFont.Size = float64(theSettings.TermFontSize)
+	}
 	// ── 输出区：等宽彩色行，撑满，新输出滚到底 ──
 	t.mu.Lock()
 	rows := make([]widget.Widget, 0, len(t.lines)+1)
@@ -122,6 +127,8 @@ func (t *terminalState) Build(ctx widget.BuildContext) widget.Widget {
 	in.ResetToken = t.inputTok
 	in.OnTextChanged = func(s string) { t.draft = s }
 	in.OnSubmit = t.submit
+	in.OnArrowUp = t.historyPrev   // ↑ 回溯历史命令
+	in.OnArrowDown = t.historyNext // ↓ 前进历史命令
 	in.Placeholder = "输入命令，回车执行"
 	in.Font = termFont
 	in.Color = cText
@@ -178,6 +185,10 @@ func (t *terminalState) submit(line string) {
 		t.SetState()
 		return
 	}
+	if n := len(t.history); n == 0 || t.history[n-1] != line { // 入历史（去连续重复）
+		t.history = append(t.history, line)
+	}
+	t.histIdx = len(t.history) // 游标重置到「当前空输入」
 	t.appendLine(t.cwd+"> "+line, *cStatus) // 回显命令（含目录上下文，蓝）
 
 	// 内建命令：cls/clear 清屏、cd 改目录（exec 子进程的 cwd 不持久，必须在此处理）。
@@ -212,6 +223,33 @@ func (t *terminalState) submit(line string) {
 	go t.run(line)
 	t.startPump()
 	t.SetState()
+}
+
+// historyPrev ↑：回溯到更早的历史命令（Input.OnArrowUp 回调）。
+func (t *terminalState) historyPrev() (string, bool) {
+	if len(t.history) == 0 {
+		return "", false
+	}
+	if t.histIdx > 0 {
+		t.histIdx--
+	}
+	t.draft = t.history[t.histIdx]
+	return t.draft, true
+}
+
+// historyNext ↓：前进到更新的历史命令；越过最后一条→清空（Input.OnArrowDown 回调）。
+func (t *terminalState) historyNext() (string, bool) {
+	if len(t.history) == 0 {
+		return "", false
+	}
+	if t.histIdx < len(t.history)-1 {
+		t.histIdx++
+		t.draft = t.history[t.histIdx]
+		return t.draft, true
+	}
+	t.histIdx = len(t.history)
+	t.draft = ""
+	return "", true // 到底→清空输入
 }
 
 // cycleShell 循环切换 shell：cmd → powershell → gitbash → cmd。

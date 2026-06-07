@@ -29,6 +29,7 @@ type appSettings struct {
 	MaxIterations int  `json:"maxIterations"`
 	// 终端
 	DefaultShell string `json:"defaultShell"` // cmd / powershell / gitbash
+	TermFontSize int    `json:"termFontSize"` // 0=默认 13
 	// 外观（深色固定；这里调编辑器）
 	EditorFontSize int  `json:"editorFontSize"` // 0=默认 14
 	HideMinimap    bool `json:"hideMinimap"`    // 反向存：零值=显示 minimap（默认）
@@ -294,6 +295,10 @@ func (b *settingsBodyState) terminalTab() widget.Widget {
 	if cur == "" {
 		cur = "cmd"
 	}
+	termFsz := ""
+	if editingSettings.TermFontSize > 0 {
+		termFsz = itoa(editingSettings.TermFontSize)
+	}
 	var btns []widget.Widget
 	for i, s := range []struct{ id, label string }{{"cmd", "CMD"}, {"powershell", "PowerShell"}, {"gitbash", "Git Bash"}} {
 		ss := s
@@ -315,6 +320,9 @@ func (b *settingsBodyState) terminalTab() widget.Widget {
 		label("默认 Shell（终端启动时使用）", ghTextMuted, 11),
 		widget.Div(widget.Style{Height: 6}),
 		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"}, btns),
+		settingsField("终端字号（默认 13）", settingsInput("13", termFsz, b.resetTok, func(t string) {
+			editingSettings.TermFontSize, _ = strconv.Atoi(strings.TrimSpace(t))
+		})),
 		widget.Div(widget.Style{Height: 8}),
 		label("运行中也可点终端输入行左侧的徽标临时切换 shell。Git Bash 需 git 的 bash 在 PATH。", ghTextMuted, 10),
 	)

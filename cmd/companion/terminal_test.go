@@ -36,6 +36,24 @@ func TestShellCmd(t *testing.T) {
 	}
 }
 
+// TestTerminalHistory 上下键命令历史：prev 回溯（顶部停住）、next 前进（底部清空）、空历史不响应。
+func TestTerminalHistory(t *testing.T) {
+	ts := &terminalState{history: []string{"go build", "go test", "git status"}, histIdx: 3}
+	for _, want := range []string{"git status", "go test", "go build", "go build"} { // prev×4（最后到顶停住）
+		if c, ok := ts.historyPrev(); !ok || c != want {
+			t.Errorf("prev=%q,%v 期望 %q", c, ok, want)
+		}
+	}
+	for _, want := range []string{"go test", "git status", ""} { // next×3（最后到底清空）
+		if c, ok := ts.historyNext(); !ok || c != want {
+			t.Errorf("next=%q,%v 期望 %q", c, ok, want)
+		}
+	}
+	if _, ok := (&terminalState{}).historyPrev(); ok {
+		t.Error("空历史 prev 应返回 false")
+	}
+}
+
 // run() 是读协程体：cmd /C 执行 + 把 stdout 行写进 pending。直接同步调用验证 exec 闭环
 // （chcp 65001 + echo → 捕获到输出 + running 复位），不依赖 GUI。
 func TestTerminalRunCapturesOutput(t *testing.T) {
