@@ -30,6 +30,9 @@ type Dialog struct {
 	ShowClose bool        // 右上角 ✕(经 NewDialog 创建时默认 true)
 	MaskColor types.Color // 遮罩色(默认半透明黑 50%)
 	OnClose   func()      // 关闭回调(点 ✕ 或点遮罩)
+	// Transition 进出场过渡(由调用方按需设置)：""=无动画(直接显示) / "fade" / "zoom" / "slide-*"。
+	// 动画是调用方偏好，故放这里由外部创建对话框时指定，而非库内硬编码。
+	Transition string
 }
 
 // NewDialog 创建对话框(默认显示右上角关闭 ✕)。
@@ -55,6 +58,9 @@ func (d *Dialog) WithTop(t float64) *Dialog           { d.Top = t; return d }
 func (d *Dialog) Centered() *Dialog                   { d.Center = true; return d }
 func (d *Dialog) WithMaskColor(c types.Color) *Dialog { d.MaskColor = c; return d }
 func (d *Dialog) WithOnClose(fn func()) *Dialog       { d.OnClose = fn; return d }
+
+// WithTransition 设置进出场过渡(""=无动画)。动画是调用方的偏好，在此按需指定。
+func (d *Dialog) WithTransition(t string) *Dialog { d.Transition = t; return d }
 
 func (d *Dialog) CreateElement() Element {
 	return &DialogElement{BaseElement: BaseElement{widget: d}, dialog: d}
