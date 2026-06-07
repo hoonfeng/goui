@@ -115,9 +115,10 @@ func (f *FileTreePanel) CreateState() widget.State { return theFileTree }
 
 type fileTreeState struct {
 	widget.BaseState
-	root     *fileNode
-	rootPath string
-	active   string // 当前选中文件路径
+	root      *fileNode
+	rootPath  string
+	active    string              // 当前选中文件路径
+	gitStatus map[string]gitBadge // 绝对路径→git 状态徽标（每次 Build 重建）
 }
 
 func (s *fileTreeState) ensure() {
@@ -135,6 +136,8 @@ func (s *fileTreeState) ensure() {
 
 func (s *fileTreeState) Build(ctx widget.BuildContext) widget.Widget {
 	s.ensure()
+	theGit.ensure()                 // 触发 git 状态异步加载（完成后 git drain 会 refresh 文件树→徽标显现）
+	s.gitStatus = gitStatusMap()    // 据当前 git 状态标记改动文件（未加载则 nil）
 	rows := []widget.Widget{}
 	s.flatten(s.root.children, 0, &rows)
 	panel := widget.Div(
@@ -175,13 +178,21 @@ func (s *fileTreeState) row(n *fileNode, depth int) widget.Widget {
 		bg = *ftSelected
 	}
 	indent := 8.0 + float64(depth)*14
+	// git 状态：改动文件名变色 + 行尾状态符（M/?/+ 等）。
+	nameCol := cText
+	var trailing widget.Widget = widget.Div(widget.Style{})
+	if gb, ok := s.gitStatus[n.path]; ok {
+		nameCol = gb.col
+		trailing = label(gb.sym, gb.col, 11)
+	}
 	row := &widget.Clickable{
 		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
 			widget.Style{Height: 24, FlexDirection: "row", AlignItems: "center",
-				Padding: types.EdgeInsetsLTRB(indent, 0, 6, 0)},
+				Padding: types.EdgeInsetsLTRB(indent, 0, 8, 0)},
 			widget.Lucide(icon, widget.IconSize(15), widget.IconColor(iconCol)),
 			widget.Div(widget.Style{Width: 6}),
-			label(n.name, cText, 12.5),
+			expand(label(n.name, nameCol, 12.5)),
+			trailing,
 		)},
 		OnClick:    func() { s.onClick(n) },
 		Color:      bg,

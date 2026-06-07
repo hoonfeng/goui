@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,36 @@ import (
 	"github.com/user/goui/internal/types"
 	"github.com/user/goui/internal/widget"
 )
+
+// gitBadge 文件树用的 git 状态徽标（符号 + 颜色）。
+type gitBadge struct {
+	sym string
+	col types.Color
+}
+
+// gitStatusMap 工作区文件的 git 状态（绝对路径→徽标），供文件树标记改动。未加载/非仓库→nil。
+func gitStatusMap() map[string]gitBadge {
+	if theGit == nil || !theGit.isRepo || theGit.root == "" {
+		return nil
+	}
+	m := map[string]gitBadge{}
+	put := func(entries []gitEntry, staged bool) {
+		for _, e := range entries {
+			abs := filepath.Join(theGit.root, filepath.FromSlash(e.path))
+			st := e.y
+			if staged {
+				st = e.x
+			}
+			sym, col := badge(st, staged)
+			m[abs] = gitBadge{sym, col}
+		}
+	}
+	put(theGit.modified, false)
+	put(theGit.untracked, false)
+	put(theGit.conflict, false)
+	put(theGit.staged, true) // 已暂存优先显示
+	return m
+}
 
 // ─── Git 状态色（复刻参考调色板）──────────────────────────────
 var (
