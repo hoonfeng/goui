@@ -27,6 +27,8 @@ type appSettings struct {
 	Autonomous    bool `json:"autonomous"`
 	AutoCollapse  bool `json:"autoCollapse"`
 	MaxIterations int  `json:"maxIterations"`
+	// 终端
+	DefaultShell string `json:"defaultShell"` // cmd / powershell / gitbash
 }
 
 var (
@@ -56,11 +58,14 @@ func saveInstructions(s string) {
 	_ = os.WriteFile(p, []byte(s), 0o644)
 }
 
-// applyAgentSettings 把 Agent 设置应用到对话状态（启动时若有存档 + 保存后调用）。
+// applyAgentSettings 把持久化设置应用到运行态（启动时若有存档 + 保存后调用）。
 func applyAgentSettings() {
 	theChatState.autoReview = theSettings.AutoReview
 	theChatState.autonomous = theSettings.Autonomous
 	theChatState.autoCollapse = theSettings.AutoCollapse
+	if theSettings.DefaultShell != "" {
+		theTerminal.shell = theSettings.DefaultShell
+	}
 }
 
 func settingsPath() string {
@@ -182,6 +187,8 @@ func (b *settingsBodyState) content() widget.Widget {
 		return b.agentTab()
 	case "instructions":
 		return b.instructionsTab()
+	case "terminal":
+		return b.terminalTab()
 	case "mcp":
 		return b.mcpTab()
 	}
@@ -243,6 +250,38 @@ func (b *settingsBodyState) instructionsTab() widget.Widget {
 		ta,
 		widget.Div(widget.Style{Height: 4}),
 		label("保存到当前工作区 .companion/rules.md；与项目根的 AGENTS.md/CLAUDE.md 一并注入系统提示。", ghTextMuted, 10),
+	)
+}
+
+// terminalTab 终端设置：默认 shell（终端启动时用；运行中仍可点徽标临时切换）。
+func (b *settingsBodyState) terminalTab() widget.Widget {
+	cur := editingSettings.DefaultShell
+	if cur == "" {
+		cur = "cmd"
+	}
+	var btns []widget.Widget
+	for i, s := range []struct{ id, label string }{{"cmd", "CMD"}, {"powershell", "PowerShell"}, {"gitbash", "Git Bash"}} {
+		ss := s
+		if i > 0 {
+			btns = append(btns, widget.Div(widget.Style{Width: 6}))
+		}
+		tc, bg := ghText, *ghBgTertiary
+		if cur == ss.id {
+			tc, bg = cWhite, *ghAccentEmph
+		}
+		btns = append(btns, &widget.Button{
+			SingleChildWidget: widget.SingleChildWidget{Child: label(ss.label, tc, 11)},
+			OnClick:           func() { editingSettings.DefaultShell = ss.id; b.SetState() },
+			Color:             bg, MinHeight: 24, Padding: types.EdgeInsetsLTRB(10, 0, 10, 0),
+		})
+	}
+	return widget.Div(
+		widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(2, 0, 2, 0)},
+		label("默认 Shell（终端启动时使用）", ghTextMuted, 11),
+		widget.Div(widget.Style{Height: 6}),
+		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"}, btns),
+		widget.Div(widget.Style{Height: 8}),
+		label("运行中也可点终端输入行左侧的徽标临时切换 shell。Git Bash 需 git 的 bash 在 PATH。", ghTextMuted, 10),
 	)
 }
 
