@@ -121,23 +121,65 @@ func settingsTemperature() float64 {
 	return -1
 }
 
-// providerPresets 服务商表：每个含 id/显示名/baseURL + 该服务商的模型列表（下拉选项）。
-// custom（自定义）无固定列表 → 模型改为手填输入框。
+// modelEntry 一个模型选项（id + 显示名）。
+type modelEntry struct{ id, name string }
+
+// providerPresets 服务商表 —— 1:1 复刻参考源 src/agent/llm/gateway.ts 的 BUILTIN_PROVIDERS
+// （id/显示名/baseURL + 每商完整模型列表，原样照搬，勿改）。custom 无固定列表→模型手填。
 var providerPresets = []struct {
 	name, label, base string
-	models            []string
+	models            []modelEntry
 }{
-	{"deepseek", "DeepSeek", "https://api.deepseek.com/v1", []string{"deepseek-chat", "deepseek-reasoner"}},
-	{"openai", "OpenAI", "https://api.openai.com/v1", []string{"gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o3", "o4-mini"}},
-	{"dashscope", "通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", []string{"qwen-max", "qwen-plus", "qwen-turbo", "qwen2.5-coder-32b-instruct"}},
-	{"zhipu", "智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", []string{"glm-4-plus", "glm-4", "glm-4-air", "glm-4-flash"}},
-	{"moonshot", "Moonshot (Kimi)", "https://api.moonshot.cn/v1", []string{"moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"}},
-	{"openrouter", "OpenRouter", "https://openrouter.ai/api/v1", []string{"anthropic/claude-3.5-sonnet", "openai/gpt-4o", "google/gemini-pro-1.5", "deepseek/deepseek-chat"}},
-	{"custom", "自定义 (OpenAI 兼容)", "", nil},
+	{"deepseek", "DeepSeek", "https://api.deepseek.com/v1", []modelEntry{
+		{"deepseek-v4-flash", "DeepSeek V4 Flash"},
+		{"deepseek-v4-pro", "DeepSeek V4 Pro"},
+	}},
+	{"openai", "OpenAI", "https://api.openai.com/v1", []modelEntry{
+		{"gpt-5.5", "GPT-5.5（旗舰）"},
+		{"gpt-5.4", "GPT-5.4（编码）"},
+		{"gpt-5.4-mini", "GPT-5.4 Mini"},
+		{"gpt-4.1", "GPT-4.1"},
+		{"gpt-4.1-mini", "GPT-4.1 Mini"},
+		{"gpt-4o", "GPT-4o（多模态）"},
+		{"o3", "o3（推理）"},
+		{"o3-pro", "o3 Pro（深度推理）"},
+		{"o4-mini", "o4 Mini（快速推理）"},
+		{"o4-mini-deep-research", "o4 Mini Deep Research"},
+	}},
+	{"qwen", "通义千问 (Qwen)", "https://dashscope.aliyuncs.com/compatible-mode/v1", []modelEntry{
+		{"qwen3.7-max", "Qwen3.7 Max（旗舰）"},
+		{"qwen3.6-plus", "Qwen3.6 Plus（增强）"},
+		{"qwen3.6-flash", "Qwen3.6 Flash（快速）"},
+		{"qwen3-235b-a22b", "Qwen3 235B-A22B（MoE）"},
+		{"qwen-turbo-latest", "Qwen Turbo（轻量）"},
+	}},
+	{"zhipu", "智谱 (GLM)", "https://open.bigmodel.cn/api/paas/v4", []modelEntry{
+		{"glm-5.1", "GLM-5.1（旗舰）"},
+		{"glm-5", "GLM-5（高智能）"},
+		{"glm-5-turbo", "GLM-5 Turbo（增强）"},
+		{"glm-4.7", "GLM-4.7（高智能）"},
+		{"glm-4.7-flashx", "GLM-4.7 FlashX（高速）"},
+		{"glm-4.7-flash", "GLM-4.7 Flash（免费）"},
+		{"glm-4.6", "GLM-4.6（超强性能）"},
+		{"glm-4.5-air", "GLM-4.5 Air（高性价比）"},
+		{"glm-4-long", "GLM-4 Long（超长上下文）"},
+		{"glm-5v-turbo", "GLM-5V Turbo（多模态）"},
+	}},
+	{"moonshot", "月之暗面 (Kimi)", "https://api.moonshot.cn/v1", []modelEntry{
+		{"kimi-k2.6", "Kimi K2.6（旗舰）"},
+		{"kimi-k2.5", "Kimi K2.5（增强）"},
+		{"kimi-k2", "Kimi K2（基础）"},
+		{"kimi-k2-thinking", "Kimi K2 Thinking（深度思考）"},
+		{"moonshot-v1-128k", "Moonshot v1 128K"},
+	}},
+	{"ocat", "Ocat.run", "https://ocat.run/v1", []modelEntry{
+		{"ocat-default", "Ocat 模型（动态加载）"},
+	}},
+	{"custom", "自定义 (OpenAI 兼容)", "http://localhost:11434/v1", nil},
 }
 
 // providerByID 取服务商表项（找不到→custom 兜底，即最后一项）。
-func providerByID(id string) (name, label, base string, models []string) {
+func providerByID(id string) (name, label, base string, models []modelEntry) {
 	for _, p := range providerPresets {
 		if p.name == id {
 			return p.name, p.label, p.base, p.models
@@ -147,10 +189,10 @@ func providerByID(id string) (name, label, base string, models []string) {
 	return last.name, last.label, last.base, last.models
 }
 
-// defaultModelFor 服务商的默认模型（列表首个；custom 为空）。
+// defaultModelFor 服务商的默认模型 id（列表首个；custom 为空）。
 func defaultModelFor(id string) string {
 	if _, _, _, models := providerByID(id); len(models) > 0 {
-		return models[0]
+		return models[0].id
 	}
 	return ""
 }
@@ -457,9 +499,16 @@ func (b *settingsBodyState) modelTab() widget.Widget {
 		modelCtl = settingsInput("自定义模型 ID", editingSettings.Model, b.resetTok, func(t string) { editingSettings.Model = t })
 	} else {
 		_, _, _, models := providerByID(editingSettings.Provider)
-		mOpts := make([]widget.SelectOption, 0, len(models))
+		mOpts := make([]widget.SelectOption, 0, len(models)+1)
+		inList := false
 		for _, m := range models {
-			mOpts = append(mOpts, widget.SelectOption{Label: m, Value: m})
+			mOpts = append(mOpts, widget.SelectOption{Label: m.name, Value: m.id})
+			if m.id == editingSettings.Model {
+				inList = true
+			}
+		}
+		if editingSettings.Model != "" && !inList { // 保留已存的非列表内模型值（可见可选）
+			mOpts = append([]widget.SelectOption{{Label: editingSettings.Model, Value: editingSettings.Model}}, mOpts...)
 		}
 		modelCtl = widget.NewSelect(mOpts).WithValue(editingSettings.Model).WithWidth(settingsCtlW).
 			WithOnChanged(func(v string) { editingSettings.Model = v; b.SetState() })
