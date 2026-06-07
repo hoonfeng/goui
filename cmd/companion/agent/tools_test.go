@@ -114,6 +114,30 @@ func TestMoveAndDeleteFile(t *testing.T) {
 	}
 }
 
+func TestReadFileRange(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("L1\nL2\nL3\nL4\nL5"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRegistry()
+	RegisterDefaultTools(r, dir)
+	ctx := context.Background()
+
+	out, err := r.Execute(ctx, "read_file", `{"path":"f.txt","offset":2,"limit":2}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "L2\nL3" {
+		t.Errorf("片段 = %q，期望 'L2\\nL3'", out)
+	}
+	if full, _ := r.Execute(ctx, "read_file", `{"path":"f.txt"}`); full != "L1\nL2\nL3\nL4\nL5" {
+		t.Errorf("全文 = %q", full)
+	}
+	if _, err := r.Execute(ctx, "read_file", `{"path":"f.txt","offset":99}`); err == nil {
+		t.Error("offset 越界应报错")
+	}
+}
+
 func TestMultiEdit(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "f.go"), []byte("aaa bbb ccc"), 0o644); err != nil {

@@ -93,8 +93,8 @@ func (r *Registry) Execute(ctx context.Context, name, argsJSON string) (string, 
 func RegisterDefaultTools(r *Registry, root string) {
 	r.Register(&Tool{
 		Name:        "read_file",
-		Description: "读取文件全部内容。path 为工作区内的相对或绝对路径。",
-		Parameters:  objSchema(props{"path": strProp("文件路径（工作区内）")}, "path"),
+		Description: "读取文件内容。path 为工作区内路径。可选 offset(起始行,1 基)+limit(行数)读片段；省略则读全文(超 2000 行只返回前 2000 行并提示用 offset/limit 翻页)。",
+		Parameters:  objSchema(props{"path": strProp("文件路径（工作区内）"), "offset": intProp("可选：起始行号(1 基)"), "limit": intProp("可选：读取行数")}, "path"),
 		ReadOnly:    true,
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
 			p, err := resolvePath(root, argStr(args, "path"))
@@ -105,7 +105,27 @@ func RegisterDefaultTools(r *Registry, root string) {
 			if err != nil {
 				return "", err
 			}
-			return string(data), nil
+			offset, limit := argInt(args, "offset", 0), argInt(args, "limit", 0)
+			if offset <= 0 && limit <= 0 { // 全文（超 2000 行截断，提示翻页）
+				lines := strings.Split(string(data), "\n")
+				if len(lines) > 2000 {
+					return strings.Join(lines[:2000], "\n") + fmt.Sprintf("\n…[文件共 %d 行，仅显示前 2000；用 offset/limit 读其余]", len(lines)), nil
+				}
+				return string(data), nil
+			}
+			lines := strings.Split(string(data), "\n") // 片段
+			start := offset - 1
+			if start < 0 {
+				start = 0
+			}
+			if start >= len(lines) {
+				return "", fmt.Errorf("offset %d 超出文件行数 %d", offset, len(lines))
+			}
+			end := len(lines)
+			if limit > 0 && start+limit < end {
+				end = start + limit
+			}
+			return strings.Join(lines[start:end], "\n"), nil
 		},
 	})
 
