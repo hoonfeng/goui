@@ -125,10 +125,7 @@ func (s *fileTreeState) ensure() {
 	if s.root != nil {
 		return
 	}
-	wd, err := os.Getwd()
-	if err != nil {
-		wd = "."
-	}
+	wd := currentRoot() // 当前项目根（打开的文件夹或运行目录）
 	s.rootPath = wd
 	s.root = &fileNode{name: filepath.Base(wd), path: wd, isDir: true, expanded: true}
 	loadChildren(s.root)

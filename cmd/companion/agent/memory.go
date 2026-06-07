@@ -1,4 +1,4 @@
-// 记忆工具：memory_write/read/list/search —— 跨会话持久记忆，存在工作区 .companion/memory/ 下，
+// 记忆工具：memory_write/read/list/search —— 跨会话持久记忆，存在工作区 .pair/memory/ 下，
 // 每条一个 .md（frontmatter: name/type/description + 正文）。让 agent 记住项目知识/用户偏好/教训。
 
 package agent
@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-func memoryDir(root string) string { return filepath.Join(root, ".companion", "memory") }
+func memoryDir(root string) string { return filepath.Join(root, ".pair", "memory") }
 
 // safeMemName 把名字里的路径危险字符(/ \ : . 空格)换成 -，防路径穿越；保留 CJK 等其它字符。
 func safeMemName(s string) string {
@@ -63,7 +63,7 @@ func registerMemoryTools(r *Registry, root string) {
 
 	r.Register(&Tool{
 		Name: "memory_write",
-		Description: "写入/更新一条持久记忆（跨会话保留在 .companion/memory/）。name 唯一标识；" +
+		Description: "写入/更新一条持久记忆（跨会话保留在 .pair/memory/）。name 唯一标识；" +
 			"type: user(用户偏好)/feedback(纠正与确认的做法)/project(项目决策约束)/reference(外部资源指针)；description 一句话摘要；content 正文。",
 		Parameters: objSchema(props{
 			"name":        strProp("唯一名（短）"),

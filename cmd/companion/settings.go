@@ -24,6 +24,7 @@ type appSettings struct {
 	Model       string `json:"model"`
 	Temperature string `json:"temperature"` // 字符串：留空=用服务端默认（区分于显式 0）
 	MaxTokens   int    `json:"maxTokens"`   // 0=不下发
+	LastProject string `json:"lastProject"` // 上次打开的项目目录（启动时恢复）
 	// Agent 行为（默认值；对话输入区开关可临时覆盖本轮）
 	AutoReview    bool `json:"autoReview"`
 	Autonomous    bool `json:"autonomous"`
@@ -41,16 +42,12 @@ var (
 	theSettings        appSettings // 生效设置
 	editingSettings    appSettings // 对话框编辑副本
 	settingsLoaded     bool        // settings.json 是否存在（决定启动时是否覆盖 chat 内置默认）
-	editingInstructions string     // 「指令」tab 编辑副本（存 <工作区>/.companion/rules.md）
+	editingInstructions string     // 「指令」tab 编辑副本（存 <工作区>/.pair/rules.md）
 )
 
-// instructionsPath 工作区的项目指令文件（agent 经 ProjectRules 注入）。
+// instructionsPath 项目的指令文件（随项目存 .pair/，agent 经 ProjectRules 注入）。
 func instructionsPath() string {
-	root, err := os.Getwd()
-	if err != nil {
-		root = "."
-	}
-	return filepath.Join(root, ".companion", "rules.md")
+	return filepath.Join(currentRoot(), ".pair", "rules.md")
 }
 
 func loadInstructions() string {
@@ -74,13 +71,21 @@ func applyAgentSettings() {
 	}
 }
 
-func settingsPath() string {
-	dir, err := os.UserConfigDir()
-	if err != nil || dir == "" {
-		dir = "."
+// configDir 全局配置目录：安装目录（exe 所在）下的 config/ 子区。go run 的临时 exe→回退 cwd/config。
+// 全局配置（settings.json 含 key、mcp.json）放这里；项目级（rules.md、memory）随项目放 .pair/。
+func configDir() string {
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		low := strings.ToLower(dir)
+		if !strings.Contains(low, "go-build") && !strings.Contains(low, `\temp\`) && !strings.Contains(low, "/tmp/") {
+			return filepath.Join(dir, "config")
+		}
 	}
-	return filepath.Join(dir, "companion", "settings.json")
+	wd, _ := os.Getwd()
+	return filepath.Join(wd, "config")
 }
+
+func settingsPath() string { return filepath.Join(configDir(), "settings.json") }
 
 func loadSettings() {
 	if data, err := os.ReadFile(settingsPath()); err == nil {
@@ -156,7 +161,7 @@ func openSettings() {
 		widget.NewButton("保存", func() {
 			theSettings = editingSettings
 			saveSettings()
-			saveInstructions(editingInstructions) // 项目指令 → .companion/rules.md
+			saveInstructions(editingInstructions) // 项目指令 → .pair/rules.md
 			settingsLoaded = true
 			applyAgentSettings() // 保存即应用 Agent 设置到对话
 			widget.HideOverlay(id)
@@ -250,7 +255,7 @@ func (b *settingsBodyState) agentTab() widget.Widget {
 	)
 }
 
-// instructionsTab 项目指令编辑（存 .companion/rules.md，agent 经 ProjectRules 注入系统提示）。
+// instructionsTab 项目指令编辑（存 .pair/rules.md，agent 经 ProjectRules 注入系统提示）。
 func (b *settingsBodyState) instructionsTab() widget.Widget {
 	ta := widget.NewTextarea("写给 agent 的项目规则/约定，例如：代码风格、命名、禁忌、构建与测试命令、目录约定…", 9,
 		func(t string) { editingInstructions = t })
@@ -269,7 +274,7 @@ func (b *settingsBodyState) instructionsTab() widget.Widget {
 		widget.Div(widget.Style{Height: 6}),
 		ta,
 		widget.Div(widget.Style{Height: 4}),
-		label("保存到当前工作区 .companion/rules.md；与项目根的 AGENTS.md/CLAUDE.md 一并注入系统提示。", ghTextMuted, 10),
+		label("保存到当前工作区 .pair/rules.md；与项目根的 AGENTS.md/CLAUDE.md 一并注入系统提示。", ghTextMuted, 10),
 	)
 }
 

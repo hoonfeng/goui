@@ -176,7 +176,7 @@ func DefaultSystemPrompt(workspaceRoot string) string {
 }
 
 // ProjectRules 读工作区根的项目约定，拼成系统提示附加段供 agent 遵守：
-// 项目文档（AGENTS.md / CLAUDE.md 取首个）+ 用户在设置「指令」tab 写的 .companion/rules.md（两者都注入）。
+// 项目文档（AGENTS.md / CLAUDE.md 取首个）+ 用户在设置「指令」tab 写的 .pair/rules.md（两者都注入）。
 // 都没有则返回空串。每份内容超长截断。
 func ProjectRules(root string) string {
 	var b strings.Builder
@@ -186,7 +186,7 @@ func ProjectRules(root string) string {
 			break
 		}
 	}
-	if s := readCapped(root, ".companion/rules.md"); s != "" { // 设置「指令」tab 写的
+	if s := readCapped(root, ".pair/rules.md"); s != "" { // 设置「指令」tab 写的（随项目存 .pair/）
 		b.WriteString("\n\n# 项目指令（务必遵守）\n" + s)
 	}
 	return b.String()

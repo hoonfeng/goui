@@ -32,7 +32,7 @@ func openFileViaDialog() {
 	}
 }
 
-// openFolderViaDialog 弹系统“选择文件夹”对话框，选中即切换工作区根目录（文件树+终端 cwd）。
+// openFolderViaDialog 弹系统“选择文件夹”对话框，选中即作为项目根：文件树/终端/agent 统一切换 + 持久化。
 func openFolderViaDialog() {
 	if window.OpenFolderDialog == nil {
 		return
@@ -42,8 +42,7 @@ func openFolderViaDialog() {
 		h = application.Window.NativeHandle()
 	}
 	if p := window.OpenFolderDialog(h, "打开文件夹"); p != "" {
-		theFileTree.setRoot(p)
-		theTerminal.openDir(p)
+		setProject(p) // 切换项目根（文件树/终端/agent + 存 config.lastProject）
 	}
 }
 

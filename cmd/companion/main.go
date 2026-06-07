@@ -51,7 +51,8 @@ func main() {
 		renderShot()
 		return
 	}
-	loadSettings() // 读用户配置目录的设置（LLM 服务商/Key/模型），供 buildProvider 用
+	loadSettings()     // 读安装目录 config/ 的全局设置（LLM 服务商/Key/模型 + 上次项目），供 buildProvider 用
+	loadLastProject()  // 恢复上次打开的项目根（文件树/终端/agent 统一用它）
 
 	application = app.NewApplication()
 	application.SetRootWidget(&Shell{})

@@ -75,6 +75,15 @@ func (b *agentBridge) stop() {
 	}
 }
 
+// resetForNewRoot 项目根切换后清掉已建 loop，下条消息用新根重建（运行中则不动，避免打断）。
+func (b *agentBridge) resetForNewRoot() {
+	if b.isRunning() {
+		return
+	}
+	b.loop = nil
+	b.root = ""
+}
+
 // autonomousParams 据自主开关算（实际下发给 LLM 的任务文本, 迭代上限）。
 // 自主：追加「列计划→连续完成所有步骤→全部完成再 [FINAL]」提示 + 放宽迭代上限（一气呵成多步任务）。
 func autonomousParams(task string, autonomous bool) (string, int) {
@@ -106,7 +115,7 @@ func (b *agentBridge) start(task string) {
 				Text: "未配置 API key。请设置环境变量 DEEPSEEK_API_KEY / OPENAI_API_KEY / DASHSCOPE_API_KEY / MOONSHOT_API_KEY / OPENROUTER_API_KEY 之一后重启，即可与我对话。"})
 			return
 		}
-		root, _ := os.Getwd()
+		root := currentRoot() // 当前项目根（与文件树/终端统一）
 		b.root = root
 		reg := agent.NewRegistry()
 		agent.RegisterDefaultTools(reg, root)
@@ -431,7 +440,7 @@ func (b *agentBridge) applyEvent(e agent.Event) {
 func (b *agentBridge) syncWorkspaceEdits(evs []agent.Event) {
 	root := b.root
 	if root == "" {
-		root, _ = os.Getwd()
+		root = currentRoot()
 	}
 	changed := false
 	for _, e := range evs {
