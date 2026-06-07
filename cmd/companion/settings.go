@@ -186,7 +186,9 @@ func (b *settingsBodyState) Build(ctx widget.BuildContext) widget.Widget {
 		widget.Div(widget.Style{Height: 12}),
 		// 固定高度内容区（超出滚动）：各 tab 内容高度不一，固定高度→对话框尺寸恒定，
 		// 切换标签不再因高度变化重新居中"跳动"，入场也不会因内容沉降"弹两次"。
-		widget.Div(widget.Style{Height: 420, FlexDirection: "column", AlignItems: "stretch"},
+		// 统一左右内边距(10)：内容左缘与上方标签文字对齐、左右留白对称（各 tab 不再各自设 padding）。
+		widget.Div(widget.Style{Height: 420, FlexDirection: "column", AlignItems: "stretch",
+			Padding: types.EdgeInsetsLTRB(10, 0, 10, 0)},
 			expand(widget.NewScrollView(b.content())),
 		),
 	)
@@ -237,7 +239,7 @@ func (b *settingsBodyState) agentTab() widget.Widget {
 		iterVal = itoa(editingSettings.MaxIterations)
 	}
 	return widget.Div(
-		widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(2, 0, 2, 0)},
+		widget.Style{FlexDirection: "column", AlignItems: "stretch"},
 		label("审批与自主", ghTextMuted, 11),
 		widget.Div(widget.Style{Height: 6}),
 		settingsToggle("自动审核（写类工具免逐次确认）", editingSettings.AutoReview, func() {
@@ -274,7 +276,7 @@ func (b *settingsBodyState) instructionsTab() widget.Widget {
 	ta.FocusBorderColor = *ghAccent
 	ta.HoverBorderColor = *ghBorder
 	return widget.Div(
-		widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(2, 0, 2, 0)},
+		widget.Style{FlexDirection: "column", AlignItems: "stretch"},
 		label("项目指令（agent 每轮读取并遵守）", ghTextMuted, 11),
 		widget.Div(widget.Style{Height: 6}),
 		ta,
@@ -290,7 +292,7 @@ func (b *settingsBodyState) appearanceTab() widget.Widget {
 		fsz = itoa(editingSettings.EditorFontSize)
 	}
 	return widget.Div(
-		widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(2, 0, 2, 0)},
+		widget.Style{FlexDirection: "column", AlignItems: "stretch"},
 		label("主题", ghTextMuted, 11),
 		widget.Div(widget.Style{Height: 6}),
 		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"},
@@ -340,7 +342,7 @@ func (b *settingsBodyState) terminalTab() widget.Widget {
 		})
 	}
 	return widget.Div(
-		widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(2, 0, 2, 0)},
+		widget.Style{FlexDirection: "column", AlignItems: "stretch"},
 		label("默认 Shell（终端启动时使用）", ghTextMuted, 11),
 		widget.Div(widget.Style{Height: 6}),
 		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"}, btns),
@@ -356,7 +358,7 @@ func (b *settingsBodyState) terminalTab() widget.Widget {
 func (b *settingsBodyState) mcpTab() widget.Widget {
 	path := filepath.Join(filepath.Dir(settingsPath()), "mcp.json")
 	return widget.Div(
-		widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(2, 0, 2, 0)},
+		widget.Style{FlexDirection: "column", AlignItems: "stretch"},
 		label("MCP 服务器", ghTextMuted, 11),
 		widget.Div(widget.Style{Height: 6}),
 		label("对话开始时读取此文件、连接外部 MCP 服务器并注册其工具：", ghText, 11),
@@ -385,12 +387,12 @@ func settingsToggle(lbl string, on bool, toggle func()) widget.Widget {
 		state, tc, bg = "开", cWhite, *ghAccentEmph
 	}
 	return widget.Div(
-		widget.Style{FlexDirection: "row", AlignItems: "center", Padding: types.EdgeInsetsLTRB(0, 7, 0, 0)},
+		widget.Style{FlexDirection: "row", AlignItems: "center", Padding: types.EdgeInsetsLTRB(0, 12, 0, 0)},
 		expand(label(lbl, ghText, 12)),
 		&widget.Button{
 			SingleChildWidget: widget.SingleChildWidget{Child: label(state, tc, 11)},
 			OnClick:           toggle,
-			Color:             bg, MinHeight: 22, MinWidth: 40, Padding: types.EdgeInsetsLTRB(10, 0, 10, 0),
+			Color:             bg, MinHeight: 22, MinWidth: 44, Padding: types.EdgeInsetsLTRB(10, 0, 10, 0),
 		},
 	)
 }
@@ -426,7 +428,7 @@ func (b *settingsBodyState) modelTab() widget.Widget {
 		maxTokStr = itoa(editingSettings.MaxTokens)
 	}
 	return widget.Div(
-		widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(2, 0, 2, 0)},
+		widget.Style{FlexDirection: "column", AlignItems: "stretch"},
 		label("服务商预设", ghTextMuted, 11),
 		widget.Div(widget.Style{Height: 6}),
 		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"}, presets),
@@ -442,9 +444,9 @@ func (b *settingsBodyState) modelTab() widget.Widget {
 
 func settingsField(lbl string, in widget.Widget) widget.Widget {
 	return widget.Div(
-		widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(0, 10, 0, 0)},
-		label(lbl, ghText, 11),
-		widget.Div(widget.Style{Height: 4}),
+		widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(0, 12, 0, 0)},
+		label(lbl, ghText, 12), // 与 settingsToggle 标签同字号(12)，统一视觉
+		widget.Div(widget.Style{Height: 5}),
 		in,
 	)
 }
