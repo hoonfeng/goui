@@ -91,7 +91,7 @@ func (s *searchState) run() {
 		s.SetState()
 		return
 	}
-	root := theFileTree.rootPath
+	root := currentRoot()
 	filepath.WalkDir(root, func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return nil

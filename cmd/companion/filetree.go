@@ -115,20 +115,44 @@ func (f *FileTreePanel) CreateState() widget.State { return theFileTree }
 
 type fileTreeState struct {
 	widget.BaseState
-	root      *fileNode
-	rootPath  string
+	roots     []*fileNode         // 工作区各文件夹的根节点（VS Code 多根）
 	active    string              // 当前选中文件路径
 	gitStatus map[string]gitBadge // 绝对路径→git 状态徽标（每次 Build 重建）
 }
 
 func (s *fileTreeState) ensure() {
-	if s.root != nil {
-		return
+	if len(s.roots) == 0 {
+		s.buildRoots()
 	}
-	wd := currentRoot() // 当前项目根（打开的文件夹或运行目录）
-	s.rootPath = wd
-	s.root = &fileNode{name: filepath.Base(wd), path: wd, isDir: true, expanded: true}
-	loadChildren(s.root)
+}
+
+// buildRoots 据 workspaceFolders 构建各根（保留原展开态）；无 SetState。
+func (s *fileTreeState) buildRoots() {
+	exp := map[string]bool{} // 快照展开态
+	for _, r := range s.roots {
+		collectExpanded(r, exp)
+	}
+	s.roots = nil
+	folders := workspaceFolders
+	if len(folders) == 0 {
+		wd, err := os.Getwd()
+		if err != nil {
+			wd = "."
+		}
+		folders = []string{wd} // 未打开工作区→运行目录兜底
+	}
+	for _, p := range folders {
+		r := &fileNode{name: filepath.Base(p), path: p, isDir: true, expanded: true}
+		loadChildren(r)
+		reExpand(r, exp)
+		s.roots = append(s.roots, r)
+	}
+}
+
+// rebuildRoots 工作区文件夹变化后重建 + 刷新（project.go syncWorkspace 调）。
+func (s *fileTreeState) rebuildRoots() {
+	s.buildRoots()
+	s.SetState()
 }
 
 func (s *fileTreeState) Build(ctx widget.BuildContext) widget.Widget {
@@ -136,7 +160,16 @@ func (s *fileTreeState) Build(ctx widget.BuildContext) widget.Widget {
 	theGit.ensure()                 // 触发 git 状态异步加载（完成后 git drain 会 refresh 文件树→徽标显现）
 	s.gitStatus = gitStatusMap()    // 据当前 git 状态标记改动文件（未加载则 nil）
 	rows := []widget.Widget{}
-	s.flatten(s.root.children, 0, &rows)
+	if len(s.roots) == 1 {
+		s.flatten(s.roots[0].children, 0, &rows) // 单文件夹：直接显示内容（名字在头部）
+	} else {
+		for _, r := range s.roots { // 多根：每个文件夹作可折叠根节（VS Code 风格）
+			rows = append(rows, s.rootRow(r))
+			if r.expanded {
+				s.flatten(r.children, 1, &rows)
+			}
+		}
+	}
 	panel := widget.Div(
 		widget.Style{BackgroundColor: cSide, FlexDirection: "column", AlignItems: "stretch"},
 		s.toolbar(),
@@ -155,8 +188,8 @@ func (s *fileTreeState) toolbar() widget.Widget {
 			BackgroundColor: cSide, BorderColor: cBorder, BorderWidth: 1},
 		widget.Lucide("folder", widget.IconSize(13), widget.IconColor(cText)),
 		widget.Div(widget.Style{Width: 6}),
-		expand(label1(filepath.Base(s.rootPath), cText, 12)), // 工作区名：醒目（亮色），过长省略
-		ftIconBtn("folder-open", openFolderViaDialog),        // 打开/切换工作区
+		expand(label1(projectName(), cText, 12)),     // 工作区名（单文件夹名 / 多根「工作区 (N)」）
+		ftIconBtn("folder-plus", addFolderViaDialog), // 添加文件夹到工作区（VS Code 多根）
 		ftIconBtn("refresh-cw", s.refresh),
 	)
 }
@@ -232,29 +265,34 @@ func (s *fileTreeState) onClick(n *fileNode) {
 	s.SetState()
 }
 
-// setRoot 切换工作区根目录（打开文件夹）：重建文件树、清选中、relayout。
-func (s *fileTreeState) setRoot(p string) {
-	if p == "" {
-		return
+// rootRow 多根工作区里，每个文件夹的可折叠根行（大写名 + chevron；右键可从工作区移除）。
+func (s *fileTreeState) rootRow(r *fileNode) widget.Widget {
+	chev := "chevron-down"
+	if !r.expanded {
+		chev = "chevron-right"
 	}
-	s.rootPath = p
-	s.active = ""
-	s.root = &fileNode{name: filepath.Base(p), path: p, isDir: true, expanded: true}
-	loadChildren(s.root)
-	s.SetState()
+	row := &widget.Clickable{
+		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
+			widget.Style{Height: 26, FlexDirection: "row", AlignItems: "center",
+				Padding: types.EdgeInsetsLTRB(6, 0, 8, 0), BackgroundColor: cSide},
+			widget.Lucide(chev, widget.IconSize(13), widget.IconColor(cTextDim)),
+			widget.Div(widget.Style{Width: 4}),
+			widget.Lucide("folder", widget.IconSize(14), widget.IconColor(cText)),
+			widget.Div(widget.Style{Width: 6}),
+			expand(label1(strings.ToUpper(r.name), cText, 11)),
+		)},
+		OnClick:    func() { s.toggle(r) },
+		HoverColor: *ftHover,
+	}
+	return &widget.ContextArea{
+		SingleChildWidget: widget.SingleChildWidget{Child: row},
+		OnContextMenu:     func(x, y float64) { workspaceRootMenu(x, y, r.path) },
+	}
 }
 
-// refresh 重读文件系统，保留原展开状态（按路径快照→重展开）。
+// refresh 重读工作区各根的文件系统，保留展开状态。
 func (s *fileTreeState) refresh() {
-	if s.root == nil {
-		return
-	}
-	exp := map[string]bool{}
-	collectExpanded(s.root, exp)
-	s.root = &fileNode{name: filepath.Base(s.rootPath), path: s.rootPath, isDir: true, expanded: true}
-	loadChildren(s.root)
-	reExpand(s.root, exp)
-	s.SetState()
+	s.rebuildRoots()
 }
 
 func collectExpanded(n *fileNode, exp map[string]bool) {

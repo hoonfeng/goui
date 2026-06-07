@@ -27,7 +27,7 @@ func labelsOf(items []widget.MenuItem) []string {
 
 // 文件树文件菜单：项齐全 + 复制名称/相对/绝对路径动作正确。
 func TestFileNodeMenuItems(t *testing.T) {
-	theFileTree = &fileTreeState{rootPath: `C:\proj`}
+	theFileTree = &fileTreeState{roots: []*fileNode{{name: "proj", path: `C:\proj`, isDir: true}}}
 	n := &fileNode{name: "main.go", path: `C:\proj\pkg\main.go`, isDir: false}
 	items := fileNodeMenuItems(n)
 	for _, want := range []string{"打开", "新建文件", "新建文件夹", "重命名", "删除", "复制名称", "复制相对路径", "复制绝对路径", "在终端打开", "在资源管理器中打开", "刷新"} {

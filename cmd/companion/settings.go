@@ -24,7 +24,8 @@ type appSettings struct {
 	Model       string `json:"model"`
 	Temperature string `json:"temperature"` // 字符串：留空=用服务端默认（区分于显式 0）
 	MaxTokens   int    `json:"maxTokens"`   // 0=不下发
-	LastProject string `json:"lastProject"` // 上次打开的项目目录（启动时恢复）
+	LastProject      string   `json:"lastProject"`      // 兼容旧版单文件夹（迁移用）
+	WorkspaceFolders []string `json:"workspaceFolders"` // 工作区文件夹列表（VS Code 多根，启动时恢复）
 	// Agent 行为（默认值；对话输入区开关可临时覆盖本轮）
 	AutoReview    bool `json:"autoReview"`
 	Autonomous    bool `json:"autonomous"`

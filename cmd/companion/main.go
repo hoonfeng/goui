@@ -246,7 +246,7 @@ func (s *shellState) titleMenus() []widget.Widget {
 			{Label: "新建文件", Shortcut: "Ctrl+N", Command: "file.new"},
 			{Label: "打开文件", Shortcut: "Ctrl+O", Command: "file.open"},
 			{Label: "打开文件夹", Shortcut: "Ctrl+K Ctrl+O", Command: "file.openFolder"},
-			{Label: "添加项目到工作区", Shortcut: "Ctrl+Shift+O", Disabled: true},
+			{Label: "添加文件夹到工作区", Shortcut: "Ctrl+Shift+O", Command: "file.addFolder"},
 			{Label: "保存", Shortcut: "Ctrl+S", Command: "file.save", Divided: true},
 			{Label: "保存工作区", Disabled: true, Divided: true},
 			{Label: "管理工作区...", Disabled: true},
@@ -299,11 +299,13 @@ func (s *shellState) titleMenus() []widget.Widget {
 func (s *shellState) onFileMenu(cmd string) {
 	switch cmd {
 	case "file.new":
-		newEntryIn(theFileTree.rootPath, false)
+		newEntryIn(currentRoot(), false)
 	case "file.open":
 		openFileViaDialog()
 	case "file.openFolder":
 		openFolderViaDialog()
+	case "file.addFolder":
+		addFolderViaDialog()
 	case "file.save":
 		theEditor.save()
 	case "file.quit":

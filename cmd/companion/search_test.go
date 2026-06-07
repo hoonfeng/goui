@@ -8,6 +8,13 @@ import (
 	"testing"
 )
 
+// useWorkspace 测试内把工作区设为单文件夹 dir（currentRoot 即 dir），结束自动还原。
+func useWorkspace(t *testing.T, dir string) {
+	prev := workspaceFolders
+	workspaceFolders = []string{dir}
+	t.Cleanup(func() { workspaceFolders = prev })
+}
+
 // TestSearchRun 验证跨文件搜索：大小写不敏感(默认)→敏感的命中数变化。
 func TestSearchRun(t *testing.T) {
 	dir := t.TempDir()
@@ -16,7 +23,8 @@ func TestSearchRun(t *testing.T) {
 
 	pf, ps := theFileTree, theSearch
 	defer func() { theFileTree, theSearch = pf, ps }()
-	theFileTree = &fileTreeState{rootPath: dir}
+	useWorkspace(t, dir)
+	theFileTree = &fileTreeState{}
 	theSearch = &searchState{collapsed: map[string]bool{}, query: "foo"}
 
 	theSearch.run() // 不区分大小写：Foo + foo + FOO = 3 命中，2 文件
@@ -41,7 +49,8 @@ func TestSearchReplace(t *testing.T) {
 
 	pf, ps, pe := theFileTree, theSearch, theEditor
 	defer func() { theFileTree, theSearch, theEditor = pf, ps, pe }()
-	theFileTree = &fileTreeState{rootPath: dir}
+	useWorkspace(t, dir)
+	theFileTree = &fileTreeState{}
 	theEditor = &editorState{}
 	theSearch = &searchState{collapsed: map[string]bool{}, query: "foo", replaceText: "bar"}
 
@@ -66,7 +75,8 @@ func TestSearchReplaceFile(t *testing.T) {
 
 	pf, ps, pe := theFileTree, theSearch, theEditor
 	defer func() { theFileTree, theSearch, theEditor = pf, ps, pe }()
-	theFileTree = &fileTreeState{rootPath: dir}
+	useWorkspace(t, dir)
+	theFileTree = &fileTreeState{}
 	theEditor = &editorState{}
 	theSearch = &searchState{collapsed: map[string]bool{}, query: "foo", replaceText: "bar"}
 

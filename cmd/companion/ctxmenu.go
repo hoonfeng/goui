@@ -32,18 +32,43 @@ func openFileViaDialog() {
 	}
 }
 
-// openFolderViaDialog 弹系统“选择文件夹”对话框，选中即作为项目根：文件树/终端/agent 统一切换 + 持久化。
-func openFolderViaDialog() {
+// pickFolder 弹系统“选择文件夹”对话框，返回选中路径（取消=空）。
+func pickFolder(title string) string {
 	if window.OpenFolderDialog == nil {
-		return
+		return ""
 	}
 	var h uintptr
 	if application != nil && application.Window != nil {
 		h = application.Window.NativeHandle()
 	}
-	if p := window.OpenFolderDialog(h, "打开文件夹"); p != "" {
-		setProject(p) // 切换项目根（文件树/终端/agent + 存 config.lastProject）
+	return window.OpenFolderDialog(h, title)
+}
+
+// openFolderViaDialog 打开文件夹：用选中文件夹替换整个工作区（VS Code「Open Folder」）。
+func openFolderViaDialog() {
+	if p := pickFolder("打开文件夹"); p != "" {
+		setProject(p)
 	}
+}
+
+// addFolderViaDialog 添加文件夹到工作区：把选中文件夹加进来，变多根工作区（VS Code「Add Folder to Workspace」）。
+func addFolderViaDialog() {
+	if p := pickFolder("添加文件夹到工作区"); p != "" {
+		addFolder(p)
+	}
+}
+
+// workspaceRootMenu 多根工作区里，右键某个根文件夹的菜单：从工作区移除。
+func workspaceRootMenu(x, y float64, path string) {
+	showMenu(x, y, []widget.MenuItem{
+		mi("plus", "新建文件", func() { newEntryIn(path, false) }),
+		mi("folder-plus", "新建文件夹", func() { newEntryIn(path, true) }),
+		sep(),
+		mi("terminal", "在终端打开", func() { theTerminal.openDir(path) }),
+		mi("folder-open", "在资源管理器中显示", func() { revealInExplorer(path, true) }),
+		sep(),
+		miD("circle-x", "从工作区移除文件夹", func() { removeFolder(path) }),
+	})
 }
 
 // mi 菜单项（icon=Lucide 图标名，空=无图标）。
@@ -125,10 +150,15 @@ func dirOf(n *fileNode) string {
 	return filepath.Dir(n.path)
 }
 
-// relForFileTree 取相对文件树根的 slash 路径。
+// relForFileTree 取相对所属工作区文件夹的 slash 路径（多根：找包含它的那个根）。
 func relForFileTree(p string) string {
-	if r, err := filepath.Rel(theFileTree.rootPath, p); err == nil {
-		return filepath.ToSlash(r)
+	for _, r := range theFileTree.roots {
+		if rel, err := filepath.Rel(r.path, p); err == nil && !strings.HasPrefix(rel, "..") {
+			return filepath.ToSlash(rel)
+		}
+	}
+	if rel, err := filepath.Rel(currentRoot(), p); err == nil {
+		return filepath.ToSlash(rel)
 	}
 	return p
 }
@@ -174,7 +204,7 @@ func fileNodeMenu(x, y float64, n *fileNode) { showMenu(x, y, fileNodeMenuItems(
 
 // fileTreeEmptyItems 文件树空白处右键菜单项（根目录操作）。
 func fileTreeEmptyItems() []widget.MenuItem {
-	root := theFileTree.rootPath
+	root := currentRoot()
 	return []widget.MenuItem{
 		mi("plus", "新建文件", func() { newEntryIn(root, false) }),
 		mi("folder-plus", "新建文件夹", func() { newEntryIn(root, true) }),

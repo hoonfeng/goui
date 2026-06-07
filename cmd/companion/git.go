@@ -147,7 +147,7 @@ func (g *gitState) reloadAsync(action func() string) {
 	g.loading = true
 	g.mu.Unlock()
 
-	root := theFileTree.rootPath
+	root := currentRoot()
 	g.startPump()
 	go func() {
 		ae := ""
@@ -300,7 +300,7 @@ func badge(st byte, staged bool) (string, types.Color) {
 // ─── 动作（git CLI；全程异步：动作 + 重读都在 goroutine，结果经帧泵应用）──────────────
 
 func (g *gitState) act(args ...string) {
-	root := theFileTree.rootPath
+	root := currentRoot()
 	g.reloadAsync(func() string {
 		if _, err := runGit(root, args...); err != nil {
 			return err.Error()
