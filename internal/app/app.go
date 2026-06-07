@@ -442,6 +442,13 @@ func (app *Application) mainLoop() {
 		//    同时处理事件可能触发 SetState → MarkNeedsRepaint，确保渲染能捕获最新状态
 		app.processPendingEvents()
 
+		// 2.5 事件可能触发了重新布局（弹出/关闭浮层、切换标签等改变结构的操作）。
+		//     渲染前再确保一次布局，使新出现/变化的内容在「首帧」就处于正确位置；
+		//     否则会先按旧/默认布局画一帧、下一帧才纠正 → 视觉上「跳一下」（模态打开/切标签尤其明显）。
+		if app.Pipeline != nil {
+			app.Pipeline.EnsureLayout()
+		}
+
 		// 3. 持续重绘：有焦点 Element（光标闪烁）或有活跃动画时标记需要重绘，
 		//    确保基于时间推进的视觉变化（光标闪烁、动画插值）能持续呈现。
 		//    Pipeline.Render 内部检查 needsRepaint，若不标记则跳过渲染。
