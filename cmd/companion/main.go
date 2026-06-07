@@ -552,54 +552,27 @@ func (s *shellState) showLeft(view string) {
 }
 
 // filesGroup 文件面板组：顶部视图标签条（文件/搜索/Git）+ 当前视图内容（宽/高由所在区包裹决定）。
+// filesGroup 左栏：用 goui 的 Tabs 组件（深色+图标+紧凑模式），承载 文件/搜索/Git 三视图。
+// 此前手搓标签条，效果差；改用真组件（带平滑滑块动画、受控切换）。
 func (s *shellState) filesGroup() widget.Widget {
-	view := s.leftView
-	if view == "" {
-		view = "files"
+	views := []string{"files", "search", "git"}
+	active := 0
+	for i, v := range views {
+		if v == s.leftView {
+			active = i
+		}
 	}
-	var content widget.Widget = &FileTreePanel{}
-	switch view {
-	case "git":
-		content = &GitPanel{}
-	case "search":
-		content = &SearchPanel{}
-	}
-	return widget.Div(
-		widget.Style{BackgroundColor: cSide, FlexDirection: "column", AlignItems: "stretch"},
-		widget.Div( // 视图标签条（右端留空给「移动」按钮叠加）
-			widget.Style{Height: 32, BackgroundColor: cSide, BorderColor: cBorder, BorderWidth: 1,
-				FlexDirection: "row", AlignItems: "stretch"},
-			s.tabItem("files", "文件", "folder", view),
-			s.tabItem("search", "搜索", "search", view),
-			s.tabItem("git", "Git", "git-branch", view),
-		),
-		expand(content),
-	)
-}
-
-// tabItem 单个标签（图标+标题，激活态高亮）。
-func (s *shellState) tabItem(id, title, icon, active string) widget.Widget {
-	on := id == active
-	tc, bg := cTextDim, *cSide
-	line := *cSide // 底部指示条：非激活=与底同色（隐形）
-	if on {
-		tc, bg = cText, *cTitle
-		line = *cStatus // 激活=强调蓝下划线（复刻参考侧栏标签）
-	}
-	return &widget.Clickable{
-		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
-			widget.Style{BackgroundColor: &bg, FlexDirection: "column", AlignItems: "stretch"},
-			expand(widget.Div(
-				widget.Style{Padding: types.EdgeInsetsLTRB(12, 0, 12, 0), FlexDirection: "row", AlignItems: "center"},
-				widget.Lucide(icon, widget.IconSize(14), widget.IconColor(tc)),
-				widget.Div(widget.Style{Width: 6}),
-				label(title, tc, 12),
-			)),
-			widget.Div(widget.Style{Height: 2, BackgroundColor: &line}), // 激活下划线
-		)},
-		OnClick:    func() { s.leftView = id; s.SetState() },
-		HoverColor: *ftHover,
-	}
+	tabs := widget.NewTabs(
+		widget.TabPane{Label: "文件", Icon: "folder", Content: &FileTreePanel{}},
+		widget.TabPane{Label: "搜索", Icon: "search", Content: &SearchPanel{}},
+		widget.TabPane{Label: "Git", Icon: "git-branch", Content: &GitPanel{}},
+	).WithActive(active).WithOnChange(func(i int) { s.leftView = views[i]; s.SetState() })
+	tabs.Compact = true       // IDE 紧凑：矮条 + 内容紧贴填满
+	tabs.ActiveColor = cText   // 深色主题配色
+	tabs.InactiveColor = cTextDim
+	tabs.LineColor = *cStatus // 强调蓝滑块/下划线
+	tabs.BarColor = *cSide
+	return tabs
 }
 
 func panelBody(id string) widget.Widget {
