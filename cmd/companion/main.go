@@ -490,16 +490,36 @@ func panelHeader(title, icon string) widget.Widget {
 	)
 }
 
-// statusBar 底部状态栏：左 Git 分支、右 编码/语言（VS Code 风）。横贯全宽、内容垂直居中。
+// statusBar 底部状态栏：左 agent 状态灯 + Git 分支，右 模型 + 编码（VS Code 风）。
+// 读实时单例（运行态/分支/模型）；随 shell 重建刷新（面板开关等触发；agent 实时态对话面板已直显）。
 func statusBar() widget.Widget {
+	running := theChatState != nil && theChatState.bridge != nil && theChatState.bridge.isRunning()
+	agentText, dotCol := "就绪", gitGreen
+	if running {
+		agentText, dotCol = "运行中", gitOrange
+	}
+	branch := "—"
+	if theGit != nil && theGit.isRepo && theGit.branch != "" {
+		branch = theGit.branch
+	}
+	model := "未配置模型"
+	if theSettings.Model != "" {
+		model = theSettings.Model
+	} else if theSettings.Provider != "" {
+		model = theSettings.Provider
+	}
 	return widget.Div(
 		widget.Style{Height: statusH, BackgroundColor: cStatusBar, Padding: types.EdgeInsetsLTRB(10, 0, 10, 0),
 			FlexDirection: "row", AlignItems: "center"},
-		statusItem("git-branch", "main", cText),
-		expand(widget.Div(widget.Style{})), // 中间撑满，把右侧项推到最右
-		statusItem("", "UTF-8", cText),
+		widget.Div(widget.Style{Width: 8, Height: 8, BackgroundColor: &dotCol, BorderRadius: 4}), // agent 状态灯
+		widget.Div(widget.Style{Width: 6}),
+		label(agentText, cText, 12),
 		widget.Div(widget.Style{Width: 16}),
-		statusItem("", "Go", cText),
+		statusItem("git-branch", branch, cText),
+		expand(widget.Div(widget.Style{})), // 中间撑满，把右侧项推到最右
+		statusItem("", model, cText),
+		widget.Div(widget.Style{Width: 16}),
+		statusItem("", "UTF-8", cText),
 	)
 }
 
