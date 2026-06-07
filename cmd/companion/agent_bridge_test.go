@@ -30,6 +30,42 @@ func TestAutonomousParams(t *testing.T) {
 	}
 }
 
+// TestAskUserResolve ask_user：parseAsk 解析问题/选项；askUser 阻塞 → resolveAsk 送回答案。
+func TestAskUserResolve(t *testing.T) {
+	pa := parseAsk(`{"question":"继续吗","options":["是","否"]}`)
+	if pa.Question != "继续吗" || len(pa.Options) != 2 {
+		t.Fatalf("parseAsk = %+v", pa)
+	}
+
+	theChatState = &chatState{store: state.NewChatStore()}
+	b := &agentBridge{cs: theChatState}
+	theChatState.bridge = b
+
+	ansCh := make(chan string, 1)
+	go func() {
+		a, _ := b.askUser(context.Background(), map[string]any{"question": "继续吗"})
+		ansCh <- a
+	}()
+	for i := 0; i < 200; i++ { // 等 askCh 就绪
+		b.mu.Lock()
+		ready := b.askCh != nil
+		b.mu.Unlock()
+		if ready {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	b.resolveAsk("是")
+	select {
+	case a := <-ansCh:
+		if a != "是" {
+			t.Errorf("answer = %q，期望『是』", a)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("askUser 未返回")
+	}
+}
+
 // 端到端（无窗口、无网络）：注入 MockProvider 的 loop，send 一条任务 → goroutine 跑 TAOR →
 // 事件经动画帧泵 drain → 流式写进当前助手消息。手动 animation.Tick + EnsureLayout 模拟主循环。
 func TestAgentBridgeStreamsIntoChat(t *testing.T) {

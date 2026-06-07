@@ -54,6 +54,13 @@ type planStep struct {
 	Status string `json:"status"`
 }
 
+// pendingAsk agent 经 ask_user 工具发起的提问（带可选项）；用户回答前对话阻塞等待。
+type pendingAsk struct {
+	Question string   `json:"question"`
+	Options  []string `json:"options"`
+	Multi    bool     `json:"multiSelect"`
+}
+
 type chatState struct {
 	widget.BaseState
 	store        *state.ChatStore
@@ -66,6 +73,7 @@ type chatState struct {
 	inputAreaH   float64      // 输入区固定高（由 main.go 设为终端面板高 BottomH，使两者等高对齐）
 	bridge       *agentBridge // Agent 引擎接入（懒建，见 agent_bridge.go）
 	plan         []planStep   // 当前 Agent 任务计划清单（update_plan 工具更新；置顶可视）
+	ask          *pendingAsk  // 当前 agent 的提问（ask_user）；非空时显问答卡、对话阻塞等回答
 
 	hoveredMsg  int    // 当前 hover 的消息索引（-1=无）→ 揭示该消息的操作按钮
 	showSearch  bool   // Ctrl+F 搜索栏开
@@ -81,7 +89,11 @@ func (s *chatState) Build(ctx widget.BuildContext) widget.Widget {
 	if len(s.plan) > 0 {
 		mainKids = append(mainKids, s.planCard())
 	}
-	mainKids = append(mainKids, expand(s.scrollMessages()), s.inputArea())
+	mainKids = append(mainKids, expand(s.scrollMessages()))
+	if s.ask != nil { // agent 提问中：问答卡置于输入区上方
+		mainKids = append(mainKids, s.askCard())
+	}
+	mainKids = append(mainKids, s.inputArea())
 	main := widget.Div(
 		widget.Style{BackgroundColor: ghBgPrimary, FlexDirection: "column", AlignItems: "stretch"},
 		mainKids,
@@ -151,6 +163,46 @@ func planRow(p planStep) widget.Widget {
 		widget.Lucide(icon, widget.IconSize(13), widget.IconColor(col)),
 		widget.Div(widget.Style{Width: 6}),
 		expand(label(p.Step, txtCol, 11.5)),
+	)
+}
+
+// askCard agent 提问卡（ask_user）：问题 + 选项按钮 + 自由输入；回答前对话阻塞等待。
+func (s *chatState) askCard() widget.Widget {
+	pa := s.ask
+	rows := []widget.Widget{
+		widget.Div(
+			widget.Style{FlexDirection: "row", AlignItems: "center", Padding: types.EdgeInsetsLTRB(0, 0, 0, 5)},
+			widget.Lucide("circle-help", widget.IconSize(14), widget.IconColor(*ghAccent)),
+			widget.Div(widget.Style{Width: 6}),
+			label("Agent 需要你的回答", ghText, 12),
+		),
+		label(pa.Question, ghText, 13),
+	}
+	for _, o := range pa.Options {
+		oo := o
+		rows = append(rows, widget.Div(widget.Style{Height: 6}),
+			&widget.Button{
+				SingleChildWidget: widget.SingleChildWidget{Child: label(oo, ghText, 12)},
+				OnClick:           func() { resolveAskUI(oo) },
+				Color:             *ghBgTertiary, BorderRadius: 5, Padding: types.EdgeInsetsLTRB(10, 5, 10, 5),
+			})
+	}
+	in := widget.NewInput("", func(string) {}).
+		WithPlaceholder("或输入你的回答，回车提交…").
+		WithOnSubmit(func(t string) {
+			if strings.TrimSpace(t) != "" {
+				resolveAskUI(t)
+			}
+		})
+	searchInputStyle(in)
+	rows = append(rows, widget.Div(widget.Style{Height: 8}), in)
+	return widget.Div(
+		widget.Style{Padding: types.EdgeInsetsLTRB(8, 6, 8, 6)},
+		widget.Div(
+			widget.Style{Padding: types.EdgeInsets(10), BackgroundColor: ghBgSecondary, BorderColor: ghAccent,
+				BorderWidth: 1, BorderRadius: 6, FlexDirection: "column", AlignItems: "stretch"},
+			rows,
+		),
 	)
 }
 

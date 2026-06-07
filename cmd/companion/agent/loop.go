@@ -165,7 +165,8 @@ func DefaultSystemPrompt(workspaceRoot string) string {
 		"- 联网：web_fetch（抓网页转纯文本）、web_search（搜索引擎查资料）——查文档/报错/库用法时用。\n" +
 		"- 仓库：只读 git_status / git_diff / git_log / git_show / git_blame；写类 git_add / git_commit / git_branch / git_checkout / git_stash（需审批）。\n" +
 		"- 记忆：memory_write 记下项目知识/用户偏好/教训，memory_search / memory_read / memory_list 取用——跨会话持久。\n" +
-		"- 规划：复杂任务先用 update_plan 列出步骤清单（每步 pending/in_progress/done），执行中更新状态——清单会展示给用户。\n\n" +
+		"- 规划：复杂任务先用 update_plan 列出步骤清单（每步 pending/in_progress/done），执行中更新状态——清单会展示给用户。\n" +
+		"- 提问：关键决策或需求有歧义时用 ask_user 问用户（可给 options 选项），别自己瞎猜；但别滥用、能自查就自查。\n\n" +
 		"# 工作方式\n" +
 		"按「思考 → 调用工具 → 观察结果 → 再决策」循环推进，直至完成。\n" +
 		"复杂或多步任务先用 update_plan 列计划，再逐步执行并更新状态。\n" +

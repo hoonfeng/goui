@@ -43,6 +43,9 @@ type agentBridge struct {
 	// 审批（手动审核模式）：loop 协程在 approve() 里登记裁决通道并阻塞，UI 线程点「允许/拒绝」经 resolveApproval 送回。
 	approvalCh     chan bool
 	approvalCallID string
+
+	// ask_user：loop 协程在 askUser() 里登记回答通道并阻塞，UI 线程选项/输入经 resolveAsk 送回（同一时刻仅一个）。
+	askCh chan string
 }
 
 func (b *agentBridge) isRunning() bool {
@@ -103,6 +106,7 @@ func (b *agentBridge) start(task string) {
 		b.root = root
 		reg := agent.NewRegistry()
 		agent.RegisterDefaultTools(reg, root)
+		b.registerAskTool(reg) // ask_user：handler 闭包持有 bridge（需 UI 交互），故在此注册而非默认集
 		if cfgs := loadMCPConfigs(); len(cfgs) > 0 { // 外部 MCP 服务器（mcp.json；失败跳过、不阻断；首条消息时一次性连接）
 			agent.RegisterMCPServers(reg, cfgs)
 		}
@@ -237,6 +241,74 @@ func (b *agentBridge) resolveApproval(callID string, ok bool) {
 	b.cs.SetState()
 }
 
+// askUser ask_user 工具处理器（loop 协程调用，**阻塞**）：登记回答通道，阻塞等用户回答或 ctx 取消。
+// 问答卡 UI 由 drain 处理 EventToolCall(ask_user) 时据参数渲染（见 applyEvent），故此处只管阻塞取答。
+func (b *agentBridge) askUser(ctx context.Context, args map[string]any) (string, error) {
+	ch := make(chan string, 1)
+	b.mu.Lock()
+	b.askCh = ch
+	b.mu.Unlock()
+	select {
+	case ans := <-ch:
+		return ans, nil
+	case <-ctx.Done():
+		b.mu.Lock()
+		if b.askCh == ch {
+			b.askCh = nil
+		}
+		b.mu.Unlock()
+		return "（用户未回答，已取消提问）", nil
+	}
+}
+
+// registerAskTool 注册 ask_user（handler 闭包持有 bridge → 能阻塞等 UI 回答）。
+func (b *agentBridge) registerAskTool(r *agent.Registry) {
+	r.Register(&agent.Tool{
+		Name: "ask_user",
+		Description: "向用户提问并等待回答（用于关键决策、歧义澄清，别滥用）。question 必填；options 可选(给用户快捷选项)；" +
+			"用户也可自由输入。调用会阻塞直到用户回答。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"question": map[string]any{"type": "string", "description": "要问用户的问题"},
+				"options":  map[string]any{"type": "array", "description": "可选：快捷选项", "items": map[string]any{"type": "string"}},
+			},
+			"required": []string{"question"},
+		},
+		ReadOnly: true, // 提问非写操作，免审批
+		Handler:  b.askUser,
+	})
+}
+
+// parseAsk 从 ask_user 工具参数解析出问答卡数据。
+func parseAsk(argsJSON string) *pendingAsk {
+	var pa pendingAsk
+	if json.Unmarshal([]byte(argsJSON), &pa) != nil || strings.TrimSpace(pa.Question) == "" {
+		return &pendingAsk{Question: "（Agent 提问，但问题为空）"}
+	}
+	return &pa
+}
+
+// resolveAsk UI 线程（用户点选项/输入回答）：把回答送给阻塞中的 loop 协程，清问答卡。
+func (b *agentBridge) resolveAsk(answer string) {
+	b.mu.Lock()
+	ch := b.askCh
+	b.askCh = nil
+	b.mu.Unlock()
+	b.cs.ask = nil
+	if ch != nil {
+		ch <- answer // 缓冲=1，非阻塞
+	}
+	b.cs.SetState()
+}
+
+// resolveAskUI 把问答卡的回答路由到单例对话面板的 bridge。
+func resolveAskUI(answer string) {
+	if theChatState != nil && theChatState.bridge != nil {
+		theChatState.bridge.resolveAsk(answer)
+	}
+}
+
 // drain 每帧（UI 线程，animation.Tick 调）把缓冲事件应用到流式消息 + 重绘；结束即停泵。
 func (b *agentBridge) drain() {
 	b.mu.Lock()
@@ -266,6 +338,7 @@ func (b *agentBridge) drain() {
 				msg.Collapsed = true
 			}
 		}
+		b.cs.ask = nil // 本轮结束：清掉残留问答卡（如被停止）
 		b.stopPump()
 		if len(evs) == 0 || b.stopped {
 			b.cs.SetState()
@@ -302,9 +375,12 @@ func (b *agentBridge) applyEvent(e agent.Event) {
 	case agent.EventContent:
 		m.Text += e.Content
 	case agent.EventToolCall:
-		if e.Tool == "update_plan" { // 计划单独渲染为置顶清单卡，不作通用工具活动行
+		switch e.Tool {
+		case "update_plan": // 计划单独渲染为置顶清单卡，不作通用工具活动行
 			b.applyPlan(e.Args)
-		} else {
+		case "ask_user": // 提问单独渲染为问答卡（输入区上方），不作通用活动行
+			b.cs.ask = parseAsk(e.Args)
+		default:
 			m.Activities = append(m.Activities, state.Activity{CallID: e.CallID, Tool: e.Tool, Args: e.Args})
 		}
 	case agent.EventApproval:
