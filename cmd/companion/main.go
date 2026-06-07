@@ -32,6 +32,8 @@ var (
 	cBorder    = types.ColorRef(45, 45, 45)  // 分隔线 #2d2d2d
 	cText    = types.ColorFromRGB(204, 204, 204)
 	cTextDim = types.ColorFromRGB(140, 140, 140)
+
+	dropHintBg = &types.Color{R: 88, G: 166, B: 255, A: 55} // 拖拽目标区高亮半透明强调底
 )
 
 const (
@@ -115,6 +117,11 @@ type shellState struct {
 	widget.BaseState
 	panels   *state.Panels // 停靠布局的唯一真相来源
 	leftView string        // 左栏当前视图标签："files" / "git"（复刻参考左区多面板 tab 切换）
+
+	// 面板拖拽停靠（Phase 2）：拖动手柄期间记录正在拖的面板组 + 起点/当前鼠标坐标（窗口坐标）。
+	dragPanel              string
+	dragSX, dragSY         float64 // 起点
+	dragCX, dragCY         float64 // 当前
 }
 
 func (s *shellState) Build(ctx widget.BuildContext) widget.Widget {
@@ -397,13 +404,19 @@ func (s *shellState) midColumn() widget.Widget {
 	return flexCol(rows...)
 }
 
-// zoneInner 某区的内容：所放面板组 + 右上角「移动」按钮（点击循环换到下一区）。
+// zoneInner 某区的内容：面板组 + 右上角拖拽手柄；拖拽中在目标区叠加「停靠到此」高亮。
 func (s *shellState) zoneInner(z state.Zone) widget.Widget {
 	id := s.panels.PanelIn(z)
-	return widget.NewStack(
+	kids := []widget.Widget{
 		s.panelGroup(id),
-		widget.NewPositioned(s.moveBtn(id)).WithTop(5).WithRight(7).WithZIndex(50),
-	)
+		widget.NewPositioned(s.dragGrip(id)).WithTop(5).WithRight(7).WithZIndex(50),
+	}
+	if s.dragPanel != "" { // 拖拽进行中：高亮当前方向对应的目标区
+		if tz, ok := s.dragTargetZone(); ok && tz == z {
+			kids = append(kids, widget.NewPositioned(dropHint()).WithLeft(0).WithTop(0).WithRight(0).WithBottom(0).WithZIndex(40))
+		}
+	}
+	return widget.NewStack(kids...)
 }
 
 // panelGroup 据面板组 id 返回内容（files=文件/搜索/Git 标签组；chat=对话；其余走 panelBody）。
@@ -418,16 +431,60 @@ func (s *shellState) panelGroup(id string) widget.Widget {
 	}
 }
 
-// moveBtn 面板右上角「移动」按钮：点击把该面板组换到下一区（左→右→底→左，与目标区互换）。
-func (s *shellState) moveBtn(panelID string) widget.Widget {
-	return &widget.Clickable{
-		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
-			widget.Style{Padding: types.EdgeInsets(3), BorderRadius: 3, BackgroundColor: cTitle},
-			widget.Lucide("move", widget.IconSize(13), widget.IconColor(cTextDim)),
-		)},
-		OnClick:    func() { s.panels.Move(panelID, nextZone(s.panels.ZoneOf(panelID))); s.SetState() },
-		HoverColor: *ftHover,
+// dragGrip 面板右上角拖拽手柄：按住向 左/右/下 拖→停靠到对应区（与该区原面板互换）；
+// 微小移动＝点击→循环换到下一区（保留 Phase 1 的便捷换位）。
+func (s *shellState) dragGrip(panelID string) widget.Widget {
+	return &widget.DragGrip{
+		Icon: "move", Box: 20, IconSz: 13, Color: cTextDim,
+		OnStart: func(x, y float64) { s.onGrabStart(panelID, x, y) },
+		OnMove:  func(x, y float64) { s.onGrabMove(x, y) },
+		OnEnd:   func(x, y float64) { s.onGrabEnd(panelID, x, y) },
 	}
+}
+
+func (s *shellState) onGrabStart(panelID string, x, y float64) {
+	s.dragPanel = panelID
+	s.dragSX, s.dragSY, s.dragCX, s.dragCY = x, y, x, y
+	s.SetState()
+}
+
+func (s *shellState) onGrabMove(x, y float64) {
+	s.dragCX, s.dragCY = x, y
+	s.SetState()
+}
+
+func (s *shellState) onGrabEnd(panelID string, x, y float64) {
+	s.dragCX, s.dragCY = x, y
+	tz, ok := s.dragTargetZone()
+	s.dragPanel = ""
+	switch {
+	case ok:
+		s.panels.Move(panelID, tz)
+	default:
+		if dx, dy := x-s.dragSX, y-s.dragSY; dx*dx+dy*dy < 36 { // <6px → 当点击：循环换位
+			s.panels.Move(panelID, nextZone(s.panels.ZoneOf(panelID)))
+		}
+	}
+	s.SetState()
+}
+
+// dragTargetZone 据拖动方向（起点→当前）判定目标区：水平为主→左/右，向下→底，向上/不足阈值→无。
+func (s *shellState) dragTargetZone() (state.Zone, bool) {
+	dx, dy := s.dragCX-s.dragSX, s.dragCY-s.dragSY
+	const th = 45.0
+	if dx*dx+dy*dy < th*th {
+		return state.ZoneLeft, false
+	}
+	if absf(dx) >= absf(dy) {
+		if dx > 0 {
+			return state.ZoneRight, true
+		}
+		return state.ZoneLeft, true
+	}
+	if dy > 0 {
+		return state.ZoneBottom, true
+	}
+	return state.ZoneLeft, false // 向上无目标区
 }
 
 func nextZone(z state.Zone) state.Zone {
@@ -439,6 +496,18 @@ func nextZone(z state.Zone) state.Zone {
 	default:
 		return state.ZoneLeft
 	}
+}
+
+// dropHint 拖拽目标区高亮叠层（半透明强调底 + 「停靠到此」）。
+func dropHint() widget.Widget {
+	return widget.Div(
+		widget.Style{BackgroundColor: dropHintBg, FlexDirection: "column", AlignItems: "center", JustifyContent: "center"},
+		widget.Div(
+			widget.Style{BackgroundColor: cTitle, BorderColor: cStatus, BorderWidth: 1, BorderRadius: 6,
+				Padding: types.EdgeInsetsLTRB(14, 8, 14, 8)},
+			label("停靠到此", cText, 13),
+		),
+	)
 }
 
 // showLeft 显示左栏并切到 view；若已可见且正是该 view，则隐藏左栏（toggle）。
