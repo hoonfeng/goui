@@ -157,7 +157,7 @@ func openSettings() {
 	theSettingsBody.tab = "model"
 	theSettingsBody.resetTok++
 	var id int
-	dlg := widget.NewDialog("设置", &SettingsBody{}).WithWidth(580).WithFooter(
+	dlg := widget.NewDialog("设置", &SettingsBody{}).WithWidth(580).WithTransition("fade").WithFooter(
 		widget.NewButton("取消", func() { widget.HideOverlay(id) }).WithColor(*ghBgTertiary).WithTextColor(ghText),
 		widget.NewButton("保存", func() {
 			theSettings = editingSettings

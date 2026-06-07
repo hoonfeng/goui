@@ -13,6 +13,7 @@ import (
 	"github.com/user/goui/internal/app"
 	"github.com/user/goui/internal/canvas"
 	"github.com/user/goui/internal/event"
+	"github.com/user/goui/internal/paint"
 	"github.com/user/goui/internal/render"
 	"github.com/user/goui/internal/types"
 	"github.com/user/goui/internal/widget"
@@ -136,28 +137,77 @@ func (s *shellState) Build(ctx widget.BuildContext) widget.Widget {
 	if s.dragPanel == "" {
 		return shell
 	}
-	// 拖拽中：跟随光标的半透明「面板影子」（居中于光标，像把面板拿起来移动），叠在最上层。
+	// 拖拽中：用自绘叠层(PaintLayer)画「目标区高亮 + 跟随光标的半透明面板影」。
+	// 关键：拖动中只重绘此叠层(onGrabMove→OnNeedsRepaint)，不重建整个 shell→跟手不卡。
 	return widget.NewStack(
 		shell,
-		widget.NewPositioned(s.dragGhost()).WithLeft(s.dragCX-105).WithTop(s.dragCY-70).WithZIndex(999),
+		&widget.PaintLayer{OnPaint: s.paintDragOverlay},
 	)
 }
 
-// dragGhost 拖拽中跟随光标的半透明面板预览：面板形状 + 名称（不是小按钮）。
-func (s *shellState) dragGhost() widget.Widget {
-	name := map[string]string{"files": "文件面板", "chat": "对话面板", "terminal": "终端面板"}[s.dragPanel]
-	if name == "" {
-		name = s.dragPanel
+func dragPanelName(id string) string {
+	if n := map[string]string{"files": "文件面板", "chat": "对话面板", "terminal": "终端面板"}[id]; n != "" {
+		return n
 	}
-	return widget.Div(
-		widget.Style{Width: 210, Height: 140, BorderRadius: 8,
-			BackgroundColor: &types.Color{R: 88, G: 166, B: 255, A: 66}, // 半透明强调蓝（面板影）
-			BorderColor:     ghAccentEmph, BorderWidth: 2,
-			FlexDirection: "column", AlignItems: "center", JustifyContent: "center"},
-		widget.Lucide("move", widget.IconSize(26), widget.IconColor(cWhite)),
-		widget.Div(widget.Style{Height: 10}),
-		label("移动 "+name, cWhite, 13),
-	)
+	return id
+}
+
+// zoneRect 估算某停靠区在窗口中的矩形(用于拖拽高亮)。
+func (s *shellState) zoneRect(z state.Zone, w, h float64) (x, y, rw, rh float64) {
+	p := s.panels
+	top, bot := float64(titleBarH), h-statusH
+	leftEdge := 0.0
+	if p.Left {
+		leftEdge = p.LeftW + dividerW
+	}
+	rightEdge := w
+	if p.Right {
+		rightEdge = w - p.RightW - dividerW
+	}
+	switch z {
+	case state.ZoneLeft:
+		return 0, top, p.LeftW, bot - top
+	case state.ZoneRight:
+		return w - p.RightW, top, p.RightW, bot - top
+	case state.ZoneBottom:
+		return leftEdge, bot - p.BottomH, rightEdge - leftEdge, p.BottomH
+	}
+	return 0, top, 0, 0
+}
+
+// paintDragOverlay 自绘拖拽叠层：目标区半透明高亮 + 跟随光标的半透明面板影。仅重绘、不重建。
+func (s *shellState) paintDragOverlay(cvs canvas.Canvas, ox, oy, w, h float64) {
+	if s.dragPanel == "" {
+		return
+	}
+	// 目标区高亮
+	if tz, ok := s.dragTargetZone(); ok {
+		zx, zy, zw, zh := s.zoneRect(tz, w, h)
+		if zw > 0 && zh > 0 {
+			fp := paint.DefaultPaint()
+			fp.Color = *dropHintBg
+			cvs.DrawRect(ox+zx, oy+zy, zw, zh, fp)
+			sp := paint.DefaultStrokePaint()
+			sp.Color, sp.StrokeWidth = *cStatus, 2
+			cvs.DrawRect(ox+zx, oy+zy, zw, zh, sp)
+			f := canvas.DefaultFont()
+			f.Size = 13
+			canvas.DrawTextAligned(cvs, "停靠到此", types.Rect{X: ox + zx, Y: oy + zy, Width: zw, Height: zh}, f, cWhite, canvas.HAlignCenter, canvas.VAlignMiddle)
+		}
+	}
+	// 跟随光标的半透明面板影（居中于光标）
+	const gw, gh = 210.0, 140.0
+	gx, gy := s.dragCX-gw/2, s.dragCY-gh/2
+	fp := paint.DefaultPaint()
+	fp.Color = types.Color{R: 88, G: 166, B: 255, A: 70}
+	cvs.DrawRoundedRect(gx, gy, gw, gh, 8, fp)
+	sp := paint.DefaultStrokePaint()
+	sp.Color, sp.StrokeWidth = *ghAccentEmph, 2
+	cvs.DrawRoundedRect(gx, gy, gw, gh, 8, sp)
+	widget.PaintLucide(cvs, "move", gx+gw/2-13, gy+gh/2-22, 26, 2, cWhite)
+	f := canvas.DefaultFont()
+	f.Size = 13
+	canvas.DrawTextAligned(cvs, "移动 "+dragPanelName(s.dragPanel), types.Rect{X: gx, Y: gy + gh/2 + 8, Width: gw, Height: 20}, f, cWhite, canvas.HAlignCenter, canvas.VAlignMiddle)
 }
 
 // titleBar 自绘标题栏：左 logo+标题（拖动区）| 右 面板开关 ×3 + 窗口按钮 ×3。
@@ -442,16 +492,11 @@ func (s *shellState) midColumn() widget.Widget {
 // zoneInner 某区的内容：面板组 + 右上角拖拽手柄；拖拽中在目标区叠加「停靠到此」高亮。
 func (s *shellState) zoneInner(z state.Zone) widget.Widget {
 	id := s.panels.PanelIn(z)
-	kids := []widget.Widget{
+	// 目标区高亮在 paintDragOverlay 里自绘（不放这里→拖动中不必重建 zone，跟手不卡）。
+	return widget.NewStack(
 		s.panelGroup(id),
 		widget.NewPositioned(s.dragGrip(id)).WithTop(5).WithRight(7).WithZIndex(50),
-	}
-	if s.dragPanel != "" { // 拖拽进行中：高亮当前方向对应的目标区
-		if tz, ok := s.dragTargetZone(); ok && tz == z {
-			kids = append(kids, widget.NewPositioned(dropHint()).WithLeft(0).WithTop(0).WithRight(0).WithBottom(0).WithZIndex(40))
-		}
-	}
-	return widget.NewStack(kids...)
+	)
 }
 
 // panelGroup 据面板组 id 返回内容（files=文件/搜索/Git 标签组；chat=对话；其余走 panelBody）。
@@ -485,7 +530,9 @@ func (s *shellState) onGrabStart(panelID string, x, y float64) {
 
 func (s *shellState) onGrabMove(x, y float64) {
 	s.dragCX, s.dragCY = x, y
-	s.SetState()
+	if widget.OnNeedsRepaint != nil {
+		widget.OnNeedsRepaint() // 仅重绘叠层(PaintLayer)，不重建 shell→跟手流畅
+	}
 }
 
 func (s *shellState) onGrabEnd(panelID string, x, y float64) {
@@ -534,17 +581,6 @@ func nextZone(z state.Zone) state.Zone {
 }
 
 // dropHint 拖拽目标区高亮叠层（半透明强调底 + 「停靠到此」）。
-func dropHint() widget.Widget {
-	return widget.Div(
-		widget.Style{BackgroundColor: dropHintBg, FlexDirection: "column", AlignItems: "center", JustifyContent: "center"},
-		widget.Div(
-			widget.Style{BackgroundColor: cTitle, BorderColor: cStatus, BorderWidth: 1, BorderRadius: 6,
-				Padding: types.EdgeInsetsLTRB(14, 8, 14, 8)},
-			label("停靠到此", cText, 13),
-		),
-	)
-}
-
 // showLeft 显示左栏并切到 view；若已可见且正是该 view，则隐藏左栏（toggle）。
 func (s *shellState) showLeft(view string) {
 	cur := s.leftView

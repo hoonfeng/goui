@@ -1,9 +1,6 @@
 package widget
 
 import (
-	"time"
-
-	"github.com/user/goui/internal/animation"
 	"github.com/user/goui/internal/canvas"
 	"github.com/user/goui/internal/event"
 	"github.com/user/goui/internal/layout"
@@ -154,33 +151,9 @@ func (d *Dialog) buildPanel() Widget {
 
 type DialogElement struct {
 	BaseElement
-	dialog     *Dialog
-	panel      Element
-	panelSize  types.Size
-	panelScale float64 // 面板进场缩放(0.92→1)
-	enterInit  bool
-	enterCtrl  *animation.Controller
-}
-
-// ensureEnter 首次绘制时启动面板进场缩放。**仅当调用方设了 Transition 才播**——
-// 动画是调用方偏好；Transition=="" 时直接显示(panelScale=1)，不播任何进场动画。
-// 这样它与 Overlay 过渡受同一开关控制，不会"取消了过渡却还自顾自缩放/每次重布局又蹦一下"。
-func (e *DialogElement) ensureEnter() {
-	if e.enterInit {
-		return
-	}
-	e.enterInit = true
-	if e.dialog.Transition == "" { // 调用方未要动画 → 直接显示，无缩放进场
-		e.panelScale = 1
-		return
-	}
-	e.panelScale = 0.85
-	e.enterCtrl = animation.NewController(320*time.Millisecond, animation.EaseOutCubic)
-	e.enterCtrl.OnUpdate = func(v float64) {
-		e.panelScale = 0.85 + 0.15*v
-		e.MarkNeedsPaint()
-	}
-	e.enterCtrl.Start()
+	dialog    *Dialog
+	panel     Element
+	panelSize types.Size
 }
 
 func (e *DialogElement) Build() []Element {
@@ -242,22 +215,9 @@ func (e *DialogElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	mp.Color = maskColor
 	cvs.DrawRect(pos.X, pos.Y, e.size.Width, e.size.Height, mp)
 
-	// 居中面板(进场缩放，以面板中心为基准)
-	e.ensureEnter()
-	if e.panelScale > 0 && e.panelScale < 1 {
-		pp := e.panel.Offset()
-		ps := e.panel.Size()
-		cx := pp.X + ps.Width/2
-		cy := pp.Y + ps.Height/2
-		cvs.Save()
-		cvs.Translate(cx, cy)
-		cvs.Scale(e.panelScale, e.panelScale)
-		cvs.Translate(-cx, -cy)
-		e.panel.Paint(cvs, offset)
-		cvs.Restore()
-	} else {
-		e.panel.Paint(cvs, offset)
-	}
+	// 居中面板。进场动画统一交给 Overlay 过渡(Dialog.Transition，调用方设)——它在「显示时」
+	// 播一次、不随重布局重播；不再用对话框自带的缩放(那套会每次重布局重播→开两次/切标签也播)。
+	e.panel.Paint(cvs, offset)
 }
 
 // HandleEvent 点击面板之外(遮罩区)触发关闭(对应 close-on-click-modal)。
