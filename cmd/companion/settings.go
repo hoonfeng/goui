@@ -642,27 +642,58 @@ func (b *settingsBodyState) roleCard(id, name string) widget.Widget {
 
 // mcpTab MCP 服务器配置说明（companion 启动对话时读 mcp.json）。
 func (b *settingsBodyState) mcpTab() widget.Widget {
-	path := filepath.Join(filepath.Dir(settingsPath()), "mcp.json")
-	return widget.Div(
-		widget.Style{FlexDirection: "column", AlignItems: "stretch"},
-		label("MCP 服务器", ghTextMuted, 11),
-		widget.Div(widget.Style{Height: 6}),
-		label("对话开始时读取此文件、连接外部 MCP 服务器并注册其工具：", ghText, 11),
-		widget.Div(widget.Style{Height: 6}),
-		widget.Div(
-			widget.Style{BackgroundColor: ghBgPrimary, BorderColor: ghBorder, BorderWidth: 1, BorderRadius: 5,
-				Padding: types.EdgeInsets(8)},
-			monoLabel(path, ghText, 11),
+	servers := readMCPEntries()
+	kids := []widget.Widget{
+		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"},
+			label("MCP 服务器", ghTextMuted, 11),
+			expand(widget.Div(widget.Style{})),
+			label(itoa(len(servers))+" 个", ghTextMuted, 10),
 		),
-		widget.Div(widget.Style{Height: 10}),
-		label(`格式（同 Claude Desktop）：`, ghText, 11),
-		widget.Div(
-			widget.Style{BackgroundColor: ghBgPrimary, BorderColor: ghBorder, BorderWidth: 1, BorderRadius: 5,
-				Padding: types.EdgeInsets(8)},
-			monoLabel(`{"mcpServers":{"名字":{"command":"npx","args":["-y","包名"]}}}`, ghTextMuted, 10),
-		),
+		settingsToggle("启动对话时自动连接 MCP", editingSettings.AutoConnectMCP, func() {
+			editingSettings.AutoConnectMCP = !editingSettings.AutoConnectMCP
+			b.SetState()
+		}),
 		widget.Div(widget.Style{Height: 8}),
-		label("编辑后重开对话生效；起不来的服务器会自动跳过、不影响其它工具。", ghTextMuted, 10),
+	}
+	if len(servers) == 0 {
+		kids = append(kids, label("（暂无服务器——点下方「添加服务器」）", ghTextMuted, 11))
+	}
+	for _, s := range servers {
+		kids = append(kids, widget.Div(widget.Style{Height: 6}), b.mcpCard(s))
+	}
+	kids = append(kids,
+		widget.Div(widget.Style{Height: 12}),
+		&widget.Button{
+			SingleChildWidget: widget.SingleChildWidget{Child: label("+ 添加服务器", cWhite, 12)},
+			OnClick:           func() { openMCPEditor(mcpEntry{}, b.SetState) },
+			Color:             *ghAccentEmph, MinHeight: 30, Padding: types.EdgeInsetsLTRB(12, 0, 12, 0),
+		},
+		widget.Div(widget.Style{Height: 6}),
+		label("对话开始时连接并注册其工具；起不来的自动跳过。系统/用户/项目 三级管理与连接状态后续接入。", ghTextMuted, 10),
+	)
+	return widget.Div(widget.Style{FlexDirection: "column", AlignItems: "stretch"}, kids)
+}
+
+// mcpCard 单个 MCP 服务器卡片：名称 + 命令预览 + 编辑/删除。
+func (b *settingsBodyState) mcpCard(s mcpEntry) widget.Widget {
+	cmd := s.Command
+	for _, a := range s.Args {
+		cmd += " " + a
+	}
+	ss := s
+	return widget.Div(
+		widget.Style{FlexDirection: "column", AlignItems: "stretch", BackgroundColor: ghBgPrimary,
+			BorderColor: ghBorder, BorderWidth: 1, BorderRadius: 5, Padding: types.EdgeInsets(8)},
+		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"},
+			expand(label(ss.Name, ghText, 12)),
+			&widget.Button{SingleChildWidget: widget.SingleChildWidget{Child: label("编辑", ghText, 11)},
+				OnClick: func() { openMCPEditor(ss, b.SetState) }, Color: *ghBgTertiary, MinHeight: 22, Padding: types.EdgeInsetsLTRB(8, 0, 8, 0)},
+			widget.Div(widget.Style{Width: 6}),
+			&widget.Button{SingleChildWidget: widget.SingleChildWidget{Child: label("删除", types.ColorFromRGB(240, 120, 110), 11)},
+				OnClick: func() { _ = deleteMCPEntry(ss.Name); b.SetState() }, Color: *ghBgTertiary, MinHeight: 22, Padding: types.EdgeInsetsLTRB(8, 0, 8, 0)},
+		),
+		widget.Div(widget.Style{Height: 4}),
+		monoLabel(cmd, ghTextMuted, 10),
 	)
 }
 
