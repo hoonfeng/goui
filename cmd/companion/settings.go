@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/user/goui/internal/types"
 	"github.com/user/goui/internal/widget"
@@ -20,12 +22,25 @@ type appSettings struct {
 	BaseURL  string `json:"baseURL"`
 	APIKey   string `json:"apiKey"`
 	Model    string `json:"model"`
+	// Agent 行为（默认值；对话输入区开关可临时覆盖本轮）
+	AutoReview    bool `json:"autoReview"`
+	Autonomous    bool `json:"autonomous"`
+	AutoCollapse  bool `json:"autoCollapse"`
+	MaxIterations int  `json:"maxIterations"`
 }
 
 var (
 	theSettings     appSettings // 生效设置
 	editingSettings appSettings // 对话框编辑副本
+	settingsLoaded  bool        // settings.json 是否存在（决定启动时是否覆盖 chat 内置默认）
 )
+
+// applyAgentSettings 把 Agent 设置应用到对话状态（启动时若有存档 + 保存后调用）。
+func applyAgentSettings() {
+	theChatState.autoReview = theSettings.AutoReview
+	theChatState.autonomous = theSettings.Autonomous
+	theChatState.autoCollapse = theSettings.AutoCollapse
+}
 
 func settingsPath() string {
 	dir, err := os.UserConfigDir()
@@ -38,6 +53,8 @@ func settingsPath() string {
 func loadSettings() {
 	if data, err := os.ReadFile(settingsPath()); err == nil {
 		_ = json.Unmarshal(data, &theSettings)
+		settingsLoaded = true
+		applyAgentSettings() // 有存档 → 用存档的 Agent 默认覆盖 chat 内置默认
 	}
 }
 
@@ -94,6 +111,8 @@ func openSettings() {
 		widget.NewButton("保存", func() {
 			theSettings = editingSettings
 			saveSettings()
+			settingsLoaded = true
+			applyAgentSettings() // 保存即应用 Agent 设置到对话
 			widget.HideOverlay(id)
 		}).WithColor(*ghAccentEmph).WithTextColor(cWhite),
 	)
@@ -133,14 +152,92 @@ func (b *settingsBodyState) tabBtn(id, lbl string) widget.Widget {
 }
 
 func (b *settingsBodyState) content() widget.Widget {
-	if b.tab == "model" {
+	switch b.tab {
+	case "model":
 		return b.modelTab()
+	case "agent":
+		return b.agentTab()
+	case "mcp":
+		return b.mcpTab()
 	}
 	return widget.Div(
 		widget.Style{Height: 180, FlexDirection: "column", AlignItems: "center", JustifyContent: "center"},
 		widget.Lucide("settings", widget.IconSize(26), widget.IconColor(ghTextMuted)),
 		widget.Div(widget.Style{Height: 8}),
 		label("该设置项待接入", ghTextMuted, 12),
+	)
+}
+
+// agentTab Agent 行为设置：审批/自主/收起开关 + 最大迭代步数。
+func (b *settingsBodyState) agentTab() widget.Widget {
+	iterVal := ""
+	if editingSettings.MaxIterations > 0 {
+		iterVal = itoa(editingSettings.MaxIterations)
+	}
+	return widget.Div(
+		widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(2, 0, 2, 0)},
+		label("审批与自主", ghTextMuted, 11),
+		widget.Div(widget.Style{Height: 6}),
+		settingsToggle("自动审核（写类工具免逐次确认）", editingSettings.AutoReview, func() {
+			editingSettings.AutoReview = !editingSettings.AutoReview
+			b.SetState()
+		}),
+		settingsToggle("自主模式（先列计划，连续完成所有步骤）", editingSettings.Autonomous, func() {
+			editingSettings.Autonomous = !editingSettings.Autonomous
+			b.SetState()
+		}),
+		settingsToggle("完成后自动收起上一轮对话", editingSettings.AutoCollapse, func() {
+			editingSettings.AutoCollapse = !editingSettings.AutoCollapse
+			b.SetState()
+		}),
+		settingsField("最大迭代步数（默认 30；自主模式翻倍）", settingsInput("30", iterVal, b.resetTok, func(t string) {
+			editingSettings.MaxIterations, _ = strconv.Atoi(strings.TrimSpace(t))
+		})),
+		widget.Div(widget.Style{Height: 6}),
+		label("提示：这些是默认值，保存即生效；对话输入区的开关可临时切换本轮。", ghTextMuted, 10),
+	)
+}
+
+// mcpTab MCP 服务器配置说明（companion 启动对话时读 mcp.json）。
+func (b *settingsBodyState) mcpTab() widget.Widget {
+	path := filepath.Join(filepath.Dir(settingsPath()), "mcp.json")
+	return widget.Div(
+		widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(2, 0, 2, 0)},
+		label("MCP 服务器", ghTextMuted, 11),
+		widget.Div(widget.Style{Height: 6}),
+		label("对话开始时读取此文件、连接外部 MCP 服务器并注册其工具：", ghText, 11),
+		widget.Div(widget.Style{Height: 6}),
+		widget.Div(
+			widget.Style{BackgroundColor: ghBgPrimary, BorderColor: ghBorder, BorderWidth: 1, BorderRadius: 5,
+				Padding: types.EdgeInsets(8)},
+			monoLabel(path, ghText, 11),
+		),
+		widget.Div(widget.Style{Height: 10}),
+		label(`格式（同 Claude Desktop）：`, ghText, 11),
+		widget.Div(
+			widget.Style{BackgroundColor: ghBgPrimary, BorderColor: ghBorder, BorderWidth: 1, BorderRadius: 5,
+				Padding: types.EdgeInsets(8)},
+			monoLabel(`{"mcpServers":{"名字":{"command":"npx","args":["-y","包名"]}}}`, ghTextMuted, 10),
+		),
+		widget.Div(widget.Style{Height: 8}),
+		label("编辑后重开对话生效；起不来的服务器会自动跳过、不影响其它工具。", ghTextMuted, 10),
+	)
+}
+
+// settingsToggle 一行开关：左标签 + 右「开/关」按钮。
+func settingsToggle(lbl string, on bool, toggle func()) widget.Widget {
+	state, tc, bg := "关", ghText, *ghBgTertiary
+	if on {
+		state, tc, bg = "开", cWhite, *ghAccentEmph
+	}
+	return widget.Div(
+		widget.Style{FlexDirection: "row", AlignItems: "center", Padding: types.EdgeInsetsLTRB(0, 7, 0, 0)},
+		expand(label(lbl, ghText, 12)),
+		&widget.Button{
+			SingleChildWidget: widget.SingleChildWidget{Child: label(state, tc, 11)},
+			OnClick:           toggle,
+			Color:             bg, MinHeight: 22, MinWidth: 40, Padding: types.EdgeInsetsLTRB(10, 0, 10, 0),
+		},
 	)
 }
 

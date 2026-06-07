@@ -78,10 +78,14 @@ func (b *agentBridge) stop() {
 // autonomousParams 据自主开关算（实际下发给 LLM 的任务文本, 迭代上限）。
 // 自主：追加「列计划→连续完成所有步骤→全部完成再 [FINAL]」提示 + 放宽迭代上限（一气呵成多步任务）。
 func autonomousParams(task string, autonomous bool) (string, int) {
-	if autonomous {
-		return task + "\n\n（自主模式：先用 update_plan 列出完整计划，然后连续完成所有步骤、中途不要停下等我，全部完成后再输出 [FINAL]。）", 60
+	base := theSettings.MaxIterations // 设置面板「最大迭代步数」；未设=30
+	if base <= 0 {
+		base = 30
 	}
-	return task, 30
+	if autonomous {
+		return task + "\n\n（自主模式：先用 update_plan 列出完整计划，然后连续完成所有步骤、中途不要停下等我，全部完成后再输出 [FINAL]。）", base * 2
+	}
+	return task, base
 }
 
 // start 异步跑一轮 Agent 任务（UI 线程调用）。无 API key 则只提示、不跑。
