@@ -16,6 +16,18 @@ import (
 // 共享字体缓存（按字号+字重缓存，全局唯一，减少重复加载）
 var globalFontCache = make(map[string]gofont.Face)
 
+// isMonoFamily 识别等宽字体族。终端/代码渲染需要真·等宽（每字同宽），
+// 而 goui 默认主字体是阿里普惠体（比例字体）——用比例字体画终端网格会出现「全角」似的稀疏间距。
+// 命中这些族名时，Skia 渲染改用真等宽字体（Consolas / 系统等宽）。
+func isMonoFamily(family string) bool {
+	switch strings.ToLower(strings.TrimSpace(family)) {
+	case "consolas", "courier", "courier new", "monospace", "mono",
+		"menlo", "monaco", "cascadia code", "cascadia mono", "dejavu sans mono", "sf mono":
+		return true
+	}
+	return false
+}
+
 // cacheKey 生成字体缓存键
 func cacheKey(size float64, weight FontWeight) string {
 	return fmt.Sprintf("%.1f-%d", size, weight)

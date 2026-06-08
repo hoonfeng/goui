@@ -84,6 +84,23 @@ func Test256Color(t *testing.T) {
 	}
 }
 
+func TestWideChar(t *testing.T) {
+	vt := New(10, 2)
+	vt.Write([]byte("中A")) // 中=全角(2 格)，A=半角(1 格)
+	if vt.Cell(0, 0).Ch != '中' {
+		t.Errorf("cell0=%q 期望 中", string(vt.Cell(0, 0).Ch))
+	}
+	if vt.Cell(0, 1).Ch != 0 {
+		t.Errorf("cell1=%d 期望宽字符续格(0)", vt.Cell(0, 1).Ch)
+	}
+	if vt.Cell(0, 2).Ch != 'A' {
+		t.Errorf("cell2=%q 期望 A", string(vt.Cell(0, 2).Ch))
+	}
+	if cx, _ := vt.Cursor(); cx != 3 {
+		t.Errorf("光标 cx=%d 期望 3（中占2+A占1）", cx)
+	}
+}
+
 func TestResize(t *testing.T) {
 	vt := New(10, 3)
 	vt.Write([]byte("hello"))

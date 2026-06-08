@@ -489,6 +489,10 @@ func (c *SkiaCanvas) DrawText(text string, x, y float64, font Font, p paint.Pain
 // 从而正确显示阿拉伯/希伯来/emoji 等（避免豆腐块）。
 func (c *SkiaCanvas) eachTextRun(text string, font Font, fn func(seg string, skFont *goskia.Font)) {
 	runes := []rune(text)
+	if isMonoFamily(font.Family) { // 等宽族：拉丁用真等宽、CJK 等回退普惠体
+		c.eachMonoRun(runes, font, fn)
+		return
+	}
 	i := 0
 	for i < len(runes) {
 		covered := RuneCoveredByPrimary(runes[i])
@@ -685,6 +689,9 @@ func (c *SkiaCanvas) getOrCreateSkiaFont(font Font) *goskia.Font {
 // getOrCreateTypefaceLocked 获取或创建 goskia Typeface（调用者需持有 mu 锁）。
 func (c *SkiaCanvas) getOrCreateTypefaceLocked(font Font) *goskia.Typeface {
 	weight := font.Weight
+	if isMonoFamily(font.Family) { // 等宽族 → 加载真等宽字体（Consolas/系统等宽）
+		return c.getOrCreateMonoTypefaceLocked(weight)
+	}
 	// Typeface 与字号无关（字号是 NewFont(typeface,size) 那层的事），仅按字重缓存。
 	// 否则每个不同字号都会各加载一份完整字库 Typeface，内存成倍膨胀。
 	tfKey := fmt.Sprintf("typeface-w%d", weight)
@@ -744,6 +751,78 @@ func (c *SkiaCanvas) getOrCreateTypefaceLocked(font Font) *goskia.Typeface {
 		c.typefaceCache[tfKey] = tf
 	}
 	return tf
+}
+
+// monoTypefaceFiles 各平台常见等宽字体文件（按字重）。
+func monoTypefaceFiles(weight FontWeight) []string {
+	if weight == FontWeightBold {
+		return []string{
+			"C:/Windows/Fonts/consolab.ttf",
+			"C:/Windows/Fonts/courbd.ttf",
+			"/System/Library/Fonts/Menlo.ttc",
+			"/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+		}
+	}
+	return []string{
+		"C:/Windows/Fonts/consola.ttf",
+		"C:/Windows/Fonts/cour.ttf",
+		"/System/Library/Fonts/Menlo.ttc",
+		"/System/Library/Fonts/Monaco.ttf",
+		"/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+		"/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+	}
+}
+
+// getOrCreateMonoTypefaceLocked 加载等宽字体 Typeface（Consolas/系统等宽），按字重缓存。
+func (c *SkiaCanvas) getOrCreateMonoTypefaceLocked(weight FontWeight) *goskia.Typeface {
+	tfKey := fmt.Sprintf("typeface-mono-w%d", weight)
+	if tf, ok := c.typefaceCache[tfKey]; ok {
+		return tf
+	}
+	var tf *goskia.Typeface
+	for _, fp := range monoTypefaceFiles(weight) {
+		if data, err := os.ReadFile(fp); err == nil {
+			if tf = goskia.NewTypefaceFromData(data, 0); tf != nil {
+				break
+			}
+		}
+	}
+	if tf == nil { // 让 Skia 按族名找系统等宽
+		style := goskia.FontStyleNormal
+		if weight == FontWeightBold {
+			style = goskia.FontStyleBold
+		}
+		if tf = goskia.NewTypeface("Consolas", style); tf == nil {
+			if tf = goskia.NewTypeface("monospace", style); tf == nil {
+				tf = goskia.DefaultTypeface()
+			}
+		}
+	}
+	if tf != nil {
+		c.typefaceCache[tfKey] = tf
+	}
+	return tf
+}
+
+// eachMonoRun 等宽渲染分段：拉丁/符号/制表/块（< 0x2E80，Consolas 覆盖区）用等宽字体；
+// CJK/emoji/阿拉伯等（≥ 0x2E80）回退到常规覆盖逻辑（普惠体 + 系统 fallback），避免豆腐块。
+func (c *SkiaCanvas) eachMonoRun(runes []rune, font Font, fn func(seg string, skFont *goskia.Font)) {
+	nonMono := font
+	nonMono.Family = "" // 非等宽 → 走普惠体/fallback 路径
+	i := 0
+	for i < len(runes) {
+		latin := runes[i] < 0x2E80
+		j := i + 1
+		for j < len(runes) && (runes[j] < 0x2E80) == latin {
+			j++
+		}
+		if latin {
+			fn(string(runes[i:j]), c.getOrCreateSkiaFont(font)) // 真等宽
+		} else {
+			c.eachTextRun(string(runes[i:j]), nonMono, fn) // 非拉丁交给常规覆盖
+		}
+		i = j
+	}
 }
 
 // getOrCreateTypefaceForCoverage 返回主字库 Normal 字重的全局共享 Typeface，

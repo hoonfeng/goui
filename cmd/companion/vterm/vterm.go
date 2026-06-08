@@ -156,12 +156,37 @@ func (t *Terminal) feedGround(r rune) {
 }
 
 func (t *Terminal) putChar(r rune) {
-	if t.cx >= t.cols { // 行满折行
+	w := 1
+	if isWide(r) { // CJK 等全角字符占 2 格（东亚宽度）
+		w = 2
+	}
+	if t.cx+w > t.cols { // 放不下 → 折行
 		t.cx = 0
 		t.lineFeed()
 	}
 	t.grid[t.cy][t.cx] = Cell{Ch: r, FG: t.fg, BG: t.bg, Bold: t.bold}
 	t.cx++
+	if w == 2 && t.cx < t.cols {
+		// 宽字符续格：占位、配同背景、不画字（渲染时 Ch==0 跳过），防后续字符叠上来。
+		t.grid[t.cy][t.cx] = Cell{Ch: 0, FG: t.fg, BG: t.bg, Bold: t.bold}
+		t.cx++
+	}
+}
+
+// isWide 东亚宽度：CJK/假名/谚文/全角符号等占 2 格。
+func isWide(r rune) bool {
+	return (r >= 0x1100 && r <= 0x115F) || // 谚文字母
+		(r >= 0x2E80 && r <= 0x303E) || // CJK 部首/康熙/CJK 标点
+		(r >= 0x3041 && r <= 0x33FF) || // 假名/CJK 符号/带圈
+		(r >= 0x3400 && r <= 0x4DBF) || // CJK 扩展 A
+		(r >= 0x4E00 && r <= 0x9FFF) || // CJK 统一表意
+		(r >= 0xA000 && r <= 0xA4CF) || // 彝文
+		(r >= 0xAC00 && r <= 0xD7A3) || // 谚文音节
+		(r >= 0xF900 && r <= 0xFAFF) || // CJK 兼容
+		(r >= 0xFE30 && r <= 0xFE4F) || // CJK 兼容形式
+		(r >= 0xFF00 && r <= 0xFF60) || // 全角 ASCII
+		(r >= 0xFFE0 && r <= 0xFFE6) || // 全角符号
+		(r >= 0x20000 && r <= 0x3FFFD) // CJK 扩展 B+
 }
 
 func (t *Terminal) lineFeed() {

@@ -399,7 +399,9 @@ func (t *terminalState) copyAll() string {
 	for r := 0; r < rows; r++ {
 		line := make([]rune, 0, cols)
 		for c := 0; c < cols; c++ {
-			line = append(line, t.vt.Cell(r, c).Ch)
+			if ch := t.vt.Cell(r, c).Ch; ch != 0 { // 跳过宽字符续格占位
+				line = append(line, ch)
+			}
 		}
 		b.WriteString(strings.TrimRight(string(line), " "))
 		b.WriteByte('\n')
