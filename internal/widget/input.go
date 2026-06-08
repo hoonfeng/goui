@@ -82,6 +82,7 @@ type Input struct {
 	CursorColor      types.Color
 	CursorWidth      float64
 	Multiline        bool   // 多行文本框(el-input type=textarea)
+	Wrap             bool   // 多行自动换行：长行按宽度折行显示（无横向滚动）；零值=不换行(横向滚动)
 	Rows             int    // 多行显示行数(默认 3)
 	Text             string // 初始文本(预填)
 	ResetToken       int    // 受控清空/重置：改变此值(+SetState)会把运行时文本重置为 Text（发送后清空等）
@@ -407,9 +408,101 @@ func (e *InputElement) Paint(cvs canvas.Canvas, offset types.Point) {
 
 const sbThick = 9.0 // 滚动条占位厚度（滑块 6 + 间隙）
 
+// vline 一条「可视行」：text=可视行文本；start=其首字符在整段文本中的全局 rune 偏移。
+type vline struct {
+	text  string
+	start int
+}
+
+// wrapRunes 把一段（不含 \n）按宽度贪心折行，优先在空格后断；返回各段的 [起始 rune 下标]。
+func wrapRunes(runes []rune, measure func(string) float64, viewW float64) []int {
+	starts := []int{0}
+	if viewW <= 0 || len(runes) == 0 {
+		return starts
+	}
+	lineStart, lastSpace := 0, -1
+	for i := 0; i < len(runes); {
+		if runes[i] == ' ' {
+			lastSpace = i
+		}
+		if i > lineStart && measure(string(runes[lineStart:i+1])) > viewW {
+			brk := i
+			if lastSpace > lineStart {
+				brk = lastSpace + 1 // 空格后断行
+			}
+			starts = append(starts, brk)
+			lineStart, lastSpace, i = brk, -1, brk
+			continue
+		}
+		i++
+	}
+	return starts
+}
+
+// visualLines 把文本切成可视行：Wrap 时按 viewW 折长行，否则一逻辑行=一可视行。
+func (e *InputElement) visualLines(measure func(string) float64, viewW float64) []vline {
+	var out []vline
+	off := 0
+	for _, lg := range strings.Split(e.textWithComposition(), "\n") {
+		runes := []rune(lg)
+		if !e.input.Wrap {
+			out = append(out, vline{text: lg, start: off})
+			off += len(runes) + 1
+			continue
+		}
+		starts := wrapRunes(runes, measure, viewW)
+		for si, s := range starts {
+			end := len(runes)
+			if si+1 < len(starts) {
+				end = starts[si+1]
+			}
+			out = append(out, vline{text: string(runes[s:end]), start: off + s})
+		}
+		off += len(runes) + 1
+	}
+	return out
+}
+
+// wrapPlain 折一段纯文本（占位符用）为可视行文本。
+func wrapPlain(s string, measure func(string) float64, viewW float64) []string {
+	var out []string
+	for _, lg := range strings.Split(s, "\n") {
+		runes := []rune(lg)
+		starts := wrapRunes(runes, measure, viewW)
+		for si, st := range starts {
+			end := len(runes)
+			if si+1 < len(starts) {
+				end = starts[si+1]
+			}
+			out = append(out, string(runes[st:end]))
+		}
+	}
+	return out
+}
+
+// vlineAtPos 把 rune 位置换算为 (可视行号, 行内列)：取 start<=cp 的最后一行（折行/换行边界都归到下一可视行起点）。
+func vlineAtPos(vls []vline, cp int) (row, col int) {
+	for i := range vls {
+		if vls[i].start <= cp {
+			row = i
+		} else {
+			break
+		}
+	}
+	col = cp - vls[row].start
+	if n := len([]rune(vls[row].text)); col > n {
+		col = n
+	}
+	return
+}
+
 // paintMultiline 绘制多行文本 + 选区高亮 + 行列光标 + 纵/横滚动(光标跟随、滚动条留白)。
 func (e *InputElement) paintMultiline(cvs canvas.Canvas, font canvas.Font, textX, textWidth, ascent float64) {
 	in := e.input
+	if in.Wrap { // 自动换行走独立可视行渲染（无横向滚动）
+		e.paintMultilineWrap(cvs, font, textX, textWidth)
+		return
+	}
 	_ = ascent // 多行改用 BaselineFor 居中，不再用传入的 face ascent
 	pos := e.Offset()
 	lineH := font.Size * 1.4
@@ -598,6 +691,128 @@ func (e *InputElement) paintMultiline(cvs canvas.Canvas, font canvas.Font, textX
 	}
 }
 
+// paintMultilineWrap 自动换行模式渲染：按 viewW 折行成可视行，竖向滚动 + 竖滚动条（无横向）。
+func (e *InputElement) paintMultilineWrap(cvs canvas.Canvas, font canvas.Font, textX, textWidth float64) {
+	in := e.input
+	pos := e.Offset()
+	lineH := font.Size * 1.4
+	if lineH < 24 {
+		lineH = 24
+	}
+	measure := func(s string) float64 { return cvs.MeasureText(s, font).Width }
+	viewW := textWidth - sbThick // 预留竖条槽（稳定折行宽，避免与滚动条互相影响）
+	if viewW < 10 {
+		viewW = textWidth
+	}
+	vls := e.visualLines(measure, viewW)
+	contentH := float64(len(vls)) * lineH
+	viewH := e.size.Height - 10
+	maxScrollY := contentH - viewH
+	if maxScrollY < 0 {
+		maxScrollY = 0
+	}
+	crow, ccol := vlineAtPos(vls, e.cursorPos)
+	if e.IsFocused() && e.cursorMoved {
+		curTop := float64(crow) * lineH
+		if curTop-e.scrollY < 0 {
+			e.scrollY = curTop
+		}
+		if curTop+lineH-e.scrollY > viewH {
+			e.scrollY = curTop + lineH - viewH
+		}
+		e.cursorMoved = false
+	}
+	e.scrollY = clamp(e.scrollY, 0, maxScrollY)
+	e.scrollX = 0
+	top := pos.Y + 5 - e.scrollY
+
+	cvs.Save()
+	cvs.ClipRect(textX, pos.Y+1, viewW, e.size.Height-2)
+
+	if e.IsFocused() && e.hasSelection() {
+		lo, hi := e.selectionRange()
+		sel := paint.DefaultPaint()
+		sel.Color = types.ColorFromRGBA(66, 133, 244, 80)
+		for i, vl := range vls {
+			rs := []rune(vl.text)
+			ls, le := vl.start, vl.start+len(rs)
+			a, b := lo, hi
+			if a < ls {
+				a = ls
+			}
+			if b > le {
+				b = le
+			}
+			if a < b {
+				x0 := textX + measure(string(rs[:a-ls]))
+				x1 := textX + measure(string(rs[:b-ls]))
+				cvs.DrawRect(x0, top+float64(i)*lineH, x1-x0, lineH, sel)
+			}
+		}
+	}
+
+	if e.text == "" && e.composition == "" && in.Placeholder != "" {
+		ph := paint.DefaultPaint()
+		ph.Color = in.PlaceholderColor
+		if ph.Color.A == 0 {
+			ph.Color = types.ColorFromRGB(180, 180, 180)
+		}
+		for i, line := range wrapPlain(in.Placeholder, measure, viewW) {
+			ly := top + float64(i)*lineH
+			cvs.DrawText(line, textX, canvas.BaselineFor(ly, lineH, font.Size, canvas.VAlignMiddle), font, ph)
+		}
+	} else {
+		txt := paint.DefaultPaint()
+		txt.Color = in.Color
+		if txt.Color.A == 0 {
+			txt.Color = elTextPrimary()
+		}
+		for i, vl := range vls {
+			ly := top + float64(i)*lineH
+			if ly+lineH < pos.Y || ly > pos.Y+e.size.Height {
+				continue
+			}
+			cvs.DrawText(vl.text, textX, canvas.BaselineFor(ly, lineH, font.Size, canvas.VAlignMiddle), font, txt)
+		}
+	}
+
+	if e.IsFocused() && e.isCursorVisible() {
+		rs := []rune(vls[crow].text)
+		if ccol > len(rs) {
+			ccol = len(rs)
+		}
+		cursorX := textX + measure(string(rs[:ccol]))
+		cBase := canvas.BaselineFor(top+float64(crow)*lineH, lineH, font.Size, canvas.VAlignMiddle)
+		cp := paint.DefaultStrokePaint()
+		cp.Color = in.CursorColor
+		cp.StrokeWidth = in.CursorWidth
+		cvs.DrawLine(cursorX, cBase-font.Size*0.82, cursorX, cBase+font.Size*0.22, cp)
+		e.cursorClientX = cursorX
+		e.cursorCaretTop = cBase - font.Size*0.82
+	}
+	cvs.Restore()
+
+	e.vbarThumb, e.vbarFactor = types.Rect{}, 0
+	e.hbarThumb, e.hbarFactor = types.Rect{}, 0
+	if maxScrollY > 0 {
+		barW := 6.0
+		bx := pos.X + e.size.Width - barW - 3
+		trackH := e.size.Height - 6
+		thumbH := viewH / contentH * trackH
+		if thumbH < 20 {
+			thumbH = 20
+		}
+		thumbY := pos.Y + 3 + (e.scrollY/maxScrollY)*(trackH-thumbH)
+		e.vbarThumb = types.Rect{X: bx, Y: thumbY, Width: barW, Height: thumbH}
+		if trackH-thumbH > 0 {
+			e.vbarFactor = maxScrollY / (trackH - thumbH)
+		}
+		th := paint.DefaultPaint()
+		th.Color = types.ColorFromRGB(193, 193, 193)
+		cvs.DrawRoundedRect(bx, thumbY, barW, thumbH, 3, th)
+	}
+}
+
 // paintMultilineSel 逐行绘制选区高亮（lo,hi 为整文本的 rune 索引）。
 func (e *InputElement) paintMultilineSel(cvs canvas.Canvas, lines []string, font canvas.Font, left, top, lineH float64, lo, hi int) {
 	sel := paint.DefaultPaint()
@@ -690,6 +905,35 @@ func (e *InputElement) lineColAt(cp int) (line, col int, lineStr string) {
 
 // moveCursorVertical 多行光标上/下移一行（尽量保持列）。
 func (e *InputElement) moveCursorVertical(dir int) {
+	if e.input.Wrap { // 折行模式：按可视行上下移
+		font := e.input.Font
+		if font.Size <= 0 {
+			font = canvas.DefaultFont()
+		}
+		measure := func(s string) float64 {
+			if e.lastCanvas != nil {
+				return e.lastCanvas.MeasureText(s, font).Width
+			}
+			return canvas.MeasureTextGlobal(s, font).Width
+		}
+		viewW := e.size.Width - 22 - sbThick
+		if viewW < 10 {
+			viewW = e.size.Width - 22
+		}
+		vls := e.visualLines(measure, viewW)
+		row, col := vlineAtPos(vls, e.cursorPos)
+		target := row + dir
+		if target < 0 || target >= len(vls) {
+			return
+		}
+		if n := len([]rune(vls[target].text)); col > n {
+			col = n
+		}
+		e.cursorPos = vls[target].start + col
+		e.clearSelection()
+		e.cursorMoved = true
+		return
+	}
 	cl, cc, _ := e.cursorLineCol()
 	lines := strings.Split(e.text, "\n")
 	target := cl + dir
@@ -716,6 +960,36 @@ func (e *InputElement) cursorPosFromLocalMulti(lx, ly float64) int {
 	lineH := font.Size * 1.4
 	if lineH < 24 {
 		lineH = 24
+	}
+	measure := func(s string) float64 {
+		if e.lastCanvas != nil {
+			return e.lastCanvas.MeasureText(s, font).Width
+		}
+		return canvas.MeasureTextGlobal(s, font).Width
+	}
+	if e.input.Wrap { // 折行模式：按可视行定位（无横向滚动）
+		viewW := e.size.Width - 22 - sbThick
+		if viewW < 10 {
+			viewW = e.size.Width - 22
+		}
+		vls := e.visualLines(measure, viewW)
+		row := int((ly - 5 + e.scrollY) / lineH)
+		if row < 0 {
+			row = 0
+		}
+		if row >= len(vls) {
+			row = len(vls) - 1
+		}
+		rs := []rune(vls[row].text)
+		col := 0
+		target := lx - 11
+		for col < len(rs) {
+			if measure(string(rs[:col+1])) > target {
+				break
+			}
+			col++
+		}
+		return vls[row].start + col
 	}
 	lines := strings.Split(e.text, "\n")
 	line := int((ly - 5 + e.scrollY) / lineH) // 计入垂直滚动

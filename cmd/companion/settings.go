@@ -430,6 +430,8 @@ func settingsTextarea(placeholder, val string, rows, tok int, onChange func(stri
 	ta := widget.NewTextarea(placeholder, rows, onChange)
 	ta.Text = val
 	ta.ResetToken = tok
+	ta.Wrap = true        // 自动换行（长行/占位按宽度折行，无横向滚动条）
+	ta.Font.Size = 13     // 默认字号偏大→设为 13，与设置面板其它文字协调
 	ta.Color = ghText
 	ta.CursorColor = ghText
 	ta.PlaceholderColor = ghTextMuted
