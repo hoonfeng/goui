@@ -225,9 +225,53 @@ func (e *StructEditorElement) Layout(ctx *layout.LayoutContext) layout.LayoutRes
 	return layout.LayoutResult{Size: e.size}
 }
 
-func (e *StructEditorElement) Focus()          { e.focused = true; repaint() }
-func (e *StructEditorElement) Blur()           { e.focused = false; repaint() }
+func (e *StructEditorElement) Focus() { e.focused = true; focusedStructEditor = e; repaint() }
+func (e *StructEditorElement) Blur() {
+	e.focused = false
+	if focusedStructEditor == e {
+		focusedStructEditor = nil
+	}
+	repaint()
+}
 func (e *StructEditorElement) IsFocused() bool { return e.focused }
+
+// focusedStructEditor 当前聚焦的结构编辑器（供宿主菜单做单元格复制/粘贴）。
+var focusedStructEditor *StructEditorElement
+
+// HasFocusedStructEditor 当前是否有聚焦的结构编辑器（表格视图）。
+func HasFocusedStructEditor() bool { return focusedStructEditor != nil }
+
+// hasSelectedCell 是否有有效选中单元格。
+func (e *StructEditorElement) hasSelectedCell() bool {
+	return e != nil && e.selSection != "" && e.selRow >= 0 && e.selCol >= 0
+}
+
+// StructEditorCopyCell 返回聚焦结构编辑器当前选中单元格文本（无选中返回 ""）。
+func StructEditorCopyCell() string {
+	e := focusedStructEditor
+	if !e.hasSelectedCell() {
+		return ""
+	}
+	return e.cellValue(e.selSection, e.selRow, e.selCol)
+}
+
+// StructEditorPasteCell 把文本粘进聚焦结构编辑器当前选中单元格。
+func StructEditorPasteCell(s string) {
+	e := focusedStructEditor
+	if !e.hasSelectedCell() {
+		return
+	}
+	e.setCellValue(e.selSection, e.selRow, e.selCol, s)
+	repaint()
+}
+
+// FocusedEditorSelection 返回当前聚焦代码编辑器的选中文本（无聚焦/无选中返回 ""）。
+func FocusedEditorSelection() string {
+	if focusedCodeEditor != nil && focusedCodeEditor.hasSel() {
+		return focusedCodeEditor.selText()
+	}
+	return ""
+}
 
 // DemoFactorialProgram 一个示例程序（计算阶乘，体现易语言风格）。
 func DemoFactorialProgram() *SEProgram {

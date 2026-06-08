@@ -135,9 +135,11 @@ func (s *cwState) Build(ctx BuildContext) Widget {
 		}
 		content = ed
 	}
+	// 填满父容器（宿主用 Expanded 包裹），不再固定 9000——否则表格按 9000 宽分配列，
+	// 数据列被撑到屏幕外（表现为「表格展示不全」）。内容放进 Expanded → 表格用真实视口宽。
 	return Div(
-		Style{Width: c.Width, Height: c.Height, FlexDirection: "column", Gap: 6},
+		Style{FlexDirection: "column", AlignItems: "stretch", Gap: 6},
 		Div(Style{FlexDirection: "row", AlignItems: "center"}, btn), // 左对齐紧凑工具栏
-		content,
+		&Expanded{SingleChildWidget: SingleChildWidget{Child: content}, Flex: 1},
 	)
 }
