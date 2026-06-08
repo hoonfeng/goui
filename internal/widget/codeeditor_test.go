@@ -494,8 +494,8 @@ func TestStructEditorRowOps(t *testing.T) {
 	if e.editing {
 		t.Error("方向键移格不应进入编辑态")
 	}
-	// 列回绕：globals 共 4 列(0..3)，在末列右移应回到下一行第 0 列
-	e.selRow, e.selCol = 0, 3
+	// 列回绕：globals 现 5 列(0..4，含「初始值」)，在末列右移应回到下一行第 0 列
+	e.selRow, e.selCol = 0, e.sectionMaxCol("globals")
 	e.moveSelect(0, 1)
 	if e.selRow != 1 || e.selCol != 0 {
 		t.Errorf("末列右移应回绕到 (1,0)，实际 (%d,%d)", e.selRow, e.selCol)

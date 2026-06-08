@@ -66,10 +66,11 @@ func (v *SEVar) setField(f, val string) {
 func DefaultSchema() *SESchema {
 	return &SESchema{
 		Globals: []SECol{
-			{Title: "程序集变量", Field: SEFieldName, Weight: 0.26},
-			{Title: "类型", Field: SEFieldType, Weight: 0.22},
-			{Title: "数组", Field: SEFieldArray, Weight: 0.12},
-			{Title: "备注", Field: SEFieldNote, Weight: 0.40},
+			{Title: "程序集变量", Field: SEFieldName, Weight: 0.22},
+			{Title: "类型", Field: SEFieldType, Weight: 0.18},
+			{Title: "初始值", Field: SEFieldRef, Weight: 0.20}, // Ref 列存初始值（全局变量无传址语义）
+			{Title: "数组", Field: SEFieldArray, Weight: 0.10},
+			{Title: "备注", Field: SEFieldNote, Weight: 0.30},
 		},
 		Params: []SECol{
 			{Title: "参数", Field: SEFieldName, Weight: 0.22},

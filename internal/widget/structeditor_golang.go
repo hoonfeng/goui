@@ -44,8 +44,13 @@ func ParseGo(src string) (*SEProgram, error) {
 						continue
 					}
 					typ := exprStr(vs.Type)
+					val := ""
+					if len(vs.Values) > 0 {
+						val = exprStr(vs.Values[0])
+					}
 					for _, name := range vs.Names {
-						p.Globals = append(p.Globals, SEVar{Name: name.Name, Type: typ, Note: commentText(d.Doc)})
+						// 初始值存 Ref 列（全局变量不用 Ref 的传址语义）。
+						p.Globals = append(p.Globals, SEVar{Name: name.Name, Type: typ, Ref: val, Note: commentText(d.Doc)})
 					}
 				}
 			case token.CONST: // 常量声明
@@ -223,7 +228,15 @@ func (p *SEProgram) goDoc(overrideSi int, overrideBody string) (string, int) {
 		if v.Note != "" {
 			wr("// " + v.Note + "\n")
 		}
-		wr("var " + v.Name + " " + v.Type + "\n")
+		val := v.Ref // 初始值（独立列）
+		switch {
+		case val != "" && v.Type != "":
+			wr("var " + v.Name + " " + v.Type + " = " + val + "\n")
+		case val != "":
+			wr("var " + v.Name + " = " + val + "\n")
+		default:
+			wr("var " + v.Name + " " + v.Type + "\n")
+		}
 	}
 
 	// ── 类型定义 ──

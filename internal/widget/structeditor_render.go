@@ -338,7 +338,12 @@ func (e *StructEditorElement) paintVarTable(cvs canvas.Canvas, x, y, innerW, gw 
 	// 累计所有线（行号栏竖线以外）到 e.cells，供 hit-test 编辑用
 	if showHeader && len(vars) > 0 { // 画表头行（蓝底+加粗+首列名即标题）
 		hdrY := y
-		e.paintRow(cvs, x, hdrY, gw, colW, colE, section, -1, []string{sectionTitle(section, cols)}, nil, gl, true)
+		titles := make([]string, len(cols)) // 表头：首列=区段名，其余列=各自列标题（不再只有首列）
+		titles[0] = sectionTitle(section, cols)
+		for ci := 1; ci < len(cols); ci++ {
+			titles[ci] = cols[ci].Title
+		}
+		e.paintRow(cvs, x, hdrY, gw, colW, colE, section, -1, titles, nil, gl, true)
 		// 折叠三角（程序集变量/常量整段折叠）：画三角 + 命中区（带 section 供 applyFold 区分）
 		if section == "globals" || section == "consts" {
 			triX := x0 + cw - 18
