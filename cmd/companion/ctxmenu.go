@@ -353,7 +353,17 @@ func editorContentItems() []widget.MenuItem {
 		{Icon: "scissors", Label: "剪切", Enabled: en, OnClick: cutFn, Shortcut: "Ctrl+X"},
 		{Icon: "copy", Label: "复制", Enabled: en, OnClick: copyFn, Shortcut: "Ctrl+C"},
 		{Icon: "clipboard", Label: "粘贴", Enabled: en, OnClick: pasteFn, Shortcut: "Ctrl+V"},
-		{Label: "全选", Enabled: codeEd, OnClick: func() { widget.RunEditorCommand("selectAll") }, Shortcut: "Ctrl+A"},
+		sep(),
+		{Icon: "list", Label: "全选", Enabled: codeEd, OnClick: func() { widget.RunEditorCommand("selectAll") }, Shortcut: "Ctrl+A"},
+		{Icon: "braces", Label: "格式化文档", Enabled: codeEd, OnClick: func() { widget.RunEditorCommand("format") }},
+	}
+	// 文件操作（对照参考补齐：在资源管理器中显示 / 复制路径 / 复制文件名）
+	if t := theEditor.activeTab(); t != nil {
+		items = append(items, sep(),
+			mi("folder-open", "在资源管理器中显示", func() { revealInExplorer(t.path, false) }),
+			mi("copy", "复制路径", func() { copyToClipboard(t.path) }),
+			mi("file", "复制文件名", func() { copyToClipboard(filepath.Base(t.path)) }),
+		)
 	}
 	// 添加到对话：有选中代码→加代码块；否则加文件引用。
 	items = append(items, sep(), mi("message-square", "添加到对话", func() {

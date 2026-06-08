@@ -1,10 +1,22 @@
 package widget
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/user/goui/internal/event"
 )
+
+// TestEditorFormatGo 代码编辑器「格式化文档」命令用 gofmt 规范化 Go 源码。
+func TestEditorFormatGo(t *testing.T) {
+	ce := NewCodeEditor("go", "package main\nfunc  foo( ){\nx:=1\n_=x\n}\n").WithSize(400, 300)
+	e := ce.CreateElement().(*CodeEditorElement)
+	e.runCommand("format")
+	got := e.text()
+	if !strings.Contains(got, "func foo() {") {
+		t.Errorf("gofmt 后应规范化为 'func foo() {'，得:\n%s", got)
+	}
+}
 
 // TestGoParseDiag 诊断：内置 Go 解析能否把 Go 源码拆成表格数据（imports/globals/consts/types/subs）。
 func TestGoParseDiag(t *testing.T) {

@@ -1,6 +1,7 @@
 package widget
 
 import (
+	"go/format"
 	"strings"
 	"sync"
 	"time"
@@ -758,7 +759,36 @@ func (e *CodeEditorElement) runCommand(cmd string) {
 		last := len(e.lines) - 1
 		e.cursor = cePos{last, len(e.lineRunes(last))}
 		repaint()
+	case "format":
+		e.formatGo()
 	}
+}
+
+// formatGo 用 gofmt 格式化当前文档（仅当内容是合法 Go；非 Go/语法错误则原样不动）。
+func (e *CodeEditorElement) formatGo() {
+	src := e.text()
+	out, err := format.Source([]byte(src))
+	if err != nil {
+		return // 非 Go 或有语法错误 → 不动
+	}
+	formatted := strings.TrimRight(string(out), "\n")
+	if formatted == strings.TrimRight(src, "\n") {
+		return // 已是规范格式
+	}
+	e.recordUndo("format")
+	e.lines = strings.Split(formatted, "\n")
+	if len(e.lines) == 0 {
+		e.lines = []string{""}
+	}
+	if e.cursor.line >= len(e.lines) {
+		e.cursor.line = len(e.lines) - 1
+	}
+	if n := len(e.lineRunes(e.cursor.line)); e.cursor.col > n {
+		e.cursor.col = n
+	}
+	e.anchor = e.cursor
+	e.afterEdit()
+	repaint()
 }
 
 // EmbeddedContentHeight 嵌入模式下按内容算自然高度（可见行数*行高 + 边距，至少 3 行）。

@@ -96,7 +96,7 @@ func (s *cwState) Build(ctx BuildContext) Widget {
 	}
 	if !s.inited {
 		s.inited = true
-		s.mode = "table"
+		s.mode = "text" // 默认代码视图（结构化表格视图暂缓，仍可经右键菜单切换）
 		s.codeCur = &CECursorState{}
 		s.tableScroll = new(float64)
 		prov := s.provider()
