@@ -415,26 +415,37 @@ type vline struct {
 }
 
 // wrapRunes 把一段（不含 \n）按宽度贪心折行，优先在空格后断；返回各段的 [起始 rune 下标]。
+// 性能：先一次性测每个字的宽度再累加判断（O(n)），避免每步重测增长前缀（O(n²)）——
+// 否则长文每次重绘都 O(n²)，长按退格会明显卡顿。
 func wrapRunes(runes []rune, measure func(string) float64, viewW float64) []int {
 	starts := []int{0}
-	if viewW <= 0 || len(runes) == 0 {
+	n := len(runes)
+	if viewW <= 0 || n == 0 {
 		return starts
 	}
-	lineStart, lastSpace := 0, -1
-	for i := 0; i < len(runes); {
+	cw := make([]float64, n)
+	for i := range runes {
+		cw[i] = measure(string(runes[i]))
+	}
+	lineStart, lastSpace, w := 0, -1, 0.0
+	for i := 0; i < n; i++ {
 		if runes[i] == ' ' {
 			lastSpace = i
 		}
-		if i > lineStart && measure(string(runes[lineStart:i+1])) > viewW {
+		if i > lineStart && w+cw[i] > viewW {
 			brk := i
 			if lastSpace > lineStart {
 				brk = lastSpace + 1 // 空格后断行
 			}
 			starts = append(starts, brk)
-			lineStart, lastSpace, i = brk, -1, brk
-			continue
+			w = 0
+			for j := brk; j <= i; j++ { // 移到新行的字（brk..i）重算行宽
+				w += cw[j]
+			}
+			lineStart, lastSpace = brk, -1
+		} else {
+			w += cw[i]
 		}
-		i++
 	}
 	return starts
 }

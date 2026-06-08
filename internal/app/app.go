@@ -33,6 +33,7 @@ type Application struct {
 	pendingEvents    []event.Event     // 待处理事件队列
 	hoveredElement   widget.Element    // 当前鼠标悬停的 Element
 	focusedElement   widget.Element    // 当前拥有焦点的 Element
+	lastInputAt      time.Time         // 最近一次键盘/IME 输入时刻（用于编辑期间提速到满帧，详见主循环帧率节流）
 	capturedElement  widget.Element    // 鼠标捕获的 Element（按下时捕获，释放时解除）
 	capturedOnButton event.MouseButton // 捕获时的按键
 
@@ -505,7 +506,9 @@ func (app *Application) mainLoop() {
 			// 动画需 ~60fps 流畅；仅光标闪烁则大幅降帧（~8fps）——光标闪一下不必满帧重绘整个 UI，
 			// 显著减少持续渲染期的每帧 CGO 分配/GC 与 CPU/GPU 占用，也压低内存峰值。
 			fi := frameInterval
-			if !animation.HasActive() {
+			// 仅「真正空闲」（无动画、且近 600ms 无键盘/IME 输入）才降到 ~8fps 省电；
+			// 编辑活动期间保持满帧——否则长按退格/快速打字时事件比渲染快，文字成块消失=卡顿。
+			if !animation.HasActive() && time.Since(app.lastInputAt) > 600*time.Millisecond {
 				fi = cursorIdleInterval
 			}
 			if elapsed := time.Since(frameStart); elapsed < fi {
@@ -624,6 +627,7 @@ func (app *Application) processPendingEvents() {
 		case *event.MouseEvent:
 			app.routeMouseEvent(e)
 		case *event.KeyEvent:
+			app.lastInputAt = time.Now() // 编辑活动 → 主循环临时提速到满帧（长按退格/快速打字流畅）
 			// 快捷键优先匹配：如果 ShortcutManager 匹配到快捷键，不再路由到焦点 Widget
 			if e.Type() == event.TypeKeyDown && app.ShortcutManager != nil {
 				if app.ShortcutManager.Match(e) {
@@ -637,6 +641,7 @@ func (app *Application) processPendingEvents() {
 				app.hoveredElement.HandleEvent(e)
 			}
 		case *event.IMECompositionEvent:
+			app.lastInputAt = time.Now() // IME 输入活动 → 提速到满帧
 			// IME 组合事件路由到焦点 Element
 			if app.focusedElement != nil {
 				app.focusedElement.HandleEvent(e)
