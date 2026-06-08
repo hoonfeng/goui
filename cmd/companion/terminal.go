@@ -249,6 +249,12 @@ type terminalState struct {
 	idleFrames int                   // 连续无输出帧数
 	scrollOff  int                   // 回看偏移（0=贴底/实时，>0=向上看历史；仅 UI 线程）
 	pump       *animation.Controller // 帧泵
+	// 鼠标拖拽选区（仅 UI 线程）：锚点/游标用组合缓冲绝对行 + 列；cellW/H 为最近一帧格宽/行高（供坐标映射）。
+	selecting    bool
+	hasSel       bool
+	selAR, selAC int
+	selCR, selCC int
+	cellW, cellH float64
 }
 
 // TerminalPanel 终端面板组件。
@@ -261,6 +267,7 @@ func (t *terminalState) Build(ctx widget.BuildContext) widget.Widget {
 		OnPaint: func(cvs canvas.Canvas, x, y, w, h float64) {
 			font := termGridFontNow()
 			cw, ch := termCellSize(cvs, font)
+			t.cellW, t.cellH = cw, ch // 存格宽/行高，供鼠标坐标→单元映射
 			cols, rows := 1, 1
 			if cw > 0 {
 				cols = int(w / cw)
@@ -276,10 +283,13 @@ func (t *terminalState) Build(ctx widget.BuildContext) widget.Widget {
 			}
 			t.ensurePTY(cols, rows)
 			t.resizeTo(cols, rows)
-			paintVTGrid(cvs, x, y, w, h, t.vt, font, t.scrollOff)
+			paintVTGrid(cvs, x, y, w, h, t.vt, font, t.scrollOff, t.normSel())
 		},
-		OnKey:   t.handleKey,
-		OnWheel: t.handleWheel,
+		OnKey:       t.handleKey,
+		OnWheel:     t.handleWheel,
+		OnMouseDown: t.onSelDown,
+		OnMouseDrag: t.onSelDrag,
+		OnMouseUp:   t.onSelUp,
 	}
 	return &widget.ContextArea{ // 右键：终端菜单（复制全部/粘贴/添加到对话/清屏/切 shell）
 		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
@@ -288,6 +298,94 @@ func (t *terminalState) Build(ctx widget.BuildContext) widget.Widget {
 		)},
 		OnContextMenu: func(x, y float64) { terminalMenu(x, y) },
 	}
+}
+
+// ─── 鼠标拖拽选区（仅 UI 线程）──────────────────────────────────
+
+// cellAt 把终端内局部坐标(px)换算成「组合缓冲绝对行 + 列」。
+func (t *terminalState) cellAt(localX, localY float64) (row, col int) {
+	if t.cellW <= 0 || t.cellH <= 0 {
+		return 0, 0
+	}
+	col = int(localX / t.cellW)
+	if col < 0 {
+		col = 0
+	}
+	vr := int(localY / t.cellH) // 视窗内可见行
+	if vr < 0 {
+		vr = 0
+	}
+	row = (t.vt.ScrollbackLen() - t.scrollOff) + vr
+	return
+}
+
+func (t *terminalState) onSelDown(x, y float64) {
+	t.selAR, t.selAC = t.cellAt(x, y)
+	t.selCR, t.selCC = t.selAR, t.selAC
+	t.selecting, t.hasSel = true, false
+	widget.OnNeedsRepaint()
+}
+
+func (t *terminalState) onSelDrag(x, y float64) {
+	if !t.selecting {
+		return
+	}
+	t.selCR, t.selCC = t.cellAt(x, y)
+	t.hasSel = t.selCR != t.selAR || t.selCC != t.selAC
+	widget.OnNeedsRepaint()
+}
+
+func (t *terminalState) onSelUp(x, y float64) {
+	t.selecting = false
+	if t.hasSel { // 拖选完即复制（PuTTY/xterm 风格：选 = 复制；右键可粘贴）
+		copyToClipboard(t.copySelection())
+	}
+	widget.OnNeedsRepaint()
+}
+
+// normSel 当前选区归一化成 (rowA,colA)≤(rowB,colB)；无选区返回 nil。
+func (t *terminalState) normSel() *vtSel {
+	if !t.hasSel {
+		return nil
+	}
+	rA, cA, rB, cB := t.selAR, t.selAC, t.selCR, t.selCC
+	if rA > rB || (rA == rB && cA > cB) {
+		rA, cA, rB, cB = rB, cB, rA, cA
+	}
+	return &vtSel{rA, cA, rB, cB}
+}
+
+// copySelection 提取选区文本（首行从 colA、末行到 colB、中间整行；去行尾空格、行间换行）。
+func (t *terminalState) copySelection() string {
+	s := t.normSel()
+	if s == nil {
+		return ""
+	}
+	cols, _ := t.vt.Size()
+	var b strings.Builder
+	for r := s.rowA; r <= s.rowB; r++ {
+		row := t.vt.RowAt(r)
+		c0, c1 := 0, cols
+		if r == s.rowA {
+			c0 = s.colA
+		}
+		if r == s.rowB {
+			c1 = s.colB
+		}
+		var line []rune
+		for c := c0; c < c1; c++ {
+			ch := ' '
+			if c < len(row) && row[c].Ch != 0 {
+				ch = row[c].Ch
+			}
+			line = append(line, ch)
+		}
+		b.WriteString(strings.TrimRight(string(line), " "))
+		if r < s.rowB {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
 }
 
 // ensurePTY 懒启动伪终端（首帧拿到真实尺寸时）。

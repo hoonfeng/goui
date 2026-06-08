@@ -95,9 +95,29 @@ func termGridFontNow() canvas.Font {
 	return f
 }
 
-// paintVTGrid 在画布上画 vterm 网格：等宽逐格 背景块 + 字符（SGR 配色/粗体）+ 块状半透明光标。
-// scrollOff 为回看偏移（0=贴底/实时，>0=向上看历史）：渲染「组合缓冲」(滚回历史+当前屏)的对应窗口。
-func paintVTGrid(cvs canvas.Canvas, x, y, w, h float64, vt *vterm.Terminal, font canvas.Font, scrollOff int) {
+// vtSel 选区，组合缓冲坐标（行=scrollback+grid 的绝对行下标，列=列号）；已归一化 (rowA,colA)≤(rowB,colB)。
+type vtSel struct{ rowA, colA, rowB, colB int }
+
+// cellInSel 单元 (r,c) 是否落在选区内（标准文本选区：首行从 colA 起、末行到 colB 止、中间整行）。
+func cellInSel(r, c int, s *vtSel) bool {
+	if r < s.rowA || r > s.rowB {
+		return false
+	}
+	if s.rowA == s.rowB {
+		return c >= s.colA && c < s.colB
+	}
+	if r == s.rowA {
+		return c >= s.colA
+	}
+	if r == s.rowB {
+		return c < s.colB
+	}
+	return true
+}
+
+// paintVTGrid 在画布上画 vterm 网格：等宽逐格 背景块 + 选区高亮 + 字符（SGR 配色/粗体）+ 块状半透明光标。
+// scrollOff 为回看偏移（0=贴底/实时，>0=向上看历史）；sel 非空则画选区蓝底。
+func paintVTGrid(cvs canvas.Canvas, x, y, w, h float64, vt *vterm.Terminal, font canvas.Font, scrollOff int, sel *vtSel) {
 	cw, ch := termCellSize(cvs, font)
 	cols, rows := vt.Size()
 	start := vt.ScrollbackLen() - scrollOff // 视窗顶行在组合缓冲中的下标
@@ -119,6 +139,11 @@ func paintVTGrid(cvs canvas.Canvas, x, y, w, h float64, vt *vterm.Terminal, font
 				bp := paint.DefaultPaint()
 				bp.Color = vtColor(cell.BG, *cEditor)
 				cvs.DrawRect(cx, cy, cw+0.5, ch, bp)
+			}
+			if sel != nil && cellInSel(start+vr, c, sel) { // 选区高亮底（盖住单元底色，字符仍在其上）
+				sp := paint.DefaultPaint()
+				sp.Color = types.ColorFromRGB(38, 79, 120) // 选区蓝
+				cvs.DrawRect(cx, cy, cw+0.5, ch, sp)
 			}
 			if cell.Ch != ' ' && cell.Ch != 0 { // 字符
 				tp := paint.DefaultPaint()
@@ -142,6 +167,6 @@ func paintVTGrid(cvs canvas.Canvas, x, y, w, h float64, vt *vterm.Terminal, font
 // termGridView 把 vterm 网格画成自绘 widget（铺满父约束；只显示不抓输入，预览/无输入场景用）。
 func termGridView(vt *vterm.Terminal) widget.Widget {
 	return &widget.PaintLayer{OnPaint: func(cvs canvas.Canvas, x, y, w, h float64) {
-		paintVTGrid(cvs, x, y, w, h, vt, termGridFontNow(), 0)
+		paintVTGrid(cvs, x, y, w, h, vt, termGridFontNow(), 0, nil)
 	}}
 }

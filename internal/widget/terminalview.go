@@ -13,8 +13,12 @@ import (
 type TerminalView struct {
 	StatelessWidget
 	OnPaint func(cvs canvas.Canvas, x, y, w, h float64)
-	OnKey   func(ev *event.KeyEvent)  // KeyDown 与 KeyChar 都回调；上层据 ev.Type()/Char/Key 区分
-	OnWheel func(deltaY float64)      // 滚轮：deltaY>0 上滚（看历史），<0 下滚
+	OnKey   func(ev *event.KeyEvent) // KeyDown 与 KeyChar 都回调；上层据 ev.Type()/Char/Key 区分
+	OnWheel func(deltaY float64)     // 滚轮：deltaY>0 上滚（看历史），<0 下滚
+	// 鼠标拖拽选区（x,y 为相对终端左上角的局部坐标）：按下起点、拖动延伸、抬起结束。
+	OnMouseDown func(x, y float64)
+	OnMouseDrag func(x, y float64)
+	OnMouseUp   func(x, y float64)
 }
 
 func (w *TerminalView) CreateElement() Element {
@@ -23,8 +27,9 @@ func (w *TerminalView) CreateElement() Element {
 
 type terminalViewElement struct {
 	BaseElement
-	w       *TerminalView
-	focused bool
+	w        *TerminalView
+	focused  bool
+	dragging bool // 鼠标左键按下拖拽选区中
 }
 
 func (e *terminalViewElement) Build() []Element { return nil }
@@ -60,7 +65,32 @@ func (e *terminalViewElement) IsFocused() bool { return e.focused }
 func (e *terminalViewElement) HandleEvent(ev event.Event) bool {
 	switch ev.Type() {
 	case event.TypeMouseDown:
+		if me, ok := ev.(*event.MouseEvent); ok && me.Button == event.ButtonLeft && e.w.OnMouseDown != nil {
+			p := e.Offset()
+			e.w.OnMouseDown(me.X-p.X, me.Y-p.Y)
+			e.dragging = true
+			if RequestPointerCapture != nil {
+				RequestPointerCapture(e) // 抓指针：拖到终端外也能收到 move/up
+			}
+		}
 		return true // 让 app focus-on-down 把焦点设到本元素（键盘才会路由过来）
+	case event.TypeMouseMove:
+		if e.dragging {
+			if me, ok := ev.(*event.MouseEvent); ok && e.w.OnMouseDrag != nil {
+				p := e.Offset()
+				e.w.OnMouseDrag(me.X-p.X, me.Y-p.Y)
+			}
+			return true
+		}
+	case event.TypeMouseUp:
+		if e.dragging {
+			e.dragging = false
+			if me, ok := ev.(*event.MouseEvent); ok && e.w.OnMouseUp != nil {
+				p := e.Offset()
+				e.w.OnMouseUp(me.X-p.X, me.Y-p.Y)
+			}
+			return true
+		}
 	case event.TypeKeyDown, event.TypeKeyChar:
 		if ke, ok := ev.(*event.KeyEvent); ok && e.w.OnKey != nil {
 			e.w.OnKey(ke)
