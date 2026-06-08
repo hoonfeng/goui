@@ -1,7 +1,5 @@
 package widget
 
-import "github.com/user/goui/internal/types"
-
 // CodeWorkbench 同一个 Go 程序的「传统代码视图 ⇄ 表格代码视图」切换器。
 // 顶部一个切换按钮：
 //   表格视图 = StructEditor(Go 模式)，ParseGo 把 Go 代码变成可编辑表格；
@@ -110,21 +108,13 @@ func (s *cwState) Build(ctx BuildContext) Widget {
 		}
 		s.savedGo = prov.Generate(s.program) // 生成基线（切回代码时判表格是否被改）
 	}
-	btnLabel := "切换到代码视图"
-	if s.mode == "text" {
-		btnLabel = "切换到表格视图"
-	}
-	btn := NewButton(btnLabel, s.toggle) // 紧凑切换按钮
-	btn.FontSize = 12
-	btn.Padding = types.EdgeInsetsLTRB(10, 3, 10, 3)
-	btn.MinWidth, btn.MinHeight = 0, 0
 	var content Widget
 	if s.mode == "table" {
-		se := NewStructEditor(s.program).WithLang(c.lang).WithSize(c.Width, c.Height-46)
+		se := NewStructEditor(s.program).WithLang(c.lang).WithSize(c.Width, c.Height)
 		se.ScrollRef = s.tableScroll // 切回表格恢复滚动位置
 		content = se
 	} else {
-		ed := NewCodeEditor(c.lang, s.codeText).WithSize(c.Width, c.Height-46)
+		ed := NewCodeEditor(c.lang, s.codeText).WithSize(c.Width, c.Height)
 		ed.IndentGuides = true
 		ed.CursorRef = s.codeCur // 切回代码恢复光标/滚动
 		ed.OnChange = func(t string) {
@@ -135,11 +125,7 @@ func (s *cwState) Build(ctx BuildContext) Widget {
 		}
 		content = ed
 	}
-	// 填满父容器（宿主用 Expanded 包裹），不再固定 9000——否则表格按 9000 宽分配列，
-	// 数据列被撑到屏幕外（表现为「表格展示不全」）。内容放进 Expanded → 表格用真实视口宽。
-	return Div(
-		Style{FlexDirection: "column", AlignItems: "stretch", Gap: 6},
-		Div(Style{FlexDirection: "row", AlignItems: "center"}, btn), // 左对齐紧凑工具栏
-		&Expanded{SingleChildWidget: SingleChildWidget{Child: content}, Flex: 1},
-	)
+	// 直接返回内容（无切换按钮，视图切换走右键菜单 widget.ToggleWorkbenchView）；
+	// 内容用真实视口宽（宿主 Expanded 约束），表格列不再被撑出屏外。
+	return content
 }

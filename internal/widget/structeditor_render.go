@@ -81,11 +81,7 @@ func (e *StructEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 			td := &e.program.Types[i]
 			typeVars[i].Name = td.Name
 			typeVars[i].Type = string(td.Kind)
-			if td.Kind == SETypeAlias {
-				typeVars[i].Array = td.TypeExpr // 别名用 Array 列显示底层类型
-			} else {
-				typeVars[i].Array = itoaCE(len(td.Fields)+len(td.Methods)) + " 项"
-			}
+			typeVars[i].Array = typeMembersSummary(td) // 成员列：字段/方法列表直观显示（取代「N 项」）
 			typeVars[i].Note = td.Note
 		}
 		y = e.paintVarTable(cvs, x, y, innerW, gw, "types", typeDefCols, typeVars, gl, true, false)
@@ -493,10 +489,10 @@ var constCols = []SECol{
 
 // typeDefCols 类型定义表的列定义。
 var typeDefCols = []SECol{
-	{Title: "类型名", Field: SEFieldName, Weight: 0.25},
-	{Title: "种类", Field: SEFieldType, Weight: 0.15},
-	{Title: "项数/底层类型", Field: SEFieldArray, Weight: 0.25},
-	{Title: "备注", Field: SEFieldNote, Weight: 0.35},
+	{Title: "类型名", Field: SEFieldName, Weight: 0.22},
+	{Title: "种类", Field: SEFieldType, Weight: 0.13},
+	{Title: "成员/底层类型", Field: SEFieldArray, Weight: 0.45},
+	{Title: "备注", Field: SEFieldNote, Weight: 0.20},
 }
 
 // sectionTitle 取区段的标题文字。

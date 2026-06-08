@@ -58,6 +58,32 @@ type SESub struct {
 	TypeParams  []SEVar // 泛型类型参数（Name=参数名, Type=约束）
 }
 
+// typeMembersSummary 类型成员摘要（直观显示，取代「N 项」计数）：
+// struct→字段列表「X int, Y int」、interface→方法名、alias→底层类型表达式。
+func typeMembersSummary(td *SEType) string {
+	switch td.Kind {
+	case SETypeAlias:
+		return td.TypeExpr
+	case SETypeInterface:
+		parts := make([]string, 0, len(td.Methods))
+		for i := range td.Methods {
+			parts = append(parts, td.Methods[i].Name)
+		}
+		return strings.Join(parts, ", ")
+	default: // struct
+		parts := make([]string, 0, len(td.Fields))
+		for i := range td.Fields {
+			f := &td.Fields[i]
+			if f.Type != "" {
+				parts = append(parts, f.Name+" "+f.Type)
+			} else {
+				parts = append(parts, f.Name)
+			}
+		}
+		return strings.Join(parts, ", ")
+	}
+}
+
 // retString 把返回值列表拼成文本（0→""；单个无名→"int"；多个/具名→"(a int, b error)"）。
 func retString(returns []SEVar) string {
 	if len(returns) == 0 {

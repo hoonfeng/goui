@@ -96,10 +96,7 @@ func (e *StructEditorElement) cellValue(section string, row, col int) string {
 			case 1:
 				return string(td.Kind)
 			case 2:
-				if td.Kind == SETypeAlias {
-					return td.TypeExpr
-				}
-				return itoaCE(len(td.Fields)+len(td.Methods)) + " 项"
+				return typeMembersSummary(td) // 成员摘要：字段/方法列表（直观）
 			case 3:
 				return td.Note
 			}
