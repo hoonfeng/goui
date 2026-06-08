@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/xml"
 	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -286,35 +287,45 @@ func renderPairIcon(svgContent string, size int) image.Image {
 }
 
 var (
-	pairLogoSrc    image.Image // 光栅化一次缓存（每次 build 复用）
-	pairLogoLoaded bool        // 已尝试加载（避免每帧重试缺失文件）
+	pairIconSrc    image.Image // logo 位图，加载一次缓存
+	pairIconLoaded bool
 )
 
-// pairLogo 加载并渲染 assets/icon.svg 作标题栏 app 图标——运行时加载外部资源（非 embed），含渐变忠实渲染。
-func pairLogo() widget.Widget {
-	if !pairLogoLoaded {
-		pairLogoLoaded = true
-		if data, err := os.ReadFile(assetPath("icon.svg")); err == nil {
-			pairLogoSrc = renderPairIcon(string(data), 44) // 2.2× 显示尺寸，下采样更清晰
+// pairIconImage logo 位图：优先用预渲染的 assets/icon.png（参考项目同款，含 <filter> 发光——
+// 自带的 renderPairIcon 只画形状+渐变、画不出发光滤镜，故 PNG 更还原）；PNG 缺失则退回自渲染 icon.svg（无发光）。
+func pairIconImage() image.Image {
+	if pairIconLoaded {
+		return pairIconSrc
+	}
+	pairIconLoaded = true
+	if f, err := os.Open(assetPath("icon.png")); err == nil {
+		img, derr := png.Decode(f)
+		f.Close()
+		if derr == nil {
+			pairIconSrc = img
+			return pairIconSrc
 		}
 	}
-	if pairLogoSrc == nil {
-		return widget.Div(widget.Style{Width: 20, Height: 20}) // 资源缺失兜底空位
+	if data, err := os.ReadFile(assetPath("icon.svg")); err == nil { // 兜底：自渲染 svg
+		pairIconSrc = renderPairIcon(string(data), 256)
 	}
-	return widget.NewImage(pairLogoSrc).WithSize(20, 20).WithFit(widget.ImageFitContain)
+	return pairIconSrc
 }
 
-var pairLogoBigSrc image.Image
-
-// pairLogoBig 大号 logo（欢迎页用，128px 光栅下采样到 64 显示）。
-func pairLogoBig() widget.Widget {
-	if pairLogoBigSrc == nil {
-		if data, err := os.ReadFile(assetPath("icon.svg")); err == nil {
-			pairLogoBigSrc = renderPairIcon(string(data), 128)
-		}
+// pairLogo 标题栏 app 图标（20px 显示）。
+func pairLogo() widget.Widget {
+	img := pairIconImage()
+	if img == nil {
+		return widget.Div(widget.Style{Width: 20, Height: 20}) // 资源缺失兜底空位
 	}
-	if pairLogoBigSrc == nil {
+	return widget.NewImage(img).WithSize(20, 20).WithFit(widget.ImageFitContain)
+}
+
+// pairLogoBig 大号 logo（欢迎页用，64px 显示）。
+func pairLogoBig() widget.Widget {
+	img := pairIconImage()
+	if img == nil {
 		return widget.Div(widget.Style{Width: 64, Height: 64})
 	}
-	return widget.NewImage(pairLogoBigSrc).WithSize(64, 64).WithFit(widget.ImageFitContain)
+	return widget.NewImage(img).WithSize(64, 64).WithFit(widget.ImageFitContain)
 }
