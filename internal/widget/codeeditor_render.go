@@ -750,6 +750,7 @@ func (e *CodeEditorElement) HandleEvent(ev event.Event) bool {
 			break
 		}
 		if me.Button == event.ButtonRight {
+			e.Focus() // 右键也聚焦本编辑器：使宿主右键菜单的编辑命令(撤销/格式化/自动换行…)经 focusedCodeEditor 派发到它；随后放行冒泡给宿主菜单
 			return false
 		}
 		if e.findActive && e.findBarHit(me.X, me.Y) { // 查找栏按钮/输入框
