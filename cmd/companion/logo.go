@@ -307,9 +307,9 @@ func loadIconPNG(name string) image.Image {
 // （512px 直接缩到 64px 会糊掉中心两个小圆）；这些 PNG 含 <filter> 发光，比自带 renderPairIcon 更还原。
 // 预渲染 PNG 都缺失时才退回自渲染 icon.svg（无发光兜底）。
 func pairIconImage(displayPx int) image.Image {
-	name := "icon128.png" // ~64px 显示用 128（2×）
-	if displayPx <= 40 {
-		name = "icon64.png" // 标题栏等小尺寸用 64
+	name := "icon128.png" // 更大显示用 128
+	if displayPx <= 64 {
+		name = "icon64.png" // ≤64px：用 64 的图 1:1（不缩放最清晰，且与参考 64px 一致）
 	}
 	if img := loadIconPNG(name); img != nil {
 		return img
@@ -332,12 +332,12 @@ func pairLogo() widget.Widget {
 	return widget.NewImage(img).WithSize(20, 20).WithFit(widget.ImageFitContain)
 }
 
-// pairLogoBig 大号 logo（欢迎页用）。放大到 96px：中心那圈细描边圆环在 64px 是亚像素、几乎只剩实心点，
-// 96px 才能看出「外圈圆环 + 内圈实心点」两个圆。
+// pairLogoBig 大号 logo（欢迎页用，64px，与参考一致）。
+// 注：中心外圈圆环描边很细，64px 下接近亚像素，主要显出内圈实心点——这与参考 64px 表现一致。
 func pairLogoBig() widget.Widget {
-	img := pairIconImage(96)
+	img := pairIconImage(64)
 	if img == nil {
-		return widget.Div(widget.Style{Width: 96, Height: 96})
+		return widget.Div(widget.Style{Width: 64, Height: 64})
 	}
-	return widget.NewImage(img).WithSize(96, 96).WithFit(widget.ImageFitContain)
+	return widget.NewImage(img).WithSize(64, 64).WithFit(widget.ImageFitContain)
 }
