@@ -65,6 +65,12 @@ func main() {
 	// 下拉选择器（设置里的 服务商/模型 选择框）统一深色，否则 el 浅色白底与深色对话框冲突。
 	widget.SetSelectTheme(*ghBgPrimary, ghText, *ghBorder, *ghBgTertiary, ghTextMuted)
 
+	// CodeEditor 切暗色主题（VS Code Dark+），与窗口布局（cEditor=#1e1e1e 等）统一。
+	widget.SetTheme(widget.DarkTheme())
+	// 编辑器右键改用 companion 自定义菜单（editorContentMenu：撤销/剪贴/全选 + 结构化语言视图切换），
+	// 不弹 CodeEditor 组件自带菜单。
+	widget.SuppressEditorContextMenu = true
+
 	// Ctrl+S 保存当前编辑器标签（全局快捷键，优先于焦点 Widget）。VK_S=0x53。
 	application.ShortcutManager.Register(0x53, event.ModCtrl, func() { theEditor.save() }, "Ctrl+S 保存")
 	application.ShortcutManager.Register(0x46, event.ModCtrl, func() { theChatState.toggleSearch() }, "Ctrl+F 搜索对话") // VK_F

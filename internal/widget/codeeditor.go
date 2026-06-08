@@ -724,6 +724,12 @@ func RunEditorCommand(cmd string) bool {
 	return true
 }
 
+// SuppressEditorContextMenu 为 true 时 CodeEditor 不弹自带右键菜单，放行事件冒泡给宿主自定义菜单。
+var SuppressEditorContextMenu bool
+
+// HasFocusedEditor 当前是否有聚焦的代码编辑器（供宿主菜单决定剪切/复制等项是否可用）。
+func HasFocusedEditor() bool { return focusedCodeEditor != nil }
+
 // runCommand 执行一条编辑命令（与右键菜单 contextItems 同源逻辑）。
 func (e *CodeEditorElement) runCommand(cmd string) {
 	switch cmd {

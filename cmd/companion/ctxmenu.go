@@ -316,3 +316,30 @@ func terminalItems() []widget.MenuItem {
 }
 
 func terminalMenu(x, y float64) { showMenu(x, y, terminalItems()) }
+
+// ─── 编辑器内容菜单（代码编辑器/结构化工作台的右键自定义菜单，取代组件自带）─────────
+
+func editorContentItems() []widget.MenuItem {
+	en := widget.HasFocusedEditor() // 有聚焦代码编辑器时编辑命令才可用（表格视图下灰显）
+	cmd := func(c string) func() { return func() { widget.RunEditorCommand(c) } }
+	items := []widget.MenuItem{
+		{Icon: "undo-2", Label: "撤销", Enabled: en, OnClick: cmd("undo"), Shortcut: "Ctrl+Z"},
+		{Icon: "redo-2", Label: "重做", Enabled: en, OnClick: cmd("redo"), Shortcut: "Ctrl+Y"},
+		sep(),
+		{Icon: "scissors", Label: "剪切", Enabled: en, OnClick: cmd("cut"), Shortcut: "Ctrl+X"},
+		{Icon: "copy", Label: "复制", Enabled: en, OnClick: cmd("copy"), Shortcut: "Ctrl+C"},
+		{Icon: "clipboard", Label: "粘贴", Enabled: en, OnClick: cmd("paste"), Shortcut: "Ctrl+V"},
+		{Label: "全选", Enabled: en, OnClick: cmd("selectAll"), Shortcut: "Ctrl+A"},
+	}
+	// 结构化语言（有 LanguageProvider）→ 追加「代码⇄表格」视图切换
+	if t := theEditor.activeTab(); t != nil && widget.HasProvider(t.lang) {
+		icon, label := "code", "切换到代码视图"
+		if widget.WorkbenchModeIsText() {
+			icon, label = "table-2", "切换到表格视图"
+		}
+		items = append(items, sep(), mi(icon, label, widget.ToggleWorkbenchView))
+	}
+	return items
+}
+
+func editorContentMenu(x, y float64) { showMenu(x, y, editorContentItems()) }

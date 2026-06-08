@@ -21,7 +21,7 @@ var theEditor = &editorState{}
 type editorTab struct {
 	path    string
 	content string
-	lang    string // 扩展名去点（交 ceLangFor）
+	lang    string // 扩展名去点（交 ceLangFor / HasProvider）
 	dirty   bool   // 有未保存改动
 }
 
@@ -207,18 +207,34 @@ func (e *editorState) Build(ctx widget.BuildContext) widget.Widget {
 		)
 	}
 	t := e.activeTab()
-	// WithSize 大尺寸：被 expand+stretch 紧约束 Constrain 成铺满编辑区。
-	ed := widget.NewCodeEditor(t.lang, t.content).WithSize(9000, 9000)
-	ed.ReloadToken = e.reload
-	ed.RevealLine = e.gotoLine
-	ed.RevealToken = e.reveal
-	ed.OnChange = e.onEdit
-	ed.FontSize = float64(theSettings.EditorFontSize) // 外观设置：字号（0=默认 14）
-	ed.Minimap = !theSettings.HideMinimap             // 外观设置：minimap（默认开）
+	var editor widget.Widget
+	// 有 LanguageProvider 的语言用 CodeWorkbench（结构化/代码视图可切换）；
+	// 无 provider 的语言用标准 CodeEditor（语法高亮）。
+	if widget.HasProvider(t.lang) {
+		wb := widget.NewCodeWorkbench(t.content).WithSize(9000, 9000).WithLang(t.lang)
+		wb.ReloadToken = e.reload
+		wb.OnChange = e.onEdit
+		editor = wb
+	} else {
+		ed := widget.NewCodeEditor(t.lang, t.content).WithSize(9000, 9000)
+		ed.ReloadToken = e.reload
+		ed.RevealLine = e.gotoLine
+		ed.RevealToken = e.reveal
+		ed.OnChange = e.onEdit
+		ed.FontSize = float64(theSettings.EditorFontSize) // 外观设置：字号（0=默认 14）
+		ed.Minimap = !theSettings.HideMinimap             // 外观设置：minimap（默认开）
+		editor = ed
+	}
+	// 编辑器内容包一层 ContextArea：右键弹 companion 自定义菜单（撤销/剪贴/全选 + 结构化语言的视图切换），
+	// 取代 goui 组件自带菜单（CodeEditor 经 SuppressEditorContextMenu 放行右键冒泡到这里）。
+	content := &widget.ContextArea{
+		SingleChildWidget: widget.SingleChildWidget{Child: editor},
+		OnContextMenu:     editorContentMenu,
+	}
 	return widget.Div(
 		widget.Style{BackgroundColor: cEditor, FlexDirection: "column", AlignItems: "stretch"},
 		e.tabBar(),
-		expand(ed),
+		expand(content),
 	)
 }
 

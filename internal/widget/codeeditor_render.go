@@ -640,6 +640,9 @@ func (e *CodeEditorElement) HandleEvent(ev event.Event) bool {
 		return true
 
 	case event.TypeContextMenu:
+		if SuppressEditorContextMenu { // 宿主（如 companion）自带编辑器右键菜单 → 放行冒泡给上层 ContextArea
+			return false
+		}
 		me, ok := ev.(*event.MouseEvent)
 		if !ok {
 			break

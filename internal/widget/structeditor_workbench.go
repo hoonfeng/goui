@@ -1,5 +1,7 @@
 package widget
 
+import "github.com/user/goui/internal/types"
+
 // CodeWorkbench 同一个 Go 程序的「传统代码视图 ⇄ 表格代码视图」切换器。
 // 顶部一个切换按钮：
 //   表格视图 = StructEditor(Go 模式)，ParseGo 把 Go 代码变成可编辑表格；
@@ -23,7 +25,18 @@ func (w *CodeWorkbench) WithSize(wd, h float64) *CodeWorkbench { w.Width, w.Heig
 
 // WithLang 设置语言（需已注册对应 LanguageProvider，如 "go"/"ey"）。
 func (w *CodeWorkbench) WithLang(l string) *CodeWorkbench { w.lang = l; return w }
-func (w *CodeWorkbench) CreateState() State               { return &cwState{} }
+
+// theCwState 代码工作台的包级单例状态——避免宿主（编辑器面板）因 dirty 重建时嵌套 StatefulWidget
+// 状态丢失（否则切换视图后宿主重建→工作台被重置回表格视图，表现为「切换代码视图点击失败」）。
+var theCwState = &cwState{}
+
+func (w *CodeWorkbench) CreateState() State { return theCwState }
+
+// ToggleWorkbenchView 切换代码工作台「代码⇄表格」视图（供宿主自定义右键菜单调用）。
+func ToggleWorkbenchView() { theCwState.toggle() }
+
+// WorkbenchModeIsText 代码工作台当前是否为代码(文本)视图。
+func WorkbenchModeIsText() bool { return theCwState.mode == "text" }
 
 // provider 取当前语言的适配器（未注册兜底 Go）。
 func (s *cwState) provider() LanguageProvider {
@@ -97,10 +110,14 @@ func (s *cwState) Build(ctx BuildContext) Widget {
 		}
 		s.savedGo = prov.Generate(s.program) // 生成基线（切回代码时判表格是否被改）
 	}
-	btn := "切换到代码视图"
+	btnLabel := "切换到代码视图"
 	if s.mode == "text" {
-		btn = "切换到表格视图"
+		btnLabel = "切换到表格视图"
 	}
+	btn := NewButton(btnLabel, s.toggle) // 紧凑切换按钮
+	btn.FontSize = 12
+	btn.Padding = types.EdgeInsetsLTRB(10, 3, 10, 3)
+	btn.MinWidth, btn.MinHeight = 0, 0
 	var content Widget
 	if s.mode == "table" {
 		se := NewStructEditor(s.program).WithLang(c.lang).WithSize(c.Width, c.Height-46)
@@ -119,8 +136,8 @@ func (s *cwState) Build(ctx BuildContext) Widget {
 		content = ed
 	}
 	return Div(
-		Style{Width: c.Width, Height: c.Height, FlexDirection: "column", Gap: 8},
-		NewButton(btn, s.toggle).WithMinWidth(150),
+		Style{Width: c.Width, Height: c.Height, FlexDirection: "column", Gap: 6},
+		Div(Style{FlexDirection: "row", AlignItems: "center"}, btn), // 左对齐紧凑工具栏
 		content,
 	)
 }
