@@ -19,6 +19,7 @@ func (m *MCPEditorBody) CreateState() widget.State { return theMCPEditor }
 
 type mcpEditorState struct {
 	widget.BaseState
+	level   string // 写入的层级（user/project；系统级不可编辑）
 	orig    string // 原名（编辑时判断是否改名）
 	name    string
 	command string
@@ -26,8 +27,9 @@ type mcpEditorState struct {
 	tok     int
 }
 
-// openMCPEditor 打开「添加/编辑 MCP 服务器」对话框；保存写回 mcp.json 后回调 onSaved 刷新列表。
-func openMCPEditor(e mcpEntry, onSaved func()) {
+// openMCPEditor 打开「添加/编辑 MCP 服务器」对话框；保存写回该 level 的 mcp.json 后回调 onSaved 刷新。
+func openMCPEditor(level string, e mcpEntry, onSaved func()) {
+	theMCPEditor.level = level
 	theMCPEditor.orig = e.Name
 	theMCPEditor.name = e.Name
 	theMCPEditor.command = e.Command
@@ -52,9 +54,9 @@ func openMCPEditor(e mcpEntry, onSaved func()) {
 				return
 			}
 			if theMCPEditor.orig != "" && theMCPEditor.orig != name { // 改名→删旧增新
-				_ = deleteMCPEntry(theMCPEditor.orig)
+				_ = deleteMCPEntry(theMCPEditor.level, theMCPEditor.orig)
 			}
-			if err := upsertMCPEntry(mcpEntry{Name: name, Command: cmd, Args: strings.Fields(theMCPEditor.args)}); err != nil {
+			if err := upsertMCPEntry(theMCPEditor.level, mcpEntry{Name: name, Command: cmd, Args: strings.Fields(theMCPEditor.args)}); err != nil {
 				widget.MessageError("保存失败：" + err.Error())
 				return
 			}

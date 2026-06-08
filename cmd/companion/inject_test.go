@@ -58,3 +58,35 @@ func TestSkillsPrompt(t *testing.T) {
 		t.Fatal("手动技能不应注入")
 	}
 }
+
+func TestMCPThreeLevel(t *testing.T) {
+	savedWS, savedS := workspaceFolders, theSettings
+	defer func() { workspaceFolders, theSettings = savedWS, savedS }()
+	theSettings = defaultSettings()
+	theSettings.AutoConnectMCP = true
+	workspaceFolders = []string{t.TempDir()} // 项目级落 temp（t.TempDir 自动清理，不碰真实 .pair/config）
+
+	// 系统级默认：filesystem 开、其余关
+	if !mcpEnabled(mcpLevelSystem, "filesystem") || mcpEnabled(mcpLevelSystem, "git") {
+		t.Fatal("系统级默认应仅 filesystem 启用")
+	}
+	// override 直接改内存 map（不经 setMCPEnabled，避免 saveSettings 写真实 config）
+	theSettings.MCPEnabledOverrides = map[string]bool{mcpLevelSystem + "::git": true}
+	if !mcpEnabled(mcpLevelSystem, "git") {
+		t.Fatal("override 后 git 应启用")
+	}
+	// 项目级写入 + 三级合并
+	if err := writeMCPFile(mcpPathFor(mcpLevelProject), []mcpEntry{{Name: "projx", Command: "node"}}); err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, c := range loadMCPConfigs() {
+		names[c.Name] = true
+	}
+	if !names["filesystem"] || !names["git"] || !names["projx"] {
+		t.Fatalf("合并应含 filesystem/git/projx：%v", names)
+	}
+	if names["fetch"] {
+		t.Fatal("fetch 默认禁用，不应合并")
+	}
+}

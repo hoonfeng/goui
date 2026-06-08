@@ -9,7 +9,7 @@ import (
 	"github.com/user/goui/cmd/companion/agent"
 )
 
-// mcpEntry 一个 MCP 服务器配置（mcp.json 一项）。
+// mcpEntry 一个 MCP 服务器配置。
 type mcpEntry struct {
 	Name    string
 	Command string
@@ -17,9 +17,38 @@ type mcpEntry struct {
 	Env     map[string]string
 }
 
-func mcpFilePath() string { return filepath.Join(filepath.Dir(settingsPath()), "mcp.json") }
+// MCP 三级：系统（内置只读）/ 用户（全局）/ 项目（.pair）。
+const (
+	mcpLevelSystem  = "system"
+	mcpLevelUser    = "user"
+	mcpLevelProject = "project"
+)
 
-// mcpFile mcp.json 结构（同 Claude Desktop）。
+var mcpLevels = []struct{ id, name string }{
+	{mcpLevelSystem, "系统级"}, {mcpLevelUser, "用户级"}, {mcpLevelProject, "项目级"},
+}
+
+// systemMCPDefaults 内置（系统级）MCP 服务器，只读。对齐参考 DEFAULTS.mcpServers。
+func systemMCPDefaults() []mcpEntry {
+	return []mcpEntry{
+		{Name: "filesystem", Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-filesystem"}},
+		{Name: "git", Command: "uvx", Args: []string{"mcp-server-git"}},
+		{Name: "fetch", Command: "uvx", Args: []string{"mcp-server-fetch"}},
+		{Name: "memory", Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-memory"}},
+	}
+}
+
+// mcpPathFor 用户/项目级 mcp.json 路径（系统级无文件→""）。
+func mcpPathFor(level string) string {
+	switch level {
+	case mcpLevelUser:
+		return filepath.Join(configDir(), "mcp.json")
+	case mcpLevelProject:
+		return filepath.Join(currentRoot(), ".pair", "mcp.json")
+	}
+	return ""
+}
+
 type mcpFile struct {
 	MCPServers map[string]struct {
 		Command string            `json:"command"`
@@ -28,9 +57,8 @@ type mcpFile struct {
 	} `json:"mcpServers"`
 }
 
-// readMCPEntries 读 mcp.json → 按名排序的服务器列表（无文件→nil）。
-func readMCPEntries() []mcpEntry {
-	data, err := os.ReadFile(mcpFilePath())
+func readMCPFile(path string) []mcpEntry {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
@@ -46,8 +74,15 @@ func readMCPEntries() []mcpEntry {
 	return out
 }
 
-// writeMCPEntries 写回 mcp.json（{"mcpServers":{...}}）。
-func writeMCPEntries(es []mcpEntry) error {
+// readMCPLevel 读某一级的服务器（系统=内置，用户/项目=各自 mcp.json）。
+func readMCPLevel(level string) []mcpEntry {
+	if level == mcpLevelSystem {
+		return systemMCPDefaults()
+	}
+	return readMCPFile(mcpPathFor(level))
+}
+
+func writeMCPFile(path string, es []mcpEntry) error {
 	m := map[string]any{}
 	for _, e := range es {
 		if e.Name == "" {
@@ -66,13 +101,17 @@ func writeMCPEntries(es []mcpEntry) error {
 	if err != nil {
 		return err
 	}
-	_ = os.MkdirAll(filepath.Dir(mcpFilePath()), 0o755)
-	return os.WriteFile(mcpFilePath(), data, 0o644)
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	return os.WriteFile(path, data, 0o644)
 }
 
-// upsertMCPEntry 新增/更新一个服务器（按 Name 匹配）。
-func upsertMCPEntry(e mcpEntry) error {
-	es := readMCPEntries()
+// upsertMCPEntry 新增/更新某一级的服务器（系统级只读→忽略）。
+func upsertMCPEntry(level string, e mcpEntry) error {
+	path := mcpPathFor(level)
+	if path == "" {
+		return nil
+	}
+	es := readMCPFile(path)
 	found := false
 	for i := range es {
 		if es[i].Name == e.Name {
@@ -84,32 +123,60 @@ func upsertMCPEntry(e mcpEntry) error {
 	if !found {
 		es = append(es, e)
 	}
-	return writeMCPEntries(es)
+	return writeMCPFile(path, es)
 }
 
-// deleteMCPEntry 删除一个服务器。
-func deleteMCPEntry(name string) error {
-	es := readMCPEntries()
+// deleteMCPEntry 删除某一级的服务器（系统级只读→忽略）。
+func deleteMCPEntry(level, name string) error {
+	path := mcpPathFor(level)
+	if path == "" {
+		return nil
+	}
+	es := readMCPFile(path)
 	out := es[:0:0]
 	for _, e := range es {
 		if e.Name != name {
 			out = append(out, e)
 		}
 	}
-	return writeMCPEntries(out)
+	return writeMCPFile(path, out)
 }
 
-// loadMCPConfigs 对话开始时读取要连接的 MCP 服务器；自动连接关闭→不连。
+// mcpEnabled 是否启用：override 优先；默认系统级仅 filesystem 开、用户/项目级全开。
+func mcpEnabled(level, name string) bool {
+	if v, ok := theSettings.MCPEnabledOverrides[level+"::"+name]; ok {
+		return v
+	}
+	if level == mcpLevelSystem {
+		return name == "filesystem"
+	}
+	return true
+}
+
+// setMCPEnabled 改某服务器启用态（存 override map）。
+func setMCPEnabled(level, name string, on bool) {
+	if theSettings.MCPEnabledOverrides == nil {
+		theSettings.MCPEnabledOverrides = map[string]bool{}
+	}
+	theSettings.MCPEnabledOverrides[level+"::"+name] = on
+	saveSettings()
+}
+
+// loadMCPConfigs 合并三级（项目>用户>系统，同名去重）、按启用过滤，供 agent 连接；自动连接关→不连。
 func loadMCPConfigs() []agent.MCPServerConfig {
 	if !theSettings.AutoConnectMCP {
 		return nil
 	}
 	var out []agent.MCPServerConfig
-	for _, e := range readMCPEntries() {
-		if e.Command == "" {
-			continue
+	seen := map[string]bool{}
+	for _, lv := range []string{mcpLevelProject, mcpLevelUser, mcpLevelSystem} {
+		for _, e := range readMCPLevel(lv) {
+			if e.Command == "" || seen[e.Name] || !mcpEnabled(lv, e.Name) {
+				continue
+			}
+			seen[e.Name] = true
+			out = append(out, agent.MCPServerConfig{Name: e.Name, Command: e.Command, Args: e.Args, Env: e.Env})
 		}
-		out = append(out, agent.MCPServerConfig{Name: e.Name, Command: e.Command, Args: e.Args, Env: e.Env})
 	}
 	return out
 }

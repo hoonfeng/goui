@@ -65,8 +65,10 @@ type appSettings struct {
 	PhilosophyEnabled  bool              `json:"philosophyEnabled"`
 	PhilosophySelected []string          `json:"philosophySelected"`
 	PhilosophyRoles    map[string]string `json:"philosophyRoles"`
-	// MCP
-	AutoConnectMCP bool `json:"autoConnectMCP"`
+	// MCP / Skills
+	AutoConnectMCP        bool            `json:"autoConnectMCP"`
+	MCPEnabledOverrides   map[string]bool `json:"mcpEnabledOverrides"`   // 键 level::name → 启用态（覆盖默认）
+	SkillEnabledOverrides map[string]bool `json:"skillEnabledOverrides"` // 同上，Skills 用
 }
 
 var (
@@ -271,9 +273,17 @@ func (b *SettingsBody) CreateState() widget.State { return theSettingsBody }
 
 type settingsBodyState struct {
 	widget.BaseState
-	tab         string
-	resetTok    int    // 预设填充时 +1，强制输入框刷新显示新值
-	editingRole string // 思想 tab：当前展开编辑的子 Agent 角色 id（""=都收起）
+	tab          string
+	resetTok     int             // 预设填充时 +1，强制输入框刷新显示新值
+	editingRole  string          // 思想 tab：当前展开编辑的子 Agent 角色 id（""=都收起）
+	secCollapsed map[string]bool // MCP/Skills 三级分区折叠态（键如 mcp:user；默认展开）
+}
+
+func (b *settingsBodyState) toggleSec(key string) {
+	if b.secCollapsed == nil {
+		b.secCollapsed = map[string]bool{}
+	}
+	b.secCollapsed[key] = !b.secCollapsed[key]
 }
 
 // openSettings 打开设置模态对话框（帮助→打开设置 / Ctrl+,）。
@@ -666,59 +676,111 @@ func (b *settingsBodyState) roleCard(id, name string) widget.Widget {
 
 // mcpTab MCP 服务器配置说明（companion 启动对话时读 mcp.json）。
 func (b *settingsBodyState) mcpTab() widget.Widget {
-	servers := readMCPEntries()
 	kids := []widget.Widget{
-		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"},
-			label("MCP 服务器", ghTextMuted, 11),
-			expand(widget.Div(widget.Style{})),
-			label(itoa(len(servers))+" 个", ghTextMuted, 10),
-		),
 		settingsToggle("启动对话时自动连接 MCP", editingSettings.AutoConnectMCP, func() {
 			editingSettings.AutoConnectMCP = !editingSettings.AutoConnectMCP
 			b.SetState()
 		}),
 		widget.Div(widget.Style{Height: 8}),
 	}
-	if len(servers) == 0 {
-		kids = append(kids, label("（暂无服务器——点下方「添加服务器」）", ghTextMuted, 11))
-	}
-	for _, s := range servers {
-		kids = append(kids, widget.Div(widget.Style{Height: 6}), b.mcpCard(s))
+	for _, lv := range mcpLevels {
+		kids = append(kids, b.mcpLevelSection(lv.id, lv.name))
 	}
 	kids = append(kids,
-		widget.Div(widget.Style{Height: 12}),
-		&widget.Button{
-			SingleChildWidget: widget.SingleChildWidget{Child: label("+ 添加服务器", cWhite, 12)},
-			OnClick:           func() { openMCPEditor(mcpEntry{}, b.SetState) },
-			Color:             *ghAccentEmph, MinHeight: 30, Padding: types.EdgeInsetsLTRB(12, 0, 12, 0),
-		},
-		widget.Div(widget.Style{Height: 6}),
-		label("对话开始时连接并注册其工具；起不来的自动跳过。系统/用户/项目 三级管理与连接状态后续接入。", ghTextMuted, 10),
+		widget.Div(widget.Style{Height: 8}),
+		label("三级合并供 agent 连接（项目>用户>系统，同名去重，按启用过滤）；系统级内置只读、可禁用；起不来的自动跳过。", ghTextMuted, 10),
 	)
 	return widget.Div(widget.Style{FlexDirection: "column", AlignItems: "stretch"}, kids)
 }
 
-// mcpCard 单个 MCP 服务器卡片：名称 + 命令预览 + 编辑/删除。
-func (b *settingsBodyState) mcpCard(s mcpEntry) widget.Widget {
+// sectionHead 三级分区可折叠头：chevron + 名称(N) [可选 右侧操作]；点 chevron+名切换折叠。
+func (b *settingsBodyState) sectionHead(key, title string, n int, action widget.Widget) widget.Widget {
+	expanded := !b.secCollapsed[key]
+	chev := "chevron-right"
+	if expanded {
+		chev = "chevron-down"
+	}
+	row := []widget.Widget{
+		expand(&widget.Clickable{
+			SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center", Height: 26},
+				widget.Lucide(chev, widget.IconSize(14), widget.IconColor(ghTextMuted)),
+				widget.Div(widget.Style{Width: 6}),
+				label(title+"（"+itoa(n)+"）", ghText, 12),
+			)},
+			OnClick:    func() { b.toggleSec(key); b.SetState() },
+			HoverColor: *ghBgTertiary,
+		}),
+	}
+	if action != nil {
+		row = append(row, action)
+	}
+	return widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"}, row)
+}
+
+// mcpLevelSection 一个层级分区（系统只读 / 用户·项目可增删改）。
+func (b *settingsBodyState) mcpLevelSection(level, name string) widget.Widget {
+	servers := readMCPLevel(level)
+	editable := level != mcpLevelSystem
+	key := "mcp:" + level
+	var add widget.Widget
+	if editable {
+		lv := level
+		add = &widget.Button{
+			SingleChildWidget: widget.SingleChildWidget{Child: label("+ 添加", cWhite, 11)},
+			OnClick:           func() { openMCPEditor(lv, mcpEntry{}, b.SetState) },
+			Color:             *ghAccentEmph, MinHeight: 22, Padding: types.EdgeInsetsLTRB(8, 0, 8, 0),
+		}
+	}
+	out := []widget.Widget{widget.Div(widget.Style{Height: 8}), b.sectionHead(key, name, len(servers), add)}
+	if !b.secCollapsed[key] {
+		if len(servers) == 0 {
+			out = append(out, widget.Div(widget.Style{Padding: types.EdgeInsetsLTRB(20, 4, 0, 0)}, label("（无）", ghTextMuted, 10)))
+		}
+		for _, s := range servers {
+			out = append(out, widget.Div(widget.Style{Height: 4}), b.mcpCard(level, s, editable))
+		}
+	}
+	return widget.Div(widget.Style{FlexDirection: "column", AlignItems: "stretch"}, out)
+}
+
+// mcpCard 服务器卡片：启用开关 + 名称 + 命令预览 +（可编辑级）编辑/删除。
+func (b *settingsBodyState) mcpCard(level string, s mcpEntry, editable bool) widget.Widget {
 	cmd := s.Command
 	for _, a := range s.Args {
 		cmd += " " + a
 	}
-	ss := s
-	return widget.Div(
-		widget.Style{FlexDirection: "column", AlignItems: "stretch", BackgroundColor: ghBgPrimary,
-			BorderColor: ghBorder, BorderWidth: 1, BorderRadius: 5, Padding: types.EdgeInsets(8)},
-		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"},
-			expand(label(ss.Name, ghText, 12)),
+	ss, lv := s, level
+	on := mcpEnabled(level, s.Name)
+	row := []widget.Widget{enablePill(on, func() { setMCPEnabled(lv, ss.Name, !on); b.SetState() }), widget.Div(widget.Style{Width: 8}), expand(label(ss.Name, ghText, 12))}
+	if editable {
+		row = append(row,
 			&widget.Button{SingleChildWidget: widget.SingleChildWidget{Child: label("编辑", ghText, 11)},
-				OnClick: func() { openMCPEditor(ss, b.SetState) }, Color: *ghBgTertiary, MinHeight: 22, Padding: types.EdgeInsetsLTRB(8, 0, 8, 0)},
+				OnClick: func() { openMCPEditor(lv, ss, b.SetState) }, Color: *ghBgTertiary, MinHeight: 22, Padding: types.EdgeInsetsLTRB(8, 0, 8, 0)},
 			widget.Div(widget.Style{Width: 6}),
 			&widget.Button{SingleChildWidget: widget.SingleChildWidget{Child: label("删除", types.ColorFromRGB(240, 120, 110), 11)},
-				OnClick: func() { _ = deleteMCPEntry(ss.Name); b.SetState() }, Color: *ghBgTertiary, MinHeight: 22, Padding: types.EdgeInsetsLTRB(8, 0, 8, 0)},
-		),
+				OnClick: func() { _ = deleteMCPEntry(lv, ss.Name); b.SetState() }, Color: *ghBgTertiary, MinHeight: 22, Padding: types.EdgeInsetsLTRB(8, 0, 8, 0)},
+		)
+	}
+	return widget.Div(
+		widget.Style{FlexDirection: "column", AlignItems: "stretch", BackgroundColor: ghBgPrimary,
+			BorderColor: ghBorder, BorderWidth: 1, BorderRadius: 5, Padding: types.EdgeInsets(8), Margin: types.EdgeInsetsLTRB(16, 0, 0, 0)},
+		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"}, row),
 		widget.Div(widget.Style{Height: 4}),
 		monoLabel(cmd, ghTextMuted, 10),
 	)
+}
+
+// enablePill 启用/禁用小开关（绿=启用 / 灰=禁用）。
+func enablePill(on bool, toggle func()) widget.Widget {
+	txt, tc, bg := "禁用", ghTextMuted, *ghBgTertiary
+	if on {
+		txt, tc, bg = "启用", cWhite, types.ColorFromRGB(63, 142, 88)
+	}
+	return &widget.Button{
+		SingleChildWidget: widget.SingleChildWidget{Child: label(txt, tc, 10)},
+		OnClick:           toggle,
+		Color:             bg, MinHeight: 20, MinWidth: 40, Padding: types.EdgeInsetsLTRB(6, 0, 6, 0),
+	}
 }
 
 func orStr(s, def string) string {
