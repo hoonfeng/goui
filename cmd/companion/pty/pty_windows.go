@@ -24,6 +24,7 @@ var (
 const (
 	procThreadAttributePseudoConsole = 0x00020016
 	extendedStartupInfoPresent       = 0x00080000
+	startfUseStdHandles              = 0x00000100
 	infiniteWait                     = 0xFFFFFFFF
 )
 
@@ -83,9 +84,6 @@ func Start(sh Shell, dir string, cols, rows int) (PTY, error) {
 	// 进程线程属性列表（带 PSEUDOCONSOLE）：先问大小，再初始化，再 Update 挂上 hpc。
 	var attrSize uintptr
 	procInitializeProcThreadAttributeList.Call(0, 1, 0, uintptr(unsafe.Pointer(&attrSize)))
-	if os.Getenv("CONPTY_DEBUG") != "" {
-		fmt.Fprintf(os.Stderr, "[conpty] hpc=0x%x attrSize=%d sizeof(si)=%d sizeof(hpc)=%d\n", hpc, attrSize, unsafe.Sizeof(startupInfoEx{}), unsafe.Sizeof(hpc))
-	}
 	attrList := make([]byte, attrSize)
 	if r, _, e := procInitializeProcThreadAttributeList.Call(uintptr(unsafe.Pointer(&attrList[0])), 1, 0, uintptr(unsafe.Pointer(&attrSize))); r == 0 {
 		procClosePseudoConsole.Call(hpc)
@@ -103,6 +101,9 @@ func Start(sh Shell, dir string, cols, rows int) (PTY, error) {
 
 	var si startupInfoEx
 	si.StartupInfo.Cb = uint32(unsafe.Sizeof(si))
+	// 关键：置 STARTF_USESTDHANDLES（std 句柄留空）→ 子进程不继承父控制台的 std 句柄，
+	// 伪控制台属性才能接管子 shell 的 I/O（否则 shell 输出跑去父控制台——之前的 bug 根因）。
+	si.StartupInfo.Flags = startfUseStdHandles
 	si.AttributeList = &attrList[0]
 
 	cmdline := quoteCmd(sh.Path)
