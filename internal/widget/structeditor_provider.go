@@ -34,6 +34,11 @@ func providerFor(lang string) LanguageProvider {
 	return nil
 }
 
+// HasProvider 检查某语言是否已注册结构化编辑器适配器（供 companion 判断用哪种编辑器）。
+func HasProvider(lang string) bool {
+	return providerFor(lang) != nil
+}
+
 // ── 内置适配器：Go / 易语言（把现有 ParseGo/ToGo、ParseProgram/Serialize 包装成 provider）──
 
 type goLangProvider struct{}
@@ -49,6 +54,51 @@ func (eyLangProvider) Name() string                         { return "ey" }
 func (eyLangProvider) Schema() *SESchema                    { return DefaultSchema() }
 func (eyLangProvider) Parse(src string) (*SEProgram, error) { return ParseProgram(src), nil }
 func (eyLangProvider) Generate(p *SEProgram) string         { return p.Serialize() }
+
+// ── 自定义语言提供者（从配置文件加载） ──
+
+// CustomProviderConfig 用户自定义语言提供者配置。
+// 用于在不修改 Go 源码的情况下，通过 settings.json 将新语言映射到已有 provider。
+type CustomProviderConfig struct {
+	Name        string     `json:"name"`        // 语言名（如 "vue"、"kotlin"）
+	Extensions  []string   `json:"extensions"`  // 文件扩展名列表（不含点，如 ["vue"]）
+	UseProvider string     `json:"useProvider"` // 重用已有 provider 的名称（如 "js"、"go"）
+	Schema      *SESchema  `json:"schema,omitempty"` // 可选：覆盖表结构列定义
+}
+
+// customProvider 包装一个已有 provider，可换名并可选覆盖 schema。
+type customProvider struct {
+	base   LanguageProvider
+	name   string
+	schema *SESchema
+}
+
+func (c *customProvider) Name() string                         { return c.name }
+func (c *customProvider) Schema() *SESchema                    { return c.schema }
+func (c *customProvider) Parse(src string) (*SEProgram, error) { return c.base.Parse(src) }
+func (c *customProvider) Generate(p *SEProgram) string         { return c.base.Generate(p) }
+
+// LoadCustomProviders 从配置加载自定义语言提供者，注册到全局注册表。
+// 每个配置项把 UseProvider 指向的已有 provider 以新名称注册，并可覆盖表结构。
+// configs 为空切片或 nil 时无操作。
+func LoadCustomProviders(configs []CustomProviderConfig) {
+	for _, cp := range configs {
+		if cp.Name == "" || cp.UseProvider == "" {
+			continue
+		}
+		base := providerFor(cp.UseProvider)
+		if base == nil {
+			continue
+		}
+		// 如果自定义项没提供 schema，继承 base 的 schema
+		sch := cp.Schema
+		if sch == nil {
+			sch = base.Schema()
+		}
+		p := &customProvider{base: base, name: cp.Name, schema: sch}
+		RegisterProvider(p, cp.Extensions...)
+	}
+}
 
 func init() {
 	RegisterProvider(goLangProvider{}, "golang")

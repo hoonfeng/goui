@@ -45,6 +45,14 @@ func DefaultStrokePaint() Paint {
 	}
 }
 
+// StrokePaint 便捷构造指定颜色与线宽的描边画笔。
+func StrokePaint(color types.Color, width float64) Paint {
+	p := DefaultStrokePaint()
+	p.Color = color
+	p.StrokeWidth = width
+	return p
+}
+
 // GradientType 渐变类型
 type GradientType int
 

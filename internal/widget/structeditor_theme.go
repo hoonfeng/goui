@@ -17,5 +17,11 @@ func seBackground() types.Color { return CurrentTheme().StructEditor.Background 
 func seCellBg() types.Color     { return CurrentTheme().StructEditor.CellBg }
 func seMinimapBG() types.Color  { return CurrentTheme().StructEditor.MinimapBg }
 
+// 多语言重构新增的取色别名（映射到现有 StructEditorTheme 字段，无需新增主题字段）。
+func seText() types.Color        { return CurrentTheme().StructEditor.TextColor }
+func seHeaderText() types.Color  { return CurrentTheme().StructEditor.HeaderText }
+func seFuncRowText() types.Color { return CurrentTheme().StructEditor.TextColor } // 函数行文字暂用通用文字色
+func seRowBG() types.Color       { return CurrentTheme().StructEditor.CellBg }    // 普通数据行底用单元格底色
+
 // withAlpha 返回改了 alpha 的颜色（缩略图视口框半透明用）。
 func withAlpha(c types.Color, a uint8) types.Color { c.A = a; return c }

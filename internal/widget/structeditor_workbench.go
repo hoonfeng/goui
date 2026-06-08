@@ -11,6 +11,8 @@ type CodeWorkbench struct {
 	Width, Height float64
 	initialGo     string
 	lang          string // 语言（默认 "go"）；决定 LanguageProvider(解析/生成) 与代码区高亮
+	ReloadToken   int           // 递增时强制重新初始化（切换文件用）
+	OnChange      func(string)  // 内容变化回调（用户编辑或视图切换）
 }
 
 // NewCodeWorkbench 以一段源码初始化（默认 Go、进表格视图）。其他语言用 WithLang 切换。
@@ -38,6 +40,7 @@ type cwState struct {
 	savedGo     string // 进表格时的 ToGo 基线：切回时若表格没改过(ToGo 仍等于它)，还原原始 codeText（保留用户空行/格式）
 	mode        string // "table" / "text"
 	inited      bool
+	lastReload  int            // 上次 ReloadToken，用于检测「切换文件」需重置内容
 	codeCur     *CECursorState // 代码视图光标/滚动（切换间保持）
 	tableScroll *float64       // 表格视图滚动位置（切换间保持）
 }
@@ -52,29 +55,41 @@ func (s *cwState) cfg() *CodeWorkbench {
 // toggle 切换视图并同步内容（经 LanguageProvider 解析/生成，语言无关）。
 func (s *cwState) toggle() {
 	prov := s.provider()
+	c := s.cfg()
 	if s.mode == "table" { // 表格→代码
 		if cur := prov.Generate(s.program); cur != s.savedGo {
 			s.codeText = cur // 表格被编辑过 → 用新生成的代码
 		} // 否则表格没动 → 保留原始 codeText（不丢用户空行/格式）
 		s.mode = "text"
+		if c.OnChange != nil {
+			c.OnChange(s.codeText)
+		}
 	} else { // 代码→表格：解析代码文本（失败则保留原表格），记生成基线
 		if p, err := prov.Parse(s.codeText); err == nil && p != nil {
 			s.program = p
 			s.savedGo = prov.Generate(p)
 		}
 		s.mode = "table"
+		if c.OnChange != nil {
+			c.OnChange(s.codeText)
+		}
 	}
 	s.SetState()
 }
 
 func (s *cwState) Build(ctx BuildContext) Widget {
+	c := s.cfg()
+	if c.ReloadToken != s.lastReload {
+		s.lastReload = c.ReloadToken
+		s.inited = false
+	}
 	if !s.inited {
 		s.inited = true
 		s.mode = "table"
 		s.codeCur = &CECursorState{}
 		s.tableScroll = new(float64)
 		prov := s.provider()
-		s.codeText = s.cfg().initialGo
+		s.codeText = c.initialGo
 		if p, err := prov.Parse(s.codeText); err == nil && p != nil {
 			s.program = p
 		} else {
@@ -82,7 +97,6 @@ func (s *cwState) Build(ctx BuildContext) Widget {
 		}
 		s.savedGo = prov.Generate(s.program) // 生成基线（切回代码时判表格是否被改）
 	}
-	c := s.cfg()
 	btn := "切换到代码视图"
 	if s.mode == "text" {
 		btn = "切换到表格视图"
@@ -96,7 +110,12 @@ func (s *cwState) Build(ctx BuildContext) Widget {
 		ed := NewCodeEditor(c.lang, s.codeText).WithSize(c.Width, c.Height-46)
 		ed.IndentGuides = true
 		ed.CursorRef = s.codeCur // 切回代码恢复光标/滚动
-		ed.OnChange = func(t string) { s.codeText = t }
+		ed.OnChange = func(t string) {
+			s.codeText = t
+			if c.OnChange != nil {
+				c.OnChange(t)
+			}
+		}
 		content = ed
 	}
 	return Div(

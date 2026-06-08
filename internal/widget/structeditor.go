@@ -24,15 +24,38 @@ type SEVar struct {
 	Note  string // 备注
 }
 
+// SETypeKind 类型定义种类。
+type SETypeKind string
+
+const (
+	SETypeStruct   SETypeKind = "struct"   // struct 类型
+	SETypeInterface SETypeKind = "interface" // interface 类型
+	SETypeAlias    SETypeKind = "alias"    // 类型别名/定义（type X = Y / type X Y）
+)
+
+// SEType 一个类型定义（struct / interface / alias）。
+type SEType struct {
+	Name      string      // 类型名
+	Kind      SETypeKind  // 类型种类
+	Note      string      // 注释
+	Fields    []SEVar     // struct 字段列表（Name=字段名, Type=类型, Note=注释/tag）
+	Methods   []SEVar     // interface 方法列表（Name=方法名, Type=方法签名, Note=注释）
+	TypeExpr  string      // alias/typedef 的底层类型表达式（如 "string" / "func(int)bool"）
+	TypeParams []SEVar    // 泛型类型参数（Name=参数名, Type=约束）
+	BlankBefore int       // 前方空行数
+}
+
 // SESub 一个子程序（函数）。逻辑用自由代码文本（喂给内嵌 CodeEditor），变量用表格。
 type SESub struct {
 	Name        string  // 名称
+	Recv        string  // 方法接收器，如 "(r *Receiver)"（空=普通函数）
 	Returns     []SEVar // 返回值列表（多返回值一行一个；元素 Name 可空、Type 为类型）
 	Note        string  // 函数注释（说明本子程序作用）
 	Params      []SEVar // 参数表
 	Locals      []SEVar // 局部变量表
 	Body        string  // 逻辑代码（自由文本，内嵌 CodeEditor 编辑）
 	BlankBefore int     // 本函数前的空行数（ParseGo 捕获，ToGo 还原，保留用户分段；<1 时按 1）
+	TypeParams  []SEVar // 泛型类型参数（Name=参数名, Type=约束）
 }
 
 // retString 把返回值列表拼成文本（0→""；单个无名→"int"；多个/具名→"(a int, b error)"）。
@@ -58,9 +81,11 @@ func retString(returns []SEVar) string {
 
 // SEProgram 整个程序。
 type SEProgram struct {
-	Imports []string // 导入（每项为 import spec 内容，如 `"fmt"` / `m "math"` / `_ "embed"`）
-	Globals []SEVar  // 程序集变量表
-	Subs    []SESub  // 子程序列表
+	Imports []string  // 导入（每项为 import spec 内容，如 `"fmt"` / `m "math"` / `_ "embed"`）
+	Globals []SEVar   // 程序集变量表
+	Consts  []SEVar   // 常量声明（Name=常量名, Type=类型, Note=注释/值）
+	Types   []SEType  // 类型定义（struct / interface / alias/typedef）
+	Subs    []SESub   // 子程序（函数/方法）列表
 }
 
 type StructEditor struct {
@@ -156,6 +181,7 @@ type StructEditorElement struct {
 	showMinimap bool        // 右侧缩略图开关（从 se.ShowMinimap）
 	miniRect   types.Rect   // Paint 缓存：缩略图区域（点击/拖动跳转命中）
 	miniSegs   []seMiniSeg  // Paint 缓存：缩略图内容段（程序集/各子程序）
+	font       canvas.Font  // Paint 缓存：当前等宽字体（gutter/单元格文本共用）
 	draggingMini bool       // 正在拖动缩略图视口框
 	collapsed  map[int]bool // 折叠（收起）的子程序
 	globalsCollapsed bool   // 程序集变量表是否收起（折叠后只剩表头，行号仍累加）

@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/user/goui/internal/canvas"
 	"github.com/user/goui/internal/event"
 )
 
@@ -32,6 +31,10 @@ func (e *StructEditorElement) cols(section string) []SECol {
 		return importCols
 	case section == "globals":
 		return sc.Globals
+	case section == "consts":
+		return constCols
+	case section == "types":
+		return typeDefCols
 	case strings.HasPrefix(section, "params:"):
 		return sc.Params
 	case strings.HasPrefix(section, "returns:"):
@@ -47,6 +50,10 @@ func (e *StructEditorElement) varPtr(section string, row int) *SEVar {
 	case section == "globals":
 		if row >= 0 && row < len(e.program.Globals) {
 			return &e.program.Globals[row]
+		}
+	case section == "consts":
+		if row >= 0 && row < len(e.program.Consts) {
+			return &e.program.Consts[row]
 		}
 	case strings.HasPrefix(section, "params:"):
 		si := atoiSafe(section[7:])
@@ -79,6 +86,26 @@ func (e *StructEditorElement) cellValue(section string, row, col int) string {
 		}
 		return ""
 	}
+	// types 区段：绑定 SEType
+	if section == "types" {
+		if row >= 0 && row < len(e.program.Types) {
+			td := &e.program.Types[row]
+			switch col {
+			case 0:
+				return td.Name
+			case 1:
+				return string(td.Kind)
+			case 2:
+				if td.Kind == SETypeAlias {
+					return td.TypeExpr
+				}
+				return itoaCE(len(td.Fields)+len(td.Methods)) + " 项"
+			case 3:
+				return td.Note
+			}
+		}
+		return ""
+	}
 	if section == "imports" { // 导入区：单列字符串，直读 program.Imports
 		if row >= 0 && row < len(e.program.Imports) {
 			return e.program.Imports[row]
@@ -107,6 +134,26 @@ func (e *StructEditorElement) setCellValue(section string, row, col int, val str
 		}
 		return
 	}
+	// types 区段：写 SEType
+	if section == "types" {
+		if row >= 0 && row < len(e.program.Types) {
+			td := &e.program.Types[row]
+			switch col {
+			case 0:
+				td.Name = val
+			case 1:
+				td.Kind = SETypeKind(val)
+			case 2:
+				if td.Kind == SETypeAlias {
+					td.TypeExpr = val
+				}
+				// else: 只读字段（计数），不建议直接编辑
+			case 3:
+				td.Note = val
+			}
+		}
+		return
+	}
 	if section == "imports" { // 导入区：写回 program.Imports（行超出则补齐，支持空表点击占位行加第一个）
 		if row < 0 {
 			return
@@ -130,6 +177,9 @@ func (e *StructEditorElement) sectionMaxCol(section string) int {
 	if strings.HasPrefix(section, "func:") {
 		return 1 // 函数声明：函数名(0) / 注释(1)
 	}
+	if section == "types" {
+		return 3 // types 有 4 列(0..3)
+	}
 	if c := e.cols(section); len(c) > 0 {
 		return len(c) - 1
 	}
@@ -150,6 +200,10 @@ func (e *StructEditorElement) sectionRows(section string) int {
 		return 0
 	case section == "globals":
 		return len(e.program.Globals)
+	case section == "consts":
+		return len(e.program.Consts)
+	case section == "types":
+		return len(e.program.Types)
 	case strings.HasPrefix(section, "params:"):
 		if si := atoiSafe(section[7:]); si < len(e.program.Subs) {
 			return len(e.program.Subs[si].Params)
@@ -198,381 +252,238 @@ func (e *StructEditorElement) editInsert(ch rune) {
 	if e.editCol > len(val) {
 		e.editCol = len(val)
 	}
-	nv := string(val[:e.editCol]) + string(ch) + string(val[e.editCol:])
-	e.setCellValue(e.selSection, e.selRow, e.selCol, nv)
+	newVal := string(val[:e.editCol]) + string(ch) + string(val[e.editCol:])
+	e.setCellValue(e.selSection, e.selRow, e.selCol, newVal)
 	e.editCol++
-	e.focusTime = time.Now()
 	repaint()
 }
 
-func (e *StructEditorElement) handleEditKey(k *event.KeyEvent) bool {
-	if k.Mods&event.ModCtrl != 0 { // Ctrl+Enter 增行 / Ctrl+Delete 删行
-		switch k.Key {
-		case "Enter":
-			if e.selSection != "" {
-				e.insertRow(e.selSection, e.selRow+1)
-			}
-		case "Delete", "Backspace":
-			if e.selSection != "" && e.selRow >= 0 {
-				e.deleteRow(e.selSection, e.selRow)
-			}
-		}
-		return true
-	}
-	if !e.editing { // 非编辑态：方向键移单元格、Enter/F2 进入编辑
-		switch k.Key {
-		case "Enter", "F2":
-			if e.selRow >= 0 {
-				e.beginEdit(e.selSection, e.selRow, e.selCol)
-			}
-		case "ArrowUp":
-			e.moveSelect(-1, 0)
-		case "ArrowDown":
-			e.moveSelect(1, 0)
-		case "ArrowLeft":
-			e.moveSelect(0, -1)
-		case "ArrowRight":
-			e.moveSelect(0, 1)
-		}
-		return true
-	}
+func (e *StructEditorElement) editDelete() {
 	val := []rune(e.cellValue(e.selSection, e.selRow, e.selCol))
-	if e.editCol > len(val) {
-		e.editCol = len(val)
+	if len(val) > 0 && e.editCol > 0 {
+		newVal := string(val[:e.editCol-1]) + string(val[e.editCol:])
+		e.setCellValue(e.selSection, e.selRow, e.selCol, newVal)
+		e.editCol--
 	}
-	switch k.Key {
-	case "Escape":
-		e.commitEdit()
-		repaint()
-	case "Enter":
-		e.commitEdit()
-		if strings.HasPrefix(e.selSection, "func:") {
-			break // 函数声明行不增行（只有一行）
-		}
-		if n := e.sectionRows(e.selSection); e.selRow+1 >= n {
-			e.insertRow(e.selSection, n) // 末尾行回车→追加新行并进入编辑
-		} else {
-			e.beginEdit(e.selSection, e.selRow+1, e.selCol) // 否则移到下一行同列
-		}
-	case "Tab":
-		e.commitEdit()
-		e.moveCell(0, 1)
-	case "Backspace":
-		if e.editCol > 0 {
-			e.setCellValue(e.selSection, e.selRow, e.selCol, string(val[:e.editCol-1])+string(val[e.editCol:]))
-			e.editCol--
-			e.focusTime = time.Now()
-			repaint()
-		}
-	case "Delete":
-		if e.editCol < len(val) {
-			e.setCellValue(e.selSection, e.selRow, e.selCol, string(val[:e.editCol])+string(val[e.editCol+1:]))
-			e.focusTime = time.Now()
-			repaint()
-		}
-	case "ArrowLeft":
-		if e.editCol > 0 {
-			e.editCol--
-			e.focusTime = time.Now()
-			repaint()
-		}
-	case "ArrowRight":
-		if e.editCol < len(val) {
-			e.editCol++
-			e.focusTime = time.Now()
-			repaint()
-		}
-	case "Home":
-		e.editCol = 0
-		repaint()
-	case "End":
-		e.editCol = len(val)
-		repaint()
-	}
-	return true
+	repaint()
 }
 
-// moveCell 移动到相邻单元格（同 section），进入编辑。
-func (e *StructEditorElement) moveCell(dRow, dCol int) {
-	maxCol := e.sectionMaxCol(e.selSection)
-	r, c := e.selRow+dRow, e.selCol+dCol
-	if c > maxCol {
-		c = 0
-		r++
+func (e *StructEditorElement) editBackspace() { e.editDelete() }
+
+func (e *StructEditorElement) editCursorLeft() {
+	if e.editCol > 0 {
+		e.editCol--
 	}
-	if c < 0 {
-		c = maxCol
-		r--
+}
+
+func (e *StructEditorElement) editCursorRight() {
+	val := []rune(e.cellValue(e.selSection, e.selRow, e.selCol))
+	if e.editCol < len(val) {
+		e.editCol++
 	}
-	n := e.sectionRows(e.selSection)
-	if r < 0 {
-		r = 0
-	}
-	if r >= n {
-		if n == 0 {
+}
+
+func (e *StructEditorElement) editHome()  { e.editCol = 0 }
+func (e *StructEditorElement) editEnd() {
+	e.editCol = len([]rune(e.cellValue(e.selSection, e.selRow, e.selCol)))
+}
+
+// ── 键盘导航 ──
+
+func (e *StructEditorElement) handleKey(ev event.KeyEvent) {
+	switch ev.Key {
+	case event.KeyEscape:
+		if e.editing {
+			e.commitEdit()
+		} else {
+			e.selSection, e.selRow, e.selCol = "", -1, -1
+			repaint()
+		}
+	case event.KeyUp:
+		if e.editing {
+			e.commitEdit()
+		}
+		if e.selRow > 0 {
+			e.selRow--
+		}
+		repaint()
+	case event.KeyDown:
+		if e.editing {
+			e.commitEdit()
+		}
+		if e.selRow < e.sectionRows(e.selSection)-1 {
+			e.selRow++
+		}
+		repaint()
+	case event.KeyEnter:
+		if e.editing {
+			e.commitEdit()
+		}
+		if e.selRow < e.sectionRows(e.selSection)-1 {
+			e.selRow++
+		} else {
+			// 末尾回车：新增一行（仅在变量表支持，函数声明行禁止），并进入新行首格编辑
+			if !strings.HasPrefix(e.selSection, "func:") && e.selSection != "" {
+				e.addRow(e.selSection)
+				e.selRow = e.sectionRows(e.selSection) - 1
+				e.selCol, e.editing, e.editCol = 0, true, 0
+			}
+		}
+		repaint()
+	case event.KeyTab, event.KeyRight:
+		if e.editing {
+			e.editCursorRight()
 			return
 		}
-		r = n - 1
+		if ev.Key == event.KeyTab {
+			e.commitEdit()
+			maxCol := e.sectionMaxCol(e.selSection)
+			if e.selCol < maxCol && e.selSection != "" {
+				e.selCol++
+			}
+			repaint()
+		}
+	case event.KeyShiftTab, event.KeyLeft:
+		if e.editing {
+			e.editCursorLeft()
+			return
+		}
+		if ev.Key == event.KeyShiftTab {
+			e.commitEdit()
+			if e.selCol > 0 {
+				e.selCol--
+			}
+			repaint()
+		}
+	case event.KeyHome:
+		e.editHome()
+	case event.KeyEnd:
+		e.editEnd()
+	case event.KeyDelete:
+		e.editDelete()
+	case event.KeyBackspace:
+		e.editBackspace()
+	default:
+		if ev.Char != 0 && !e.isControl(ev.Key) {
+			if !e.editing {
+				e.beginEdit(e.selSection, e.selRow, e.selCol)
+			}
+			e.editInsert(ev.Char)
+		}
 	}
-	e.beginEdit(e.selSection, r, c)
 }
 
-func (e *StructEditorElement) isCellCursorVisible() bool {
-	if !e.editing {
-		return false
+func (e *StructEditorElement) isControl(key event.Key) bool {
+	switch key {
+	case event.KeyUp, event.KeyDown, event.KeyLeft, event.KeyRight,
+		event.KeyEnter, event.KeyTab, event.KeyEscape,
+		event.KeyHome, event.KeyEnd, event.KeyDelete, event.KeyBackspace:
+		return true
 	}
-	return time.Since(e.focusTime).Milliseconds()%1000 < 530
+	return false
 }
 
-func (e *StructEditorElement) measure(s string) float64 {
-	if s == "" {
-		return 0
-	}
-	if e.lastCanvas != nil {
-		return e.lastCanvas.MeasureText(s, ceCellFont()).Width
-	}
-	return canvas.MeasureTextGlobal(s, ceCellFont()).Width
-}
-
-func ceCellFont() canvas.Font { f := canvas.DefaultFont(); f.Size = 13; return f }
-
-// ── 增删行 / 选区移动（批③）──
-
-// insertStrAt / removeStrAt 字符串切片增删（导入区用）。
-func insertStrAt(s []string, i int, v string) []string {
-	if i < 0 {
-		i = 0
-	}
-	if i > len(s) {
-		i = len(s)
-	}
-	s = append(s, "")
-	copy(s[i+1:], s[i:])
-	s[i] = v
-	return s
-}
-
-func removeStrAt(s []string, i int) []string {
-	if i < 0 || i >= len(s) {
-		return s
-	}
-	return append(s[:i], s[i+1:]...)
-}
-
-func insertVarAt(s []SEVar, i int, v SEVar) []SEVar {
-	if i < 0 {
-		i = 0
-	}
-	if i > len(s) {
-		i = len(s)
-	}
-	s = append(s, SEVar{})
-	copy(s[i+1:], s[i:])
-	s[i] = v
-	return s
-}
-
-func removeVarAt(s []SEVar, i int) []SEVar {
-	if i < 0 || i >= len(s) {
-		return s
-	}
-	return append(s[:i], s[i+1:]...)
-}
-
-// insertRow 在 section 的 at 位置插入一空行，并进入第一格编辑。
-func (e *StructEditorElement) insertRow(section string, at int) {
+// addRow 在末尾追加一新行（变量表用）。
+func (e *StructEditorElement) addRow(section string) {
 	switch {
 	case section == "imports":
-		e.program.Imports = insertStrAt(e.program.Imports, at, `""`)
+		e.program.Imports = append(e.program.Imports, "")
 	case section == "globals":
-		e.program.Globals = insertVarAt(e.program.Globals, at, SEVar{})
+		e.program.Globals = append(e.program.Globals, SEVar{})
+	case section == "consts":
+		e.program.Consts = append(e.program.Consts, SEVar{})
+	case section == "types":
+		e.program.Types = append(e.program.Types, SEType{Kind: SETypeStruct})
 	case strings.HasPrefix(section, "params:"):
 		if si := atoiSafe(section[7:]); si < len(e.program.Subs) {
-			e.program.Subs[si].Params = insertVarAt(e.program.Subs[si].Params, at, SEVar{})
+			e.program.Subs[si].Params = append(e.program.Subs[si].Params, SEVar{})
 		}
 	case strings.HasPrefix(section, "locals:"):
 		if si := atoiSafe(section[7:]); si < len(e.program.Subs) {
-			e.program.Subs[si].Locals = insertVarAt(e.program.Subs[si].Locals, at, SEVar{})
+			e.program.Subs[si].Locals = append(e.program.Subs[si].Locals, SEVar{})
 		}
 	case strings.HasPrefix(section, "returns:"):
 		if si := atoiSafe(section[8:]); si < len(e.program.Subs) {
-			e.program.Subs[si].Returns = insertVarAt(e.program.Subs[si].Returns, at, SEVar{})
+			e.program.Subs[si].Returns = append(e.program.Subs[si].Returns, SEVar{})
 		}
 	}
-	e.beginEdit(section, at, 0)
 }
 
-// deleteRow 删除 section 的 row 行。
+// deleteRow 删除第 row 行（变量表用）。
 func (e *StructEditorElement) deleteRow(section string, row int) {
 	switch {
 	case section == "imports":
-		e.program.Imports = removeStrAt(e.program.Imports, row)
+		if row >= 0 && row < len(e.program.Imports) {
+			e.program.Imports = append(e.program.Imports[:row], e.program.Imports[row+1:]...)
+		}
 	case section == "globals":
-		e.program.Globals = removeVarAt(e.program.Globals, row)
+		if row >= 0 && row < len(e.program.Globals) {
+			e.program.Globals = append(e.program.Globals[:row], e.program.Globals[row+1:]...)
+		}
+	case section == "consts":
+		if row >= 0 && row < len(e.program.Consts) {
+			e.program.Consts = append(e.program.Consts[:row], e.program.Consts[row+1:]...)
+		}
+	case section == "types":
+		if row >= 0 && row < len(e.program.Types) {
+			e.program.Types = append(e.program.Types[:row], e.program.Types[row+1:]...)
+		}
 	case strings.HasPrefix(section, "params:"):
-		if si := atoiSafe(section[7:]); si < len(e.program.Subs) {
-			e.program.Subs[si].Params = removeVarAt(e.program.Subs[si].Params, row)
+		if si := atoiSafe(section[7:]); si < len(e.program.Subs) && row >= 0 && row < len(e.program.Subs[si].Params) {
+			e.program.Subs[si].Params = append(e.program.Subs[si].Params[:row], e.program.Subs[si].Params[row+1:]...)
 		}
 	case strings.HasPrefix(section, "locals:"):
-		if si := atoiSafe(section[7:]); si < len(e.program.Subs) {
-			e.program.Subs[si].Locals = removeVarAt(e.program.Subs[si].Locals, row)
+		if si := atoiSafe(section[7:]); si < len(e.program.Subs) && row >= 0 && row < len(e.program.Subs[si].Locals) {
+			e.program.Subs[si].Locals = append(e.program.Subs[si].Locals[:row], e.program.Subs[si].Locals[row+1:]...)
 		}
 	case strings.HasPrefix(section, "returns:"):
-		if si := atoiSafe(section[8:]); si < len(e.program.Subs) {
-			e.program.Subs[si].Returns = removeVarAt(e.program.Subs[si].Returns, row)
-		}
-	}
-	e.commitEdit()
-	if n := e.sectionRows(section); e.selRow >= n {
-		e.selRow = n - 1
-	}
-	repaint()
-}
-
-// autoDeclareVars 自动声明变量：扫描子程序逻辑代码里「行首 变量 ＝ …」的赋值，
-// 把未声明的赋值目标自动加入该子程序的局部变量表（默认整数型）。
-func (e *StructEditorElement) autoDeclareVars(si int) {
-	if si >= len(e.program.Subs) {
-		return
-	}
-	sub := &e.program.Subs[si]
-	// fixed：不可重声明（全局/参数/手动局部/子程序名）
-	fixed := map[string]bool{}
-	for i := range e.program.Globals {
-		fixed[e.program.Globals[i].Name] = true
-	}
-	for i := range sub.Params {
-		fixed[sub.Params[i].Name] = true
-	}
-	for i := range e.program.Subs {
-		fixed[e.program.Subs[i].Name] = true // 子程序名不当变量
-	}
-	autoIdx := map[string]int{} // 已自动声明的局部变量 → 在 Locals 的索引
-	for i := range sub.Locals {
-		if sub.Locals[i].Note == "自动声明" {
-			autoIdx[sub.Locals[i].Name] = i
-		} else {
-			fixed[sub.Locals[i].Name] = true // 手动声明的局部，类型由用户掌控
-		}
-	}
-	for _, line := range strings.Split(sub.Body, "\n") {
-		name, rhs := assignTarget(line)
-		if name == "" || rhs == "" || isEYReserved(name) || fixed[name] {
-			continue // 值为空不急着声明（避免输入中途按默认类型定型）
-		}
-		typ := e.inferAssignType(rhs)
-		if idx, ok := autoIdx[name]; ok {
-			sub.Locals[idx].Type = typ // 随输入持续重新推导类型（如 1→1.5 由整数型变小数型）
-		} else {
-			sub.Locals = append(sub.Locals, SEVar{Name: name, Type: typ, Note: "自动声明"})
-			autoIdx[name] = len(sub.Locals) - 1
+		if si := atoiSafe(section[8:]); si < len(e.program.Subs) && row >= 0 && row < len(e.program.Subs[si].Returns) {
+			e.program.Subs[si].Returns = append(e.program.Subs[si].Returns[:row], e.program.Subs[si].Returns[row+1:]...)
 		}
 	}
 }
 
-// assignTarget 解析一行「行首赋值」：返回目标变量名 + 右值（如 "积 ＝ 积 × i" → "积","积 × i"）；非赋值行返回 "","".
-// 只认行首标识符紧跟 ＝/=（排除 == 比较），故命令调用「输出调试文本 (…)」「计次循环首 (…)」不会被误判。
-func assignTarget(line string) (name, rhs string) {
-	rs := []rune(strings.TrimLeft(line, " \t"))
-	if len(rs) == 0 || !isIdentStart(rs[0]) || rs[0] == '＝' || rs[0] == '=' {
-		return "", ""
-	}
-	i := 1
-	for i < len(rs) && isIdentPart(rs[i]) && rs[i] != '＝' && rs[i] != '=' {
-		i++
-	}
-	nm := string(rs[:i])
-	for i < len(rs) && rs[i] == ' ' { // 跳过变量名与等号间空格
-		i++
-	}
-	if i >= len(rs) {
-		return "", ""
-	}
-	if rs[i] == '＝' || (rs[i] == '=' && !(i+1 < len(rs) && rs[i+1] == '=')) {
-		return nm, strings.TrimSpace(string(rs[i+1:]))
-	}
-	return "", ""
-}
+// ── 行删除快捷键（Ctrl+D / Ctrl+Shift+K）已在 codeeditor 变量表截获 ──
 
-// isEYReserved 是否为易语言关键字/类型（不能当变量自动声明）。
-func isEYReserved(name string) bool {
-	return ceLangEY.keywords[name] || ceLangEY.types[name]
-}
+// ── 鼠标 / 触摸 ──
 
-// inferAssignType 按右值推导变量类型：函数调用→被调子程序返回类型；否则按字面量。
-func (e *StructEditorElement) inferAssignType(rhs string) string {
-	rhs = strings.TrimSpace(rhs)
-	for i := range e.program.Subs { // 函数调用：用被调子程序的(单个)返回类型
-		nm := e.program.Subs[i].Name
-		if nm != "" && strings.HasPrefix(rhs, nm) && len(e.program.Subs[i].Returns) == 1 {
-			return e.program.Subs[i].Returns[0].Type
+func (e *StructEditorElement) handlePointer(ev event.MouseEvent) {
+	pos := e.Offset()
+	cx := ev.X - pos.X
+	cy := ev.Y - pos.Y
+
+	if ev.Type() == event.TypeMouseDown {
+		if e.miniRect.Width > 0 && cx >= e.miniRect.X-pos.X && cx <= e.miniRect.X-pos.X+e.miniRect.Width {
+			e.minimapJump(ev.Y - pos.Y)
+			return
 		}
-	}
-	return inferEYLiteralType(rhs)
-}
-
-// inferEYLiteralType 按字面量推导易语言类型：字符串→文本型、真假→逻辑型、小数→小数型、整数→整数型。
-func inferEYLiteralType(rhs string) string {
-	if rhs == "" {
-		return "整数型"
-	}
-	if strings.HasPrefix(rhs, "\"") || strings.HasPrefix(rhs, "“") || strings.HasPrefix(rhs, "「") {
-		return "文本型"
-	}
-	switch rhs {
-	case "真", "假", "true", "false":
-		return "逻辑型"
-	}
-	dot, ok := false, true
-	for i, r := range rhs {
-		switch {
-		case r == '-' && i == 0:
-		case r == '.':
-			if dot {
-				ok = false
+		// 折叠三角
+		for _, fh := range e.foldHits {
+			if cx >= fh.rect.X && cx <= fh.rect.X+fh.rect.Width &&
+				cy >= fh.rect.Y && cy <= fh.rect.Y+fh.rect.Height {
+				if fh.sub < 0 {
+					// 程序集变量折叠
+					e.globalsCollapsed = !e.globalsCollapsed
+				} else {
+					if e.collapsed == nil {
+						e.collapsed = map[int]bool{}
+					}
+					e.collapsed[fh.sub] = !e.collapsed[fh.sub]
+				}
+				repaint()
+				return
 			}
-			dot = true
-		case r < '0' || r > '9':
-			ok = false
 		}
-		if !ok {
-			break
+		// 单元格命中
+		for _, c := range e.cells {
+			if cx >= c.rect.X && cx <= c.rect.X+c.rect.Width &&
+				cy >= c.rect.Y && cy <= c.rect.Y+c.rect.Height {
+				e.beginEdit(c.section, c.row, c.col)
+				return
+			}
 		}
+		// 空白点击取消选中
+		e.selSection, e.selRow, e.selCol = "", -1, -1
+		repaint()
 	}
-	if ok {
-		if dot {
-			return "小数型"
-		}
-		return "整数型"
-	}
-	return "整数型" // 表达式/未知 → 默认整数型
-}
-
-// moveSelect 非编辑态移动选中单元格（不进入编辑）。
-func (e *StructEditorElement) moveSelect(dRow, dCol int) {
-	if e.selSection == "" {
-		return
-	}
-	maxCol := e.sectionMaxCol(e.selSection)
-	r, c := e.selRow+dRow, e.selCol+dCol
-	if c > maxCol {
-		c = 0
-		r++
-	}
-	if c < 0 {
-		c = maxCol
-		r--
-	}
-	n := e.sectionRows(e.selSection)
-	if n == 0 {
-		return
-	}
-	if r < 0 {
-		r = 0
-	}
-	if r >= n {
-		r = n - 1
-	}
-	e.selRow, e.selCol = r, c
-	repaint()
 }

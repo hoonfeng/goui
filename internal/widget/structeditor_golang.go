@@ -1,6 +1,7 @@
 package widget
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -35,7 +36,8 @@ func ParseGo(src string) (*SEProgram, error) {
 	for _, decl := range f.Decls {
 		switch d := decl.(type) {
 		case *ast.GenDecl:
-			if d.Tok == token.VAR { // 包级变量
+			switch d.Tok {
+			case token.VAR: // 包级变量
 				for _, spec := range d.Specs {
 					vs, ok := spec.(*ast.ValueSpec)
 					if !ok {
@@ -46,6 +48,85 @@ func ParseGo(src string) (*SEProgram, error) {
 						p.Globals = append(p.Globals, SEVar{Name: name.Name, Type: typ, Note: commentText(d.Doc)})
 					}
 				}
+			case token.CONST: // 常量声明
+				for _, spec := range d.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok {
+						continue
+					}
+					typ := exprStr(vs.Type)
+					val := ""
+					if len(vs.Values) > 0 {
+						val = exprStr(vs.Values[0])
+					}
+					for _, name := range vs.Names {
+						note := commentText(d.Doc)
+						if val != "" {
+							if note != "" {
+								note = val + " | " + note
+							} else {
+								note = val
+							}
+						}
+						p.Consts = append(p.Consts, SEVar{Name: name.Name, Type: typ, Note: note})
+					}
+				}
+			case token.TYPE: // 类型定义（struct / interface / alias）
+				for _, spec := range d.Specs {
+					ts, ok := spec.(*ast.TypeSpec)
+					if !ok {
+						continue
+					}
+					td := SEType{Name: ts.Name.Name, Note: commentText(d.Doc)}
+					startPos := ts.Pos()
+					if ts.Doc != nil {
+						startPos = ts.Doc.Pos()
+					}
+					td.BlankBefore = blankLinesBefore(src, fset, startPos)
+					// 泛型类型参数
+					if ts.TypeParams != nil {
+						td.TypeParams = parseGoFields(ts.TypeParams.List, fset, trailing)
+					}
+					switch tt := ts.Type.(type) {
+					case *ast.StructType:
+						td.Kind = SETypeStruct
+						if tt.Fields != nil {
+							for _, f := range tt.Fields.List {
+								ft := exprStr(f.Type)
+								note := trailing[fset.Position(f.End()).Line]
+								if len(f.Names) == 0 {
+									// 嵌入字段（匿名）
+									td.Fields = append(td.Fields, SEVar{Name: "", Type: ft, Note: note})
+								} else {
+									for _, n := range f.Names {
+										td.Fields = append(td.Fields, SEVar{Name: n.Name, Type: ft, Note: note})
+									}
+								}
+							}
+						}
+					case *ast.InterfaceType:
+						td.Kind = SETypeInterface
+						if tt.Methods != nil {
+							for _, f := range tt.Methods.List {
+								sig := exprStr(f.Type)
+								note := trailing[fset.Position(f.End()).Line]
+								if len(f.Names) == 0 {
+									// 嵌入接口
+									td.Methods = append(td.Methods, SEVar{Name: "", Type: sig, Note: note})
+								} else {
+									for _, n := range f.Names {
+										td.Methods = append(td.Methods, SEVar{Name: n.Name, Type: sig, Note: note})
+									}
+								}
+							}
+						}
+					default:
+						// type alias / type definition: type X = Y 或 type X Y
+						td.Kind = SETypeAlias
+						td.TypeExpr = exprStr(ts.Type)
+					}
+					p.Types = append(p.Types, td)
+				}
 			}
 		case *ast.FuncDecl:
 			sub := SESub{Name: d.Name.Name, Note: commentText(d.Doc)}
@@ -54,6 +135,14 @@ func ParseGo(src string) (*SEProgram, error) {
 				startPos = d.Doc.Pos()
 			}
 			sub.BlankBefore = blankLinesBefore(src, fset, startPos)
+			// 方法接收器
+			if d.Recv != nil && len(d.Recv.List) > 0 {
+				sub.Recv = recvString(d.Recv.List[0])
+			}
+			// 泛型类型参数
+			if d.Type.TypeParams != nil {
+				sub.TypeParams = parseGoFields(d.Type.TypeParams.List, fset, trailing)
+			}
 			if d.Type.Params != nil {
 				for _, field := range d.Type.Params.List {
 					typ, ref := paramTypeRef(field.Type)               // 指针参数 *T → 类型 T + 参考(传址)
@@ -95,7 +184,9 @@ func (p *SEProgram) goDoc(overrideSi int, overrideBody string) (string, int) {
 	line, bodyLine := 0, 0
 	wr := func(s string) { b.WriteString(s); line += strings.Count(s, "\n") }
 	wr("package main\n")
-	if len(p.Imports) > 0 { // import 块（单个一行，多个括号组）
+
+	// ── imports ──
+	if len(p.Imports) > 0 {
 		wr("\n")
 		if len(p.Imports) == 1 {
 			wr("import " + p.Imports[0] + "\n")
@@ -107,16 +198,89 @@ func (p *SEProgram) goDoc(overrideSi int, overrideBody string) (string, int) {
 			wr(")\n")
 		}
 	}
+
+	// ── 常量 ──
+	for i := range p.Consts {
+		v := &p.Consts[i]
+		if i == 0 && (len(p.Imports) > 0 || line > 0) {
+			wr("\n")
+		}
+		note := v.Note
+		val := ""
+		if strings.Contains(note, " | ") {
+			parts := strings.SplitN(note, " | ", 2)
+			val = parts[0]
+			note = parts[1]
+		} else if note != "" && !strings.HasPrefix(note, "//") {
+			val = note
+			note = ""
+		}
+		if note != "" {
+			wr("// " + note + "\n")
+		}
+		if val != "" {
+			wr("const " + v.Name + " = " + val + "\n")
+		} else if v.Type != "" {
+			wr("const " + v.Name + " " + v.Type + "\n")
+		} else {
+			wr("const " + v.Name + "\n")
+		}
+	}
+
+	// ── 全局变量 ──
 	for i := range p.Globals {
 		v := &p.Globals[i]
-		if i == 0 {
-			wr("\n") // 与上方(package 或 import)空一行
+		if i == 0 && (len(p.Consts) > 0 || len(p.Imports) > 0 || line > 0) {
+			wr("\n")
 		}
 		if v.Note != "" {
 			wr("// " + v.Note + "\n")
 		}
 		wr("var " + v.Name + " " + v.Type + "\n")
 	}
+
+	// ── 类型定义 ──
+	for i := range p.Types {
+		td := &p.Types[i]
+		nb := td.BlankBefore
+		if nb < 1 {
+			nb = 1
+		}
+		wr(strings.Repeat("\n", nb))
+		if td.Note != "" {
+			wr("// " + td.Note + "\n")
+		}
+		// 泛型参数
+		tparams := typeParamsGo(td.TypeParams)
+		switch td.Kind {
+		case SETypeStruct:
+			wr("type " + td.Name + tparams + " struct {\n")
+			for _, f := range td.Fields {
+				if f.Name != "" {
+					wr("\t" + f.Name + " " + f.Type + "\n")
+				} else {
+					// 嵌入字段
+					wr("\t" + f.Type + "\n")
+				}
+			}
+			wr("}\n")
+		case SETypeInterface:
+			wr("type " + td.Name + tparams + " interface {\n")
+			for _, m := range td.Methods {
+				if m.Name != "" {
+					wr("\t" + m.Name + " " + m.Type + "\n")
+				} else {
+					// 嵌入接口
+					wr("\t" + m.Type + "\n")
+				}
+			}
+			wr("}\n")
+		case SETypeAlias:
+			wr("type " + td.Name + " " + td.TypeExpr + "\n")
+		}
+	}
+
+	// ── 子程序（函数/方法） ──
 	for i := range p.Subs {
 		s := &p.Subs[i]
 		nb := s.BlankBefore // 还原函数前空行（保留用户分段），至少 1 行隔开
@@ -127,7 +291,8 @@ func (p *SEProgram) goDoc(overrideSi int, overrideBody string) (string, int) {
 		if s.Note != "" {
 			wr("// " + s.Note + "\n")
 		}
-		wr("func " + s.Name + "(" + paramsGo(s.Params) + ") " + retGo(s.Returns) + "{\n")
+		tparams := typeParamsGo(s.TypeParams)
+		wr("func " + s.Recv + s.Name + tparams + "(" + paramsGo(s.Params) + ") " + retGo(s.Returns) + "{\n")
 		bd := s.Body
 		if i == overrideSi { // "{" 行已写完，line 即体首行 0 基行号
 			bd = overrideBody
@@ -366,6 +531,44 @@ func exprStr(x ast.Expr) string {
 	return types.ExprString(x)
 }
 
+// recvString 把接收器字段转为 "(r *T)" 字符串。
+func recvString(field *ast.Field) string {
+	typ := exprStr(field.Type)
+	if len(field.Names) == 0 {
+		return "(" + typ + ")"
+	}
+	return "(" + field.Names[0].Name + " " + typ + ")"
+}
+
+// parseGoFields 把 AST 字段列表解析为 SEVar 切片（用于类型参数/泛型）。
+func parseGoFields(fields []*ast.Field, fset *token.FileSet, trailing map[int]string) []SEVar {
+	var out []SEVar
+	for _, f := range fields {
+		ft := exprStr(f.Type)
+		note := trailing[fset.Position(f.End()).Line]
+		if len(f.Names) == 0 {
+			out = append(out, SEVar{Type: ft, Note: note})
+		} else {
+			for _, n := range f.Names {
+				out = append(out, SEVar{Name: n.Name, Type: ft, Note: note})
+			}
+		}
+	}
+	return out
+}
+
+// typeParamsGo 把类型参数列表生成 "[T any, U comparable]" 字符串。
+func typeParamsGo(params []SEVar) string {
+	if len(params) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(params))
+	for i := range params {
+		parts = append(parts, fieldGo(&params[i]))
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
 // parseResults 把返回值字段列表解析成 []SEVar（多返回值一行一个；无名→Name 空；行尾注释→Note）。
 func parseResults(results *ast.FieldList, fset *token.FileSet, trailing map[int]string) []SEVar {
 	if results == nil {
@@ -469,10 +672,17 @@ func returnsTypes(rs []SEVar) []string {
 	return out
 }
 
-// paramTypeRef 解析参数类型：指针 *T 视为「参考(传址)」→ (T, "是")；否则 (类型, "")。
+// paramTypeRef 解析参数类型：
+//   - *T（简单指针，星号下直接是标识符）→ (T, "是")，表格中以"参考"列打勾表示指针传参
+//   - **T、*[]int、*map[k]v、*func() 等复杂指针 → (完整类型, "")，保留完整类型字符串
+//   - 非指针 → (类型, "")。
 func paramTypeRef(t ast.Expr) (typ, ref string) {
 	if star, ok := t.(*ast.StarExpr); ok {
-		return exprStr(star.X), "是"
+		// 只对 *Ident（简单指针类型 *T）做拆分，显示为类型=T + 参考=是
+		// 对 **T、*[]int、*struct{…}、*map[k]v、*func(…) 等复杂指针保留完整类型
+		if _, ok := star.X.(*ast.Ident); ok {
+			return exprStr(star.X), "是"
+		}
 	}
 	return exprStr(t), ""
 }
@@ -572,3 +782,6 @@ func dedent(s string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// Ensure fmt is used (for potential future debug formatting)
+var _ = fmt.Sprintf

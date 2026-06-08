@@ -135,6 +135,31 @@ func NewKeyEvent(typ Type, keyCode uint32, key string, mods ModifierKeys) *KeyEv
 	}
 }
 
+// Key 是 KeyEvent.Key 的命名类型（string 别名），配套下列按键名常量，
+// 便于 switch ev.Key { case event.KeyEscape: } 这种写法（值与 win32 getKeyName 一致）。
+type Key = string
+
+const (
+	KeyBackspace Key = "Backspace"
+	KeyTab       Key = "Tab"
+	KeyEnter     Key = "Enter"
+	KeyEscape    Key = "Escape"
+	KeySpace     Key = "Space"
+	KeyLeft      Key = "ArrowLeft"
+	KeyUp        Key = "ArrowUp"
+	KeyRight     Key = "ArrowRight"
+	KeyDown      Key = "ArrowDown"
+	KeyHome      Key = "Home"
+	KeyEnd       Key = "End"
+	KeyPageUp    Key = "PageUp"
+	KeyPageDown  Key = "PageDown"
+	KeyDelete    Key = "Delete"
+	KeyInsert    Key = "Insert"
+	// KeyShiftTab 占位：win32 不产生此名（Shift+Tab 实为 Tab + ModShift），
+	// 上层若要区分应判 ev.Key==KeyTab && ev.Mods&ModShift != 0。此常量仅供编译期引用。
+	KeyShiftTab Key = "ShiftTab"
+)
+
 // ResizeEvent 窗口大小变化事件
 type ResizeEvent struct {
 	BaseEvent

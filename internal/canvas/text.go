@@ -35,6 +35,22 @@ func DefaultFont() Font {
 	}
 }
 
+// FontRegular 常规样式（FontStyleNormal 的别名），配合 FontWithStyle 使用。
+const FontRegular = FontStyleNormal
+
+// FontWithStyle 按 族名/字号/样式 构造 Font，并返回其真实 ascent、descent（Skia 度量）。
+// 便捷封装，调用方常用 f, _, _ := FontWithStyle(...) 只取 Font。
+func FontWithStyle(family string, size float64, style FontStyle) (Font, float64, float64) {
+	f := Font{Family: family, Size: size, Style: style}
+	a, d, _ := faceVMetrics(size)
+	return f, a, d
+}
+
+// Measure 返回文本在该字体下的宽度（像素），等价 MeasureTextGlobal(s, f).Width。
+func (f Font) Measure(s string) float64 {
+	return MeasureTextGlobal(s, f).Width
+}
+
 // TextAlign 文本对齐方式。
 // 已统一为 TextHAlign 的别名(见 textdraw.go)——历史上有两套对齐枚举，现合并为一套，
 // 老代码用 canvas.TextAlign / TextAlignCenter 仍可用(类型别名零破坏)。

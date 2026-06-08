@@ -64,6 +64,36 @@ func (e *StructEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		y += 12
 	}
 
+	// 常量表（go 模式显示）
+	if e.se.lang == "go" && len(e.program.Consts) > 0 {
+		cStart := y
+		y = e.paintVarTable(cvs, x, y, innerW, gw, "consts", constCols, e.program.Consts, gl, true, false)
+		e.miniSegs = append(e.miniSegs, seMiniSeg{cStart - top, y - cStart, segTable})
+		gl += len(e.program.Consts)
+		y += 12
+	}
+
+	// 类型定义表（go 模式显示）：一行为一个类型名 + 种类 + 注释
+	if e.se.lang == "go" && len(e.program.Types) > 0 {
+		tStart := y
+		typeVars := make([]SEVar, len(e.program.Types))
+		for i := range e.program.Types {
+			td := &e.program.Types[i]
+			typeVars[i].Name = td.Name
+			typeVars[i].Type = string(td.Kind)
+			if td.Kind == SETypeAlias {
+				typeVars[i].Array = td.TypeExpr // 别名用 Array 列显示底层类型
+			} else {
+				typeVars[i].Array = itoaCE(len(td.Fields)+len(td.Methods)) + " 项"
+			}
+			typeVars[i].Note = td.Note
+		}
+		y = e.paintVarTable(cvs, x, y, innerW, gw, "types", typeDefCols, typeVars, gl, true, false)
+		e.miniSegs = append(e.miniSegs, seMiniSeg{tStart - top, y - tStart, segTable})
+		gl += len(e.program.Types)
+		y += 12
+	}
+
 	// 程序集变量表：与局部变量表同样式（无独立标题栏，首列即表头，可折叠）
 	gStart := y
 	y = e.paintVarTable(cvs, x, y, innerW, gw, "globals", e.curSchema().Globals, e.program.Globals, gl, true, e.globalsCollapsed)
@@ -200,313 +230,305 @@ func (e *StructEditorElement) minimapJump(my float64) {
 	if e.miniRect.Height <= 0 || e.contentH <= 0 {
 		return
 	}
-	scale := e.miniRect.Height / e.contentH
-	if scale > 1 {
-		scale = 1
+	ratio := (my - e.miniRect.Y) / e.miniRect.Height
+	if ratio < 0 {
+		ratio = 0
+	} else if ratio > 1 {
+		ratio = 1
 	}
-	viewH := e.size.Height - 4
-	target := (my-e.miniRect.Y)/scale - viewH/2
-	maxScroll := e.contentH - viewH
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
-	e.scrollY = clamp(target, 0, maxScroll)
+	e.scrollY = ratio * (e.contentH - e.size.Height + 4)
 	repaint()
 }
 
-// inMinimap 点是否落在缩略图区域。
-func (e *StructEditorElement) inMinimap(x, y float64) bool {
-	r := e.miniRect
-	return r.Width > 0 && x >= r.X && x <= r.X+r.Width && y >= r.Y && y <= r.Y+r.Height
-}
+// ── 行号栏 ──
 
-// paintSectionTitle 区段标题条（如「程序集变量表」「子程序 阶乘」）。
-func (e *StructEditorElement) paintSectionTitle(cvs canvas.Canvas, x, y, w float64, text string) float64 {
-	bar := paint.DefaultPaint()
-	bar.Color = seFuncRowBG()
-	cvs.DrawRoundedRect(x, y, w, seHeaderH, 3, bar)
-	f := canvas.DefaultFont()
-	f.Size = 13
-	f.Weight = canvas.FontWeightBold
-	canvas.DrawTextAligned(cvs, text, types.Rect{X: x + 8, Y: y, Width: w - 16, Height: seHeaderH}, f, elPrimary(), canvas.HAlignLeft, canvas.VAlignMiddle)
-	return y + seHeaderH + 4
-}
-
-// gutterWidth 统一行号栏宽度：按全文档总行数的位数算（与内嵌代码编辑器同公式），
-// 使变量表行号列与代码行号栏等宽、数字右对齐到同一位置，连成最左一条整体行号栏。
+// gutterWidth 行号栏宽度：按程序最大行号位数算（拼接 import/var/type/const/所有函数体），
+// 保证整份文档行号栏统一宽；无内容→0（仅表格视图允许隐藏行号）。
 func (e *StructEditorElement) gutterWidth() float64 {
-	total := len(e.program.Globals)
-	nImp := len(e.program.Imports)
-	if e.se.lang == "go" && nImp == 0 {
-		nImp = 1 // 空导入占位行也占一个行号
+	maxLine := 0
+	// imports
+	for range e.program.Imports {
+		maxLine++
 	}
-	total += nImp
-	for i := range e.program.Subs {
-		s := &e.program.Subs[i]
-		total += len(s.Params) + len(s.Locals)
-		total += strings.Count(expandTabs(s.Body), "\n") + 1
+	if len(e.program.Imports) == 0 {
+		maxLine++ // 占位行
 	}
-	digits := len(itoaCE(total))
-	if digits < 2 {
-		digits = 2
+	// consts
+	maxLine += len(e.program.Consts)
+	// types
+	maxLine += len(e.program.Types)
+	// globals
+	maxLine += len(e.program.Globals)
+	// subs
+	for si := range e.program.Subs {
+		cel := e.ensureBodyEd(si, 200)
+		maxLine += 1 + len(e.program.Subs[si].Params) + len(e.program.Subs[si].Returns) + len(e.program.Subs[si].Locals) + len(cel.lines)
 	}
-	charW := canvas.MeasureTextGlobal("0", canvas.Font{Family: "Consolas", Size: 14}).Width
+	if maxLine < 10 {
+		return 32 // 短文件固定窄行号栏
+	}
+	digits := 0
+	for maxLine > 0 {
+		digits++
+		maxLine /= 10
+	}
+	e.font, _, _ = canvas.FontWithStyle("monospace", 13, canvas.FontRegular)
+	charW := e.font.Measure("8")
 	return float64(digits)*charW + ceGutterPad + ceFoldW
 }
 
-// paintTableRows 通用画表（schema 驱动）：行号列 + 表头(可折叠三角) + 数据行(文本/复选框单元格) + 列行网格盒。
-// 列由 cols 定义，单元格值经 v.field(列.Field) 读、Check 列画复选框。不画行号栏右竖分隔线/最外圆角框（调用者按独立表/子表补）。
-// foldable&collapsed 时只画表头。startLine 是本表首行的全局行号。返回表底部 y。
-func (e *StructEditorElement) paintTableRows(cvs canvas.Canvas, x, y, w, gw float64, section string, cols []SECol, vars []SEVar, startLine int, foldable, collapsed bool) float64 {
-	contentX := x + gw
-	tw := w - gw
-	numAreaW := gw - ceGutterPad - ceFoldW // 数字右对齐区，与代码行号栏一致
-	cw := colWidths(cols, tw)
-	heads := make([]string, len(cols))
-	for i := range cols {
-		heads[i] = cols[i].Title
+// ── 通用变量表 ──
+
+// paintVarTable 画一张变量表（字段名|类型|数组|参考|备注），含行号栏 + 分隔线。
+// section 为区段标识（"globals"/"locals:N"/"params:N"/"returns:N"）；caption 为列首名称。
+// showHeader=true 在首行画表头并高亮；collapsed=true 只画首行(表头) + 折叠三角。
+// 返回下一行 y 坐标（按行高步进）。
+func (e *StructEditorElement) paintVarTable(cvs canvas.Canvas, x, y, innerW, gw float64, section string, cols []SECol, vars []SEVar, gl int, showHeader bool, collapsed bool) float64 {
+	rows := len(vars)
+	if collapsed && rows > 0 {
+		rows = 0 // 折叠时只有表头
 	}
-	gb := paint.DefaultPaint()
-	gb.Color = seGutterBG()
-	cvs.DrawRect(x, y, gw, seHeaderH, gb)
-	if foldable { // 表头折叠三角 + 命中区（sub=-1 标识程序集变量表）
-		e.paintFoldTri(cvs, x+gw-ceFoldW, y, seHeaderH, collapsed)
-		e.foldHits = append(e.foldHits, seFoldHit{rect: types.Rect{X: x, Y: y, Width: gw, Height: seHeaderH}, sub: -1})
+	colW := colWidths(cols, innerW-gw)
+	colE := colEdges(colW)
+	x0 := x + gw
+	cw := innerW - gw // 内容区宽（不含行号栏）
+	// 累计所有线（行号栏竖线以外）到 e.cells，供 hit-test 编辑用
+	if showHeader && len(vars) > 0 { // 画表头行（蓝底+加粗+首列名即标题）
+		hdrY := y
+		e.paintRow(cvs, x, hdrY, gw, colW, colE, section, -1, []string{sectionTitle(section, cols)}, nil, gl, true)
+		// 折叠三角
+		if section == "globals" || section == "consts" || section == "types" {
+			e.foldHits = append(e.foldHits, seFoldHit{rect: types.Rect{X: x0 + cw - 18, Y: hdrY + 3, Width: 16, Height: seRowH - 6}, sub: -1})
+		}
+		y = hdrY + seRowH
 	}
-	e.paintGridHeader(cvs, contentX, y, heads, cw)
-	hy := y + seHeaderH
-	if foldable && collapsed { // 收起：只画表头外框
-		bp := paint.DefaultStrokePaint()
-		bp.Color = seLineColor()
-		bp.StrokeWidth = 1
-		cvs.DrawRect(contentX+0.5, y+0.5, tw-1, seHeaderH-1, bp)
-		return hy
+	if collapsed {
+		return y
 	}
-	nf := canvas.DefaultFont()
-	nf.Size = 11
-	for r := range vars {
-		ry := hy + float64(r)*seRowH
-		cvs.DrawRect(x, ry, gw, seRowH, gb) // 行号列灰底 + 右对齐全局行号
-		canvas.DrawTextAligned(cvs, itoaCE(startLine+r), types.Rect{X: x, Y: ry, Width: numAreaW, Height: seRowH}, nf, seGutterNum(), canvas.HAlignRight, canvas.VAlignMiddle)
-		col := contentX
+	for ri := range vars {
+		rowY := y
+		vals := make([]string, len(cols))
+		for ci, col := range cols {
+			vals[ci] = vars[ri].field(col.Field)
+		}
+		eachW := make([]float64, len(cols))
 		for ci := range cols {
-			if cols[ci].Check { // 复选框列（如参考/传址）
-				e.paintCheckCell(cvs, col, ry, cw[ci], vars[r].field(cols[ci].Field) == "是", section, r, ci)
-			} else {
-				e.paintCell(cvs, col, ry, cw[ci], vars[r].field(cols[ci].Field), section, r, ci, ci == 0)
-			}
-			col += cw[ci]
+			eachW[ci] = colW[ci]
 		}
+		e.paintRow(cvs, x, rowY, gw, colW, colE, section, ri, vals, eachW, gl, false)
+		y = rowY + seRowH
 	}
-	bottom := hy + float64(len(vars))*seRowH
-	e.paintGridBox(cvs, contentX, y, tw, bottom-y, colEdges(cw)) // 列分隔线用累计边界，与单元格严格一致
-	return bottom
+	return y
 }
 
-// paintVarTable 独立变量表（程序集变量/局部变量）：通用画表 + 行号栏右竖分隔线。foldable 仅程序集表用。
-func (e *StructEditorElement) paintVarTable(cvs canvas.Canvas, x, y, w, gw float64, section string, cols []SECol, vars []SEVar, startLine int, foldable, collapsed bool) float64 {
-	bottom := e.paintTableRows(cvs, x, y, w, gw, section, cols, vars, startLine, foldable, collapsed)
-	contentX := x + gw
-	sep := paint.DefaultStrokePaint() // 行号栏右分隔线（与代码编辑器 gutter 一致）
-	sep.Color = elBorder()
-	sep.StrokeWidth = 1
-	cvs.DrawLine(contentX, y, contentX, bottom, sep)
-	return bottom + 4 // 增行靠回车（末尾行回车追加），不再画「+ 增行」按钮
-}
-
-// paintFuncTable 函数声明 + 参数合并成一张表：
-// 首行（蓝底）是函数声明——「函数名」标签+可编辑框 + 「返回值」标签+可编辑框（带折叠三角，占行号 declLine）；
-// 其下是「参数 | 类型 | 数组 | 备注」子表（注明参数）。collapsed 时只画函数声明行。
-func (e *StructEditorElement) paintFuncTable(cvs canvas.Canvas, x, y, w, gw float64, sub *SESub, si int, collapsed bool, declLine int) float64 {
-	contentX := x + gw
-	tw := w - gw
-	numAreaW := gw - ceGutterPad - ceFoldW
-	top := y
-	nf := canvas.DefaultFont()
-	nf.Size = 11
-	lf := canvas.DefaultFont()
-	lf.Size = 12
-	sec := "func:" + itoaCE(si)
-
-	// ── 函数声明行（蓝底）：行号 + 折叠三角 + 「函数名」标签+可编辑框 + 「返回值」标签+可编辑框 ──
-	gb := paint.DefaultPaint()
-	gb.Color = seGutterBG()
-	cvs.DrawRect(x, y, gw, seRowH, gb)
-	canvas.DrawTextAligned(cvs, itoaCE(declLine), types.Rect{X: x, Y: y, Width: numAreaW, Height: seRowH}, nf, seGutterNum(), canvas.HAlignRight, canvas.VAlignMiddle)
-	e.paintFoldTri(cvs, x+gw-ceFoldW, y, seRowH, collapsed)
-	e.foldHits = append(e.foldHits, seFoldHit{rect: types.Rect{X: x, Y: y, Width: gw, Height: seRowH}, sub: si})
-	bar := paint.DefaultPaint()
-	bar.Color = seFuncRowBG()
-	cvs.DrawRect(contentX, y, tw, seRowH, bar)
-	lx := contentX + 8
-	canvas.DrawTextAligned(cvs, "函数名", types.Rect{X: lx, Y: y, Width: 40, Height: seRowH}, lf, seHeadText(), canvas.HAlignLeft, canvas.VAlignMiddle)
-	lx += 40
-	nameW := tw * 0.30
-	e.paintEditCell(cvs, lx, y, nameW, sub.Name, sec, 0)
-	lx += nameW + 12
-	canvas.DrawTextAligned(cvs, "注释", types.Rect{X: lx, Y: y, Width: 30, Height: seRowH}, lf, seHeadText(), canvas.HAlignLeft, canvas.VAlignMiddle)
-	lx += 30
-	noteW := contentX + tw - lx - 8 // 注释框用剩余宽度
-	if noteW < 80 {
-		noteW = 80
+// paintRow 画一行：行号 + 各单元格文本。
+func (e *StructEditorElement) paintRow(cvs canvas.Canvas, x, y, gw float64, colW, colE []float64, section string, row int, vals []string, eachW []float64, gl int, isHeader bool) {
+	x0 := x + gw
+	cw := 0.0
+	for _, w := range colW {
+		cw += w
 	}
-	e.paintEditCell(cvs, lx, y, noteW, sub.Note, sec, 1) // 返回值移到下方返回值子表（多返回值一行一个）
-	y += seRowH
-
-	// ── 参数子表 + 返回值子表（schema 驱动，复用通用画表 paintTableRows）──
-	if !collapsed {
-		sc := e.curSchema()
-		y = e.paintTableRows(cvs, x, y, w, gw, "params:"+itoaCE(si), sc.Params, sub.Params, declLine+1, false, false)
-		if len(sub.Returns) > 0 {
-			y = e.paintTableRows(cvs, x, y, w, gw, "returns:"+itoaCE(si), sc.Returns, sub.Returns, declLine+1+len(sub.Params), false, false)
+	// 行号
+	e.drawLineNum(cvs, x, y, gw, gl, isHeader)
+	// 行底色
+	bgCol := seRowBG()
+	if isHeader {
+		bgCol = seHeaderBG()
+	} else if section == "globals" && row >= 0 && row < len(e.program.Globals) {
+		bgCol = seRowBG()
+	}
+	bp := paint.DefaultPaint()
+	bp.Color = bgCol
+	cvs.DrawRect(x0, y, cw, seRowH, bp)
+	// 单元格
+	cellX := x0
+	for ci, val := range vals {
+		w := colW[ci]
+		if w < 1 {
+			continue
 		}
+		// 命中区
+		e.cells = append(e.cells, seCellHit{rect: types.Rect{X: cellX, Y: y, Width: w, Height: seRowH}, section: section, row: row, col: ci})
+		// 选中/编辑高亮
+		if !isHeader && e.selSection == section && e.selRow == row && e.selCol == ci {
+			sel := paint.DefaultPaint()
+			sel.Color = elPrimary()
+			cvs.DrawRect(cellX+1, y+1, w-2, seRowH-2, sel)
+		}
+		// 文本
+		txtCol := seText()
+		if isHeader {
+			txtCol = seHeaderText()
+		}
+		e.font, _, _ = canvas.FontWithStyle("monospace", 13, canvas.FontRegular)
+		padL := 4.0
+		if ci == 0 {
+			padL = 8 // 首列左间距大些
+		}
+		tx := cellX + padL
+		// 长度限制
+		maxW := w - padL - 4
+		display := val
+		for e.font.Measure(display) > maxW {
+			display = display[:len(display)-1]
+		}
+		canvas.DrawTextAligned(cvs, display, types.Rect{X: tx, Y: y, Width: w - padL - 4, Height: seRowH}, e.font, txtCol, canvas.HAlignLeft, canvas.VAlignMiddle)
+		cellX += w
 	}
-	// 外框 + 行号栏右分隔线
-	bp := paint.DefaultStrokePaint()
-	bp.Color = seLineColor()
-	bp.StrokeWidth = 1
-	cvs.DrawRect(contentX+0.5, top+0.5, tw-1, y-top-1, bp)
-	sep := paint.DefaultStrokePaint()
-	sep.Color = elBorder()
-	sep.StrokeWidth = 1
-	cvs.DrawLine(contentX, top, contentX, y, sep)
-	return y + 4
+	// 行分隔线
+	border := seLineColor()
+	for _, ex := range colE {
+		ln := paint.DefaultStrokePaint()
+		ln.Color = border
+		cvs.DrawLine(x0+ex, y, x0+ex, y+seRowH, ln)
+	}
+	// 底部分隔线
+	ln := paint.DefaultStrokePaint()
+	ln.Color = border
+	cvs.DrawLine(x0, y+seRowH, x0+cw, y+seRowH, ln)
 }
 
-// paintEditCell 画一个「看起来可编辑」的输入框单元格（白底+细框）+ 登记可编辑单元格（选中/光标/写回）。
-func (e *StructEditorElement) paintEditCell(cvs canvas.Canvas, x, y, w float64, text, section string, col int) {
-	wb := paint.DefaultPaint()
-	wb.Color = seCellBg()
-	cvs.DrawRoundedRect(x, y+3, w, seRowH-6, 2, wb)
-	ob := paint.DefaultStrokePaint()
-	ob.Color = seLineColor()
-	ob.StrokeWidth = 1
-	cvs.DrawRoundedRect(x+0.5, y+3.5, w-1, seRowH-7, 2, ob)
-	e.paintCell(cvs, x, y, w, text, section, 0, col, false)
+// drawLineNum 画行号（单行）。
+func (e *StructEditorElement) drawLineNum(cvs canvas.Canvas, x, y, gw float64, n int, isHeader bool) {
+	col := seGutterNum()
+	if isHeader {
+		col = seGutterNum()
+	}
+	if n >= 0 && !isHeader {
+		e.font, _, _ = canvas.FontWithStyle("monospace", 13, canvas.FontRegular)
+		canvas.DrawTextAligned(cvs, itoaCE(n), types.Rect{X: x, Y: y, Width: gw - ceGutterPad - ceFoldW, Height: seRowH},
+			e.font, col, canvas.HAlignRight, canvas.VAlignMiddle)
+	}
 }
 
-// paintCheckCell 画一个复选框单元格（参数「参考」列：勾选=传址 by-reference），并登记命中区（点击经 beginEdit 切换）。
-func (e *StructEditorElement) paintCheckCell(cvs canvas.Canvas, x, y, w float64, checked bool, section string, row, col int) {
-	if e.selSection == section && e.selRow == row && e.selCol == col { // 选中高亮
-		sb := paint.DefaultPaint()
-		sb.Color = seSelBG()
-		cvs.DrawRect(x+1, y+1, w-2, seRowH-2, sb)
-	}
-	bs := 14.0 // 居中的小方框
-	bx := x + (w-bs)/2
-	by := y + (seRowH-bs)/2
-	box := paint.DefaultPaint()
-	if checked {
-		box.Color = elPrimary()
-		cvs.DrawRoundedRect(bx, by, bs, bs, 3, box)
-		ck := paint.DefaultStrokePaint() // 白色对勾
-		ck.Color = elSurface()
-		ck.StrokeWidth = 1.6
-		cvs.DrawLine(bx+3, by+7, bx+6, by+10, ck)
-		cvs.DrawLine(bx+6, by+10, bx+11, by+4, ck)
+// ── 折叠三角 ──
+
+// paintFoldTriangle 画折叠三角（▶ 或 ▼）。（待渲染到 canvas）
+func paintFoldTriangle(cvs canvas.Canvas, x, y, size float64, collapsed bool, col types.Color) {
+	if collapsed {
+		// ▶
+		cvs.DrawLine(x+size*0.3, y+size*0.2, x+size*0.7, y+size*0.5, paint.StrokePaint(types.Color{}, size*0.12))
+		cvs.DrawLine(x+size*0.7, y+size*0.5, x+size*0.3, y+size*0.8, paint.StrokePaint(types.Color{}, size*0.12))
 	} else {
-		box.Color = seCellBg()
-		cvs.DrawRoundedRect(bx, by, bs, bs, 3, box)
-		ob := paint.DefaultStrokePaint()
-		ob.Color = types.ColorFromRGB(0xC0, 0xC4, 0xCC)
-		ob.StrokeWidth = 1.2
-		cvs.DrawRoundedRect(bx+0.5, by+0.5, bs-1, bs-1, 3, ob)
-	}
-	e.cells = append(e.cells, seCellHit{rect: types.Rect{X: x, Y: y, Width: w, Height: seRowH}, section: section, row: row, col: col})
-}
-
-// paintFoldTri 折叠三角（折叠▶ / 展开▼），用线段画，避免字体无字形的豆腐块。
-func (e *StructEditorElement) paintFoldTri(cvs canvas.Canvas, gx, ly, rowH float64, folded bool) {
-	cx := gx + ceFoldW/2
-	cy := ly + rowH/2
-	ap := paint.DefaultStrokePaint()
-	ap.Color = elPrimary()
-	ap.StrokeWidth = 1.5
-	if folded { // ▶
-		cvs.DrawLine(cx-2, cy-4, cx+3, cy, ap)
-		cvs.DrawLine(cx+3, cy, cx-2, cy+4, ap)
-	} else { // ▼
-		cvs.DrawLine(cx-4, cy-2, cx, cy+3, ap)
-		cvs.DrawLine(cx, cy+3, cx+4, cy-2, ap)
+		// ▼
+		cvs.DrawLine(x+size*0.2, y+size*0.3, x+size*0.5, y+size*0.7, paint.StrokePaint(types.Color{}, size*0.12))
+		cvs.DrawLine(x+size*0.5, y+size*0.7, x+size*0.8, y+size*0.3, paint.StrokePaint(types.Color{}, size*0.12))
 	}
 }
 
-func (e *StructEditorElement) paintGridHeader(cvs canvas.Canvas, x, y float64, heads []string, cw []float64) {
-	hb := paint.DefaultPaint()
-	hb.Color = seHeaderBG()
-	tot := 0.0
-	for _, c := range cw {
-		tot += c
-	}
-	cvs.DrawRect(x, y, tot, seHeaderH, hb)
-	f := canvas.DefaultFont()
-	f.Size = 12
-	cx := x
-	for i, hd := range heads {
-		if hd != "" {
-			canvas.DrawTextAligned(cvs, hd, types.Rect{X: cx + 8, Y: y, Width: cw[i] - 10, Height: seHeaderH}, f, seHeadText(), canvas.HAlignLeft, canvas.VAlignMiddle)
-		}
-		cx += cw[i]
-	}
-}
+// ── 函数表 ──
 
-// paintCell 画一个数据单元格 + 登记命中区；selected 高亮。
-func (e *StructEditorElement) paintCell(cvs canvas.Canvas, x, y, w float64, text, section string, row, col int, leftPad bool) {
-	e.paintCellColored(cvs, x, y, w, text, section, row, col, 0, seTextColor())
-}
+// paintFuncTable 画一个子程序（函数声明 1 行 + 参数表 + 返回值表 + 局部变量表）。
+// 折叠时只画声明行（蓝底+折叠三角）+ 折叠虚线 // ...，函数体不展开。
+func (e *StructEditorElement) paintFuncTable(cvs canvas.Canvas, x, y, innerW, gw float64, sub *SESub, si int, collapsed bool, gl int) float64 {
+	x0 := x + gw
+	cw := innerW - gw
 
-func (e *StructEditorElement) paintCellColored(cvs canvas.Canvas, x, y, w float64, text, section string, row, col int, indent float64, color types.Color) {
-	if e.selSection == section && e.selRow == row && e.selCol == col {
-		sb := paint.DefaultPaint()
-		sb.Color = seSelBG()
-		cvs.DrawRect(x+1, y+1, w-2, seRowH-2, sb)
-		sp := paint.DefaultStrokePaint()
-		sp.Color = elPrimary()
-		sp.StrokeWidth = 1.4
-		cvs.DrawRect(x+1, y+1, w-2, seRowH-2, sp)
+	// 函数声明行（蓝底高亮，与易语言一致）
+	declY := y
+	// 函数名 + 接收器 + 类型参数
+	namePart := sub.Name
+	if sub.Recv != "" {
+		namePart = sub.Recv + " " + namePart
 	}
-	if text != "" {
-		f := canvas.DefaultFont()
-		f.Size = 13
-		canvas.DrawTextAligned(cvs, text, types.Rect{X: x + 8 + indent, Y: y, Width: w - 12 - indent, Height: seRowH}, f, color, canvas.HAlignLeft, canvas.VAlignMiddle)
+	if len(sub.TypeParams) > 0 {
+		tp := typeParamsGo(sub.TypeParams)
+		namePart += tp
 	}
-	// 编辑光标
-	if e.editing && e.selSection == section && e.selRow == row && e.selCol == col {
-		rr := []rune(text)
-		ec := e.editCol
-		if ec > len(rr) {
-			ec = len(rr)
-		}
-		cx := x + 8 + indent + e.measure(string(rr[:ec]))
-		e.cellCaretX, e.cellCaretY = cx, y+seRowH // 缓存供 IME 候选定位（不随闪烁变）
-		if e.isCellCursorVisible() {
-			cp := paint.DefaultStrokePaint()
-			cp.Color = seTextColor()
-			cp.StrokeWidth = 1.4
-			cvs.DrawLine(cx, y+4, cx, y+seRowH-4, cp)
+	// 行号
+	e.drawLineNum(cvs, x, declY, gw, gl, false)
+	// 行底色
+	bg := paint.DefaultPaint()
+	bg.Color = seFuncRowBG()
+	cvs.DrawRect(x0, declY, cw, seRowH, bg)
+	// 单元格
+	e.font, _, _ = canvas.FontWithStyle("monospace", 13, canvas.FontRegular)
+	padL := 8.0
+	tx := x0 + padL
+	canvas.DrawTextAligned(cvs, namePart, types.Rect{X: tx, Y: declY, Width: cw - padL, Height: seRowH}, e.font, seFuncRowText(), canvas.HAlignLeft, canvas.VAlignMiddle)
+	// 命中区（用于双击编辑函数名等）
+	e.cells = append(e.cells, seCellHit{rect: types.Rect{X: x0, Y: declY, Width: cw, Height: seRowH}, section: "func:" + itoaCE(si), row: 0, col: 0})
+	// 折叠三角
+	e.foldHits = append(e.foldHits, seFoldHit{rect: types.Rect{X: x0 + cw - 18, Y: declY + 3, Width: 16, Height: seRowH - 6}, sub: si})
+	// 分隔线
+	ln := paint.DefaultStrokePaint()
+	ln.Color = seLineColor()
+	cvs.DrawLine(x0, declY+seRowH, x0+cw, declY+seRowH, ln)
+	y = declY + seRowH
+
+	if collapsed {
+		// ... 折叠虚线
+		e.font, _, _ = canvas.FontWithStyle("monospace", 13, canvas.FontRegular)
+		canvas.DrawTextAligned(cvs, "// ...", types.Rect{X: x0 + 8, Y: y, Width: 60, Height: seRowH}, e.font, types.ColorFromRGB(140, 140, 140), canvas.HAlignLeft, canvas.VAlignMiddle)
+		y += seRowH
+		return y
+	}
+
+	// 参数表
+	if e.curSchema().Params != nil && len(e.curSchema().Params) > 0 {
+		// 参数用 params schema 显示
+		parmCols := e.curSchema().Params
+		if len(sub.Params) > 0 {
+			y = e.paintVarTable(cvs, x, y, innerW, gw, "params:"+itoaCE(si), parmCols, sub.Params, gl, true, false)
 		}
 	}
-	e.cells = append(e.cells, seCellHit{rect: types.Rect{X: x, Y: y, Width: w, Height: seRowH}, section: section, row: row, col: col})
+
+	// 返回值表
+	if e.curSchema().Returns != nil && len(e.curSchema().Returns) > 0 && len(sub.Returns) > 0 {
+		// 返回值用 returns schema
+		y = e.paintVarTable(cvs, x, y, innerW, gw, "returns:"+itoaCE(si), e.curSchema().Returns, sub.Returns, gl, true, false)
+	}
+
+	return y
 }
 
-// paintGridBox 画整张表的外框 + 列分隔线 + 行分隔线。
-func (e *StructEditorElement) paintGridBox(cvs canvas.Canvas, x, y, w, h float64, colEdges []float64) {
-	lp := paint.DefaultStrokePaint()
-	lp.Color = seLineColor()
-	lp.StrokeWidth = 1
-	cvs.DrawRect(x+0.5, y+0.5, w-1, h-1, lp)
-	// 列分隔线
-	cx := x
-	for i := 0; i < len(colEdges); i++ {
-		if i < len(colEdges) {
-			cx = x + colEdges[i]
+// ── Schema ──
+
+// constCols 常量表的列定义。
+var constCols = []SECol{
+	{Title: "常量", Field: SEFieldName, Weight: 0.30},
+	{Title: "类型", Field: SEFieldType, Weight: 0.20},
+	{Title: "值/备注", Field: SEFieldNote, Weight: 0.50},
+}
+
+// typeDefCols 类型定义表的列定义。
+var typeDefCols = []SECol{
+	{Title: "类型名", Field: SEFieldName, Weight: 0.25},
+	{Title: "种类", Field: SEFieldType, Weight: 0.15},
+	{Title: "项数/底层类型", Field: SEFieldArray, Weight: 0.25},
+	{Title: "备注", Field: SEFieldNote, Weight: 0.35},
+}
+
+// sectionTitle 取区段的标题文字。
+func sectionTitle(section string, cols []SECol) string {
+	switch {
+	case section == "imports":
+		return "导入"
+	case section == "globals":
+		if len(cols) > 0 {
+			return cols[0].Title
 		}
-		cvs.DrawLine(cx, y, cx, y+h, lp)
-	}
-	// 行分隔线（表头下 + 各行）
-	rows := int((h - seHeaderH) / seRowH)
-	for r := 0; r <= rows; r++ {
-		ly := y + seHeaderH + float64(r)*seRowH
-		cvs.DrawLine(x, ly, x+w, ly, lp)
+		return "程序集变量"
+	case section == "consts":
+		return "常量"
+	case section == "types":
+		return "类型定义"
+	case strings.HasPrefix(section, "params:"):
+		if len(cols) > 0 {
+			return cols[0].Title
+		}
+		return "参数"
+	case strings.HasPrefix(section, "returns:"):
+		if len(cols) > 0 {
+			return cols[0].Title
+		}
+		return "返回值"
+	case strings.HasPrefix(section, "locals:"):
+		if len(cols) > 0 {
+			return cols[0].Title
+		}
+		return "局部变量"
+	default:
+		return ""
 	}
 }
