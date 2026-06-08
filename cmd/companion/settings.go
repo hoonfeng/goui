@@ -800,7 +800,7 @@ func (b *settingsBodyState) skillsTab() widget.Widget {
 	}
 	kids = append(kids,
 		widget.Div(widget.Style{Height: 8}),
-		label("三级合并注入 agent（项目>用户>系统同名去重，按启用过滤）。系统级=安装目录 config/skills（只读，放此即系统/shipped）；用户级=~/.pair/skills；项目级=工作区 .pair/skills。", ghTextMuted, 10),
+		label("三级合并注入 agent（项目>用户>系统同名去重，按启用过滤）。用户数据目录=安装目录：系统级=config/skills（只读，放此即 shipped）；用户级=config/user-skills；项目级=工作区 .pair/skills。", ghTextMuted, 10),
 	)
 	return widget.Div(widget.Style{FlexDirection: "column", AlignItems: "stretch"}, kids)
 }

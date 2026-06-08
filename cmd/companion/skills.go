@@ -28,18 +28,15 @@ var skillLevels = []struct{ id, name string }{
 	{mcpLevelSystem, "系统级"}, {mcpLevelUser, "用户级"}, {mcpLevelProject, "项目级"},
 }
 
-// skillsRootFor 某级 skills 目录：
-// 系统级=安装目录 config/skills（shipped，放此即系统级，UI 只读、文件管理）；
-// 用户级=用户主目录 ~/.pair/skills（跨项目全局）；项目级=工作区 .pair/skills。
+// skillsRootFor 某级 skills 目录（用户数据目录=安装目录，故系统级与用户级都在安装目录 config 下）：
+// 系统级=config/skills（shipped，UI 只读、文件管理）；用户级=config/user-skills（可增删改）；
+// 项目级=工作区 .pair/skills。
 func skillsRootFor(level string) string {
 	switch level {
 	case mcpLevelSystem:
 		return filepath.Join(configDir(), "skills")
 	case mcpLevelUser:
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, ".pair", "skills")
-		}
-		return ""
+		return filepath.Join(configDir(), "user-skills")
 	case mcpLevelProject:
 		return filepath.Join(currentRoot(), ".pair", "skills")
 	}
