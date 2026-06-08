@@ -41,6 +41,39 @@ func main() {
 	}
 }
 
+// TestStructEditorFuncNameEdit 函数名可编辑：点函数声明行(func:i 区段 col0)进入编辑、键入改名。
+func TestStructEditorFuncNameEdit(t *testing.T) {
+	p := &SEProgram{Subs: []SESub{{Name: "foo"}}}
+	e := NewStructEditor(p).CreateElement().(*StructEditorElement)
+	e.beginEdit("func:0", 0, 0)
+	if !e.editing || e.selSection != "func:0" {
+		t.Fatalf("点函数名应进入编辑，实际 editing=%v sec=%q", e.editing, e.selSection)
+	}
+	e.editInsert('2')
+	if p.Subs[0].Name != "foo2" {
+		t.Errorf("编辑函数名应变 foo2，实际 %q", p.Subs[0].Name)
+	}
+}
+
+// TestGoMultiNameValues 一行多个常量/变量：每个名字配自己的值（不再统一取第一个）。
+func TestGoMultiNameValues(t *testing.T) {
+	src := `package main
+
+const a, b = 1, 2
+
+var x, y = 10, 20`
+	p, err := goLangProvider{}.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Consts) != 2 || p.Consts[0].Array != "1" || p.Consts[1].Array != "2" {
+		t.Errorf("常量 a=1,b=2，实际 %+v", p.Consts)
+	}
+	if len(p.Globals) != 2 || p.Globals[0].Ref != "10" || p.Globals[1].Ref != "20" {
+		t.Errorf("变量 x=10,y=20，实际 %+v", p.Globals)
+	}
+}
+
 // TestRustImplMethods 验证 Rust impl 块内方法被提取（Recv=类型），且 impl 块闭合后 inImpl 复位，
 // 使其后的顶级 fn 仍被识别为顶级函数（补全 impl 提取前的 bug：inImpl 不复位会吞掉后续顶级 fn）。
 func TestRustImplMethods(t *testing.T) {

@@ -44,12 +44,12 @@ func ParseGo(src string) (*SEProgram, error) {
 						continue
 					}
 					typ := exprStr(vs.Type)
-					val := ""
-					if len(vs.Values) > 0 {
-						val = exprStr(vs.Values[0])
-					}
-					for _, name := range vs.Names {
-						// 初始值存 Ref 列（全局变量不用 Ref 的传址语义）。
+					for ni, name := range vs.Names {
+						// 一行多个变量：每个名字配自己的值（Values[ni]），不再统一取 Values[0]。
+						val := ""
+						if ni < len(vs.Values) {
+							val = exprStr(vs.Values[ni])
+						}
 						p.Globals = append(p.Globals, SEVar{Name: name.Name, Type: typ, Ref: val, Note: commentText(d.Doc)})
 					}
 				}
@@ -60,12 +60,12 @@ func ParseGo(src string) (*SEProgram, error) {
 						continue
 					}
 					typ := exprStr(vs.Type)
-					val := ""
-					if len(vs.Values) > 0 {
-						val = exprStr(vs.Values[0])
-					}
-					for _, name := range vs.Names {
-						// 值进 Array 列、注释进 Note 列，各自独立成列。
+					for ni, name := range vs.Names {
+						// 一行多个常量：每个名字配自己的值（Values[ni]），不再统一取 Values[0]。
+						val := ""
+						if ni < len(vs.Values) {
+							val = exprStr(vs.Values[ni])
+						}
 						p.Consts = append(p.Consts, SEVar{Name: name.Name, Type: typ, Array: val, Note: commentText(d.Doc)})
 					}
 				}

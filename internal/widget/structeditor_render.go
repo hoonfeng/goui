@@ -491,11 +491,20 @@ func (e *StructEditorElement) paintFuncTable(cvs canvas.Canvas, x, y, innerW, gw
 	bg := paint.DefaultPaint()
 	bg.Color = seFuncRowBG()
 	cvs.DrawRect(x0, declY, cw, seRowH, bg)
+	// 选中/编辑函数名 → 高亮（之前无任何反馈，点了像「不可编辑」）
+	editingName := e.selSection == "func:"+itoaCE(si) && e.selRow == 0 && e.selCol == 0
+	nameColor := seFuncRowText()
+	if editingName {
+		sel := paint.DefaultPaint()
+		sel.Color = elPrimary()
+		cvs.DrawRect(x0+1, declY+1, cw-2, seRowH-2, sel)
+		nameColor = types.ColorFromRGB(255, 255, 255)
+	}
 	// 单元格
 	e.font, _, _ = canvas.FontWithStyle("monospace", 13, canvas.FontRegular)
 	padL := 8.0
 	tx := x0 + padL
-	canvas.DrawTextAligned(cvs, namePart, types.Rect{X: tx, Y: declY, Width: cw - padL, Height: seRowH}, e.font, seFuncRowText(), canvas.HAlignLeft, canvas.VAlignMiddle)
+	canvas.DrawTextAligned(cvs, namePart, types.Rect{X: tx, Y: declY, Width: cw - padL, Height: seRowH}, e.font, nameColor, canvas.HAlignLeft, canvas.VAlignMiddle)
 	// 命中区（用于双击编辑函数名等）
 	e.cells = append(e.cells, seCellHit{rect: types.Rect{X: x0, Y: declY, Width: cw, Height: seRowH}, section: "func:" + itoaCE(si), row: 0, col: 0})
 	// 折叠三角
