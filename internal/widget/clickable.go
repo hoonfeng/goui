@@ -74,12 +74,19 @@ func (e *ClickableElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult
 			MaxWidth: maxW, MaxHeight: float64(1 << 30),
 		}})
 		childSize = res.Size
-		e.child.SetPosition(types.Point{X: c.Padding.Left, Y: c.Padding.Top})
 	}
 	e.size = ctx.Constraints.Constrain(types.Size{
 		Width:  childSize.Width + padW,
 		Height: childSize.Height + padH,
 	})
+	if e.child != nil {
+		// 被父拉伸/约束到比内容更高时，子垂直居中——否则贴顶、下方留空白（如标签栏里的标签）。
+		childY := c.Padding.Top
+		if extra := e.size.Height - padH - childSize.Height; extra > 0 {
+			childY += extra / 2
+		}
+		e.child.SetPosition(types.Point{X: c.Padding.Left, Y: childY})
+	}
 	return layout.LayoutResult{Size: e.size}
 }
 
