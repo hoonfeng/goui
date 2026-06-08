@@ -712,38 +712,58 @@ func (e *CodeEditorElement) isCursorVisible() bool {
 	}
 	return time.Since(e.focusTime).Milliseconds()%1000 < 530
 }
-func (e *CodeEditorElement) Focus() { e.focused = true; focusedCodeEditor = e; e.resetBlink(); repaint() }
+func (e *CodeEditorElement) Focus() {
+	e.focused = true
+	focusedCodeEditor = e
+	lastFocusedCodeEditor = e // 记住最近聚焦者：宿主右键菜单弹出时本编辑器会失焦，命令/勾选仍要命中它
+	e.resetBlink()
+	repaint()
+}
 func (e *CodeEditorElement) Blur() {
 	e.focused = false
 	if focusedCodeEditor == e {
-		focusedCodeEditor = nil
+		focusedCodeEditor = nil // 注意：不清 lastFocusedCodeEditor，否则菜单一弹出命令就没目标了
 	}
 	repaint()
 }
 func (e *CodeEditorElement) IsFocused() bool { return e.focused }
 
-// focusedCodeEditor 当前聚焦的代码编辑器（供菜单/快捷键把编辑命令派发到它）。
-var focusedCodeEditor *CodeEditorElement
+// focusedCodeEditor 当前聚焦的代码编辑器；lastFocusedCodeEditor 最近聚焦的（失焦后仍保留）。
+var (
+	focusedCodeEditor     *CodeEditorElement
+	lastFocusedCodeEditor *CodeEditorElement
+)
 
-// RunEditorCommand 把编辑命令派发给当前聚焦的代码编辑器（无则返回 false）。
-// cmd: undo / redo / cut / copy / paste / selectAll。供标题栏「编辑」菜单等外部调用。
+// activeCodeEditor 命令派发目标：优先当前聚焦，否则最近聚焦——宿主菜单（覆盖层）弹出会令编辑器失焦，
+// 但菜单里的编辑命令/勾选仍应作用于刚才那个编辑器，故用最近聚焦兜底。
+func activeCodeEditor() *CodeEditorElement {
+	if focusedCodeEditor != nil {
+		return focusedCodeEditor
+	}
+	return lastFocusedCodeEditor
+}
+
+// RunEditorCommand 把编辑命令派发给当前(或最近)聚焦的代码编辑器（无则返回 false）。
+// cmd: undo / redo / cut / copy / paste / selectAll / format / toggleWrap。供右键菜单/标题栏「编辑」菜单调用。
 func RunEditorCommand(cmd string) bool {
-	if focusedCodeEditor == nil {
+	ed := activeCodeEditor()
+	if ed == nil {
 		return false
 	}
-	focusedCodeEditor.runCommand(cmd)
+	ed.runCommand(cmd)
 	return true
 }
 
 // SuppressEditorContextMenu 为 true 时 CodeEditor 不弹自带右键菜单，放行事件冒泡给宿主自定义菜单。
 var SuppressEditorContextMenu bool
 
-// HasFocusedEditor 当前是否有聚焦的代码编辑器（供宿主菜单决定剪切/复制等项是否可用）。
-func HasFocusedEditor() bool { return focusedCodeEditor != nil }
+// HasFocusedEditor 当前(或最近)是否有代码编辑器（供宿主菜单决定剪切/复制等项是否可用）。
+func HasFocusedEditor() bool { return activeCodeEditor() != nil }
 
-// EditorWrapEnabled 返回当前聚焦编辑器是否开启软自动换行（无聚焦→false）。供菜单勾选状态。
+// EditorWrapEnabled 返回当前(或最近)聚焦编辑器是否开启软自动换行（无则 false）。供菜单勾选状态。
 func EditorWrapEnabled() bool {
-	return focusedCodeEditor != nil && focusedCodeEditor.wrap
+	ed := activeCodeEditor()
+	return ed != nil && ed.wrap
 }
 
 // runCommand 执行一条编辑命令（与右键菜单 contextItems 同源逻辑）。

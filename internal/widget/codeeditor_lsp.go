@@ -192,4 +192,10 @@ func (e *CodeEditorElement) Unmount() {
 		e.lspClient = nil
 		e.lspReady = false
 	}
+	if focusedCodeEditor == e { // 销毁时清全局引用，避免命令派发到已卸载的编辑器
+		focusedCodeEditor = nil
+	}
+	if lastFocusedCodeEditor == e {
+		lastFocusedCodeEditor = nil
+	}
 }
