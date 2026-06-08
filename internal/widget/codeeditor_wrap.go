@@ -40,10 +40,15 @@ func (e *CodeEditorElement) ensureWrapSegs(viewW float64) {
 }
 
 // rebuildWrapSegs 据当前 visRows + 换行开关重建视觉段。
+// 折行断点用「等宽单字符宽 × 字数(CJK 2 倍)」快速估算，避免逐子串 Skia 测量（resize 时 O(L²) 卡顿的根源）。
 func (e *CodeEditorElement) rebuildWrapSegs(viewW float64) {
 	e.wrapW = viewW
 	e.wrapDirty = false
 	e.wrapSegs = e.wrapSegs[:0]
+	charW := e.measure("0") // 等宽字体单字符宽，整次重建只测一次
+	if charW <= 0 {
+		charW = 8
+	}
 	for _, line := range e.visRows {
 		runes := e.lineRunes(line)
 		if !e.wrap || viewW <= 0 || len(runes) == 0 {
@@ -51,26 +56,43 @@ func (e *CodeEditorElement) rebuildWrapSegs(viewW float64) {
 			e.wrapSegs = append(e.wrapSegs, wrapSeg{line, 0, len(runes)})
 			continue
 		}
-		e.appendLineSegs(line, runes, viewW)
+		e.appendLineSegs(line, runes, viewW, charW)
 	}
 	if len(e.wrapSegs) == 0 { // 永远至少一段（空文档=一个空段），避免下游除零/越界
 		e.wrapSegs = append(e.wrapSegs, wrapSeg{0, 0, 0})
 	}
 }
 
+// isWideRune 东亚宽字符（等宽字体下占 2 格）。仅用于折行断点的快速宽度估算，非像素级精确。
+func isWideRune(r rune) bool {
+	return (r >= 0x1100 && r <= 0x115F) || // Hangul Jamo
+		(r >= 0x2E80 && r <= 0xA4CF) || // CJK 部首/假名/CJK/扩展A/彝
+		(r >= 0xAC00 && r <= 0xD7A3) || // Hangul 音节
+		(r >= 0xF900 && r <= 0xFAFF) || // CJK 兼容
+		(r >= 0xFE30 && r <= 0xFE4F) || // CJK 兼容形式
+		(r >= 0xFF00 && r <= 0xFF60) || // 全角 ASCII/标点
+		(r >= 0xFFE0 && r <= 0xFFE6) || // 全角符号
+		(r >= 0x20000 && r <= 0x3FFFD) // CJK 扩展 B+
+}
+
 // appendLineSegs 把单个逻辑行按 viewW 像素宽切成若干段，优先在空白处断行，否则 rune 间硬断。
-// 决不丢字符：每段至少含 1 个 rune。
-func (e *CodeEditorElement) appendLineSegs(line int, runes []rune, viewW float64) {
+// 决不丢字符：每段至少含 1 个 rune。宽度按 charW 累加（O(L)，无逐子串 Skia 测量）。
+func (e *CodeEditorElement) appendLineSegs(line int, runes []rune, viewW, charW float64) {
 	start := 0
 	n := len(runes)
 	for start < n {
-		// 从 start 起，找放得下 viewW 的最大结束位置 end（>start）。
+		// 从 start 起累加字符宽，直到再加一个就超 viewW → end 即断点（end 不含）。
 		end := start
+		w := 0.0
 		for end < n {
-			w := e.measure(string(runes[start : end+1]))
-			if w > viewW && end > start {
-				break // 再加一个就超宽 → end 即断点（end 不含）
+			rw := charW
+			if isWideRune(runes[end]) {
+				rw = 2 * charW
 			}
+			if w+rw > viewW && end > start {
+				break
+			}
+			w += rw
 			end++
 		}
 		if end <= start {

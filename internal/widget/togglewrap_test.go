@@ -65,3 +65,20 @@ func TestEditorCmdAfterBlur(t *testing.T) {
 		t.Error("selectAll 应产生选区（说明命中了最近编辑器）")
 	}
 }
+
+func BenchmarkRebuildWrapSegs(b *testing.B) {
+	globalWordWrap = true
+	defer func() { globalWordWrap = false }()
+	var sb strings.Builder
+	for i := 0; i < 1000; i++ {
+		sb.WriteString(strings.Repeat("word ", 30)) // ~150 字符/行
+		sb.WriteByte('\n')
+	}
+	ce := NewCodeEditor("go", sb.String()).WithSize(600, 400)
+	e := ce.CreateElement().(*CodeEditorElement)
+	e.wrap = true
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		e.rebuildWrapSegs(500 + float64(i%80)) // 变宽强制重建（模拟拖拽 resize）
+	}
+}
