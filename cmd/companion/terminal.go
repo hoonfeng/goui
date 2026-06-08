@@ -9,7 +9,6 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -68,6 +67,30 @@ func (m *termManager) newTab() {
 	m.SetState()
 }
 
+// newTabWithShell 用指定 shell 新建标签（继承当前目录），切到它。供菜单「新建 X 终端」。
+func (m *termManager) newTabWithShell(code string) {
+	t := newTerminalState()
+	t.shell = code
+	if cur := m.tabs[m.active]; cur != nil {
+		t.cwd = cur.cwd
+	}
+	m.tabs = append(m.tabs, t)
+	m.active = len(m.tabs) - 1
+	theTerminal = t
+	m.SetState()
+}
+
+// setActiveShell 把当前标签换成指定 shell：杀旧 PTY、下帧用新 shell 重启；重画标签栏（shell 标签变）。
+func (m *termManager) setActiveShell(code string) {
+	t := m.tabs[m.active]
+	if t == nil || t.shell == code {
+		return
+	}
+	t.shell = code
+	t.killPTY()
+	m.SetState()
+}
+
 // switchTab 切到第 i 个标签。
 func (m *termManager) switchTab(i int) {
 	if i < 0 || i >= len(m.tabs) || i == m.active {
@@ -114,7 +137,7 @@ func (m *termManager) tabBar() widget.Widget {
 		kids = append(kids, &widget.Clickable{
 			SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
 				widget.Style{BackgroundColor: bg, Padding: types.EdgeInsetsLTRB(10, 5, 10, 5)},
-				label(shellLabel(t.shell)+" "+filepath.Base(t.cwd), tc, 11),
+				label(shellLabel(t.shell), tc, 11),
 			)},
 			OnClick: func() { m.switchTab(idx) },
 		})
@@ -150,11 +173,11 @@ type termInstance struct {
 
 func (w *termInstance) CreateState() widget.State { return w.st }
 
-// shellLabel 当前 shell 的短标签。
+// shellLabel 当前 shell 的标签。
 func shellLabel(shell string) string {
 	switch shell {
 	case "powershell":
-		return "PS"
+		return "PowerShell"
 	case "gitbash":
 		return "Bash"
 	default:
@@ -164,11 +187,44 @@ func shellLabel(shell string) string {
 
 // ptyShellFor 把内部 shell 码（cmd/powershell/gitbash）映射到探测到的 pty.Shell。
 func ptyShellFor(code string) pty.Shell {
-	name := map[string]string{"cmd": "CMD", "powershell": "PowerShell", "gitbash": "Git Bash"}[code]
-	if name == "" {
-		return pty.DefaultShell()
+	switch code {
+	case "cmd":
+		return pty.ShellByName("CMD")
+	case "powershell":
+		if s := pty.ShellByName("PowerShell"); s.Name == "PowerShell" {
+			return s // Windows PowerShell
+		}
+		return pty.ShellByName("PowerShell 7") // 仅装了 pwsh 时退回它
+	case "gitbash":
+		return pty.ShellByName("Git Bash")
 	}
-	return pty.ShellByName(name)
+	return pty.DefaultShell()
+}
+
+// shellOpt 一个可选 shell（菜单用）。
+type shellOpt struct{ code, label string }
+
+// availableShells 本机探测到的、受支持的 shell（CMD/PowerShell/Bash），去重，供菜单列出。
+func availableShells() []shellOpt {
+	var out []shellOpt
+	seen := map[string]bool{}
+	add := func(code string) {
+		if !seen[code] {
+			seen[code] = true
+			out = append(out, shellOpt{code, shellLabel(code)})
+		}
+	}
+	for _, s := range pty.DetectShells() {
+		switch s.Name {
+		case "CMD":
+			add("cmd")
+		case "PowerShell", "PowerShell 7":
+			add("powershell")
+		case "Git Bash":
+			add("gitbash")
+		}
+	}
+	return out
 }
 
 // ─── 单个终端标签（PTY + vterm）───────────────────────────────────

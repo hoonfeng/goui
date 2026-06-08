@@ -306,12 +306,26 @@ func editorTabMenu(x, y float64, i int) { showMenu(x, y, editorTabItems(i)) }
 // ─── 终端菜单 ─────────────────────────────────────────────
 
 func terminalItems() []widget.MenuItem {
+	shells := availableShells()
+	var newItems, switchItems []widget.MenuItem
+	for _, sh := range shells {
+		code := sh.code
+		newItems = append(newItems, mi("terminal", sh.label, func() { theTermMgr.newTabWithShell(code) }))
+		icon := "terminal"
+		if theTerminal != nil && theTerminal.shell == code {
+			icon = "check" // 当前 shell 打勾
+		}
+		switchItems = append(switchItems, mi(icon, sh.label, func() { theTermMgr.setActiveShell(code) }))
+	}
 	return []widget.MenuItem{
+		{Icon: "plus", Label: "新建终端", Enabled: true, Children: newItems},
+		{Icon: "repeat", Label: "切换 Shell", Enabled: true, Children: switchItems},
+		sep(),
 		mi("copy", "复制全部", func() { copyToClipboard(theTerminal.copyAll()) }),
 		mi("clipboard", "粘贴", func() { theTerminal.pasteToInput() }),
+		mi("eraser", "清屏", func() { theTerminal.clearScreen() }),
 		sep(),
 		mi("message-square", "添加到对话", func() { addToChat("```\n" + theTerminal.copyAll() + "```") }),
-		mi("eraser", "清屏", func() { theTerminal.clearScreen() }),
 	}
 }
 
