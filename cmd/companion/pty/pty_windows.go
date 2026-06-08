@@ -53,30 +53,39 @@ func Start(sh Shell, dir string, cols, rows int) (PTY, error) {
 	if rows <= 0 {
 		rows = 24
 	}
-	inR, inW, err := os.Pipe() // 键盘：inW(写)→ConPTY 读 inR
-	if err != nil {
+	// 用 raw CreatePipe（同步、字节模式、可继承句柄）——os.Pipe 的句柄能读到初始序列，
+	// 但 conhost 绑不上 shell 的 stdout（已知可用 Go ConPTY 实现都用 CreatePipe + 可继承）。
+	var sa syscall.SecurityAttributes
+	sa.Length = uint32(unsafe.Sizeof(sa))
+	sa.InheritHandle = 1
+	var conIn, ptyIn, ptyOut, conOut syscall.Handle
+	if err := syscall.CreatePipe(&conIn, &ptyIn, &sa, 0); err != nil { // 输入：conIn(读,给 ConPTY) / ptyIn(写,留)
 		return nil, err
 	}
-	outR, outW, err := os.Pipe() // 输出：ConPTY 写 outW → outR(读)
-	if err != nil {
-		inR.Close()
-		inW.Close()
+	if err := syscall.CreatePipe(&ptyOut, &conOut, &sa, 0); err != nil { // 输出：ptyOut(读,留) / conOut(写,给 ConPTY)
+		syscall.CloseHandle(conIn)
+		syscall.CloseHandle(ptyIn)
 		return nil, err
 	}
 
 	var hpc uintptr
-	r1, _, _ := procCreatePseudoConsole.Call(coordSize(cols, rows), inR.Fd(), outW.Fd(), 0, uintptr(unsafe.Pointer(&hpc)))
-	inR.Close() // 伪控制台已接管 inR/outW，关掉本端副本
-	outW.Close()
+	r1, _, _ := procCreatePseudoConsole.Call(coordSize(cols, rows), uintptr(conIn), uintptr(conOut), 0, uintptr(unsafe.Pointer(&hpc)))
+	syscall.CloseHandle(conIn) // 伪控制台已复制 console 侧句柄，关掉本端副本
+	syscall.CloseHandle(conOut)
 	if r1 != 0 {
-		inW.Close()
-		outR.Close()
+		syscall.CloseHandle(ptyIn)
+		syscall.CloseHandle(ptyOut)
 		return nil, fmt.Errorf("CreatePseudoConsole 失败: 0x%x", r1)
 	}
+	inW := os.NewFile(uintptr(ptyIn), "conpty-in")   // 写键盘
+	outR := os.NewFile(uintptr(ptyOut), "conpty-out") // 读输出
 
 	// 进程线程属性列表（带 PSEUDOCONSOLE）：先问大小，再初始化，再 Update 挂上 hpc。
 	var attrSize uintptr
 	procInitializeProcThreadAttributeList.Call(0, 1, 0, uintptr(unsafe.Pointer(&attrSize)))
+	if os.Getenv("CONPTY_DEBUG") != "" {
+		fmt.Fprintf(os.Stderr, "[conpty] hpc=0x%x attrSize=%d sizeof(si)=%d sizeof(hpc)=%d\n", hpc, attrSize, unsafe.Sizeof(startupInfoEx{}), unsafe.Sizeof(hpc))
+	}
 	attrList := make([]byte, attrSize)
 	if r, _, e := procInitializeProcThreadAttributeList.Call(uintptr(unsafe.Pointer(&attrList[0])), 1, 0, uintptr(unsafe.Pointer(&attrSize))); r == 0 {
 		procClosePseudoConsole.Call(hpc)
