@@ -9,10 +9,61 @@ package main
 import (
 	"github.com/user/goui/cmd/companion/vterm"
 	"github.com/user/goui/internal/canvas"
+	"github.com/user/goui/internal/event"
 	"github.com/user/goui/internal/paint"
 	"github.com/user/goui/internal/types"
 	"github.com/user/goui/internal/widget"
 )
+
+// keyToVT 把按键事件转成写进 PTY 的 VT 字节：KeyChar→可打印字符；
+// KeyDown→Ctrl 组合（控制字符）/ 回车/退格/Tab/Esc/方向键/Home/End/Page 等的 VT 序列。
+func keyToVT(ev *event.KeyEvent) []byte {
+	if ev.Type() == event.TypeKeyChar {
+		if ev.Char >= 0x20 { // 可打印字符（含 Shift 后的）
+			return []byte(string(ev.Char))
+		}
+		return nil
+	}
+	// KeyDown：Ctrl+字母 → 控制字符（Ctrl+C=0x03 等）
+	if ev.Mods&event.ModCtrl != 0 && len(ev.Key) == 1 {
+		c := ev.Key[0]
+		switch {
+		case c >= 'A' && c <= 'Z':
+			return []byte{c - 'A' + 1}
+		case c >= 'a' && c <= 'z':
+			return []byte{c - 'a' + 1}
+		}
+	}
+	switch ev.Key {
+	case "Enter", "Return":
+		return []byte("\r")
+	case "Backspace":
+		return []byte{0x7f}
+	case "Tab":
+		return []byte("\t")
+	case "Escape":
+		return []byte{0x1b}
+	case "Delete":
+		return []byte("\x1b[3~")
+	case "ArrowUp":
+		return []byte("\x1b[A")
+	case "ArrowDown":
+		return []byte("\x1b[B")
+	case "ArrowRight":
+		return []byte("\x1b[C")
+	case "ArrowLeft":
+		return []byte("\x1b[D")
+	case "Home":
+		return []byte("\x1b[H")
+	case "End":
+		return []byte("\x1b[F")
+	case "PageUp":
+		return []byte("\x1b[5~")
+	case "PageDown":
+		return []byte("\x1b[6~")
+	}
+	return nil
+}
 
 var termGridFont = canvas.Font{Family: "Consolas", Size: 13}
 
