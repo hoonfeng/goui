@@ -128,3 +128,27 @@ func skillModeLabel(m string) string {
 	}
 	return m
 }
+
+// skillsPrompt 把可用技能拼进 agent 系统提示：always→全文（始终遵循）、auto→名称+描述（按相关性自取）、manual→跳过。
+func skillsPrompt() string {
+	skills := readSkills()
+	var body strings.Builder
+	for _, s := range skills {
+		switch s.Mode {
+		case "manual":
+			continue // 手动激活，不自动注入
+		case "always":
+			body.WriteString("\n\n## 技能：" + s.Name + "（始终遵循）\n")
+			if s.Description != "" {
+				body.WriteString(s.Description + "\n")
+			}
+			body.WriteString(strings.TrimSpace(s.Content))
+		default: // auto / 空
+			body.WriteString("\n- 「" + s.Name + "」：" + s.Description)
+		}
+	}
+	if body.Len() == 0 {
+		return ""
+	}
+	return "\n\n# 可用技能（Skills）\n按需运用以下技能（标「始终遵循」的务必遵循，其余按相关性自行采用）：" + body.String()
+}

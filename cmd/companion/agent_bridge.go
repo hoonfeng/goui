@@ -127,6 +127,8 @@ func (b *agentBridge) start(task string) {
 		if si := strings.TrimSpace(theSettings.SystemInstructions); si != "" { // 设置里的系统级指令
 			sys += "\n\n# 系统级指令（务必遵守）\n" + si
 		}
+		sys += philosophyPrompt() // 思想 tab：指导思想（启用时）
+		sys += skillsPrompt()     // Skills tab：可用技能（.pair/skills）
 		sys += agent.ProjectRules(root)
 		b.loop = &agent.Loop{Provider: prov, Registry: reg, System: sys, MaxIterations: 30}
 	}

@@ -544,6 +544,28 @@ func toggleStr(ss []string, s string) []string {
 	return out
 }
 
+// philosophyPrompt 把启用的指导思想拼进 agent 系统提示：选中经典（按名引用，LLM 自知其义）
+// + general 角色自定义内容（companion 单循环 agent ≈ 通用角色；其余 6 角色无子 agent 注入点，已存待未来）。
+func philosophyPrompt() string {
+	if !theSettings.PhilosophyEnabled {
+		return ""
+	}
+	var names []string
+	for _, c := range philoClassics {
+		if containsStr(theSettings.PhilosophySelected, c.id) {
+			names = append(names, c.name)
+		}
+	}
+	var b strings.Builder
+	if len(names) > 0 {
+		b.WriteString("\n\n# 指导思想\n以下经典的智慧贯穿你的分析、决策与行动：" + strings.Join(names, "、") + "。")
+	}
+	if g := strings.TrimSpace(theSettings.PhilosophyRoles["general"]); g != "" {
+		b.WriteString("\n\n## 通用 Agent 哲学\n" + g)
+	}
+	return b.String()
+}
+
 // philosophyTab 指导思想（复刻参考：主 Agent 经文开关 + 7 子 Agent 角色可折叠哲学编辑器）。
 func (b *settingsBodyState) philosophyTab() widget.Widget {
 	kids := []widget.Widget{
