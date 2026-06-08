@@ -253,18 +253,18 @@ func (e *CodeEditorElement) handleFindChar(ch rune) {
 // ── 渲染 ──
 
 // paintMatchHighlights 高亮所有匹配（当前匹配更醒目）。在编辑区裁剪内调用。
+// 匹配恒为单行 [start.col,end.col)，换行时由 forSegSpans 拆到所跨视觉段。
 func (e *CodeEditorElement) paintMatchHighlights(cvs canvas.Canvas, left, top float64) {
 	for i, m := range e.matches {
-		x0 := left + e.colToX(m.start.line, m.start.col)
-		x1 := left + e.colToX(m.end.line, m.end.col)
-		ly := e.lineTopY(m.start.line, top)
 		hp := paint.DefaultPaint()
 		if i == e.curMatch {
 			hp.Color = types.ColorFromRGBA(0xFF, 0x96, 0x00, 130) // 当前匹配：橙
 		} else {
 			hp.Color = types.ColorFromRGBA(0xFF, 0xE0, 0x66, 130) // 其它匹配：黄
 		}
-		cvs.DrawRect(x0, ly+1, x1-x0, ceLineH-2, hp)
+		e.forSegSpans(m.start.line, m.start.col, m.end.col, left, top, false, func(rowTopY, x0, x1 float64) {
+			cvs.DrawRect(x0, rowTopY+1, x1-x0, ceLineH-2, hp)
+		})
 	}
 }
 

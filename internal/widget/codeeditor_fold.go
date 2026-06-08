@@ -95,6 +95,7 @@ func (e *CodeEditorElement) computeVisible() {
 		}
 		e.actualToVis[li] = lastVis
 	}
+	e.invalidateWrap() // 可见行变了 → 视觉段需重建
 }
 
 // visIndexOf 实际行号 → 可见行索引（隐藏行返回其上方可见行索引）。
@@ -150,12 +151,15 @@ func (e *CodeEditorElement) foldArrowAt(x, y float64) (int, bool) {
 	}
 	contentTop := pos.Y + 4
 	vi := int((y - contentTop + e.scrollY) / ceLineH)
-	if vi < 0 || vi >= len(e.visRows) {
+	if vi < 0 || vi >= len(e.wrapSegs) {
 		return 0, false
 	}
-	line := e.visRows[vi]
-	if e.isFoldStart(line) {
-		return line, true
+	sg := e.wrapSegs[vi]
+	if sg.start != 0 { // 折叠箭头只在逻辑行首段
+		return 0, false
+	}
+	if e.isFoldStart(sg.line) {
+		return sg.line, true
 	}
 	return 0, false
 }

@@ -23,7 +23,8 @@ func (e *CodeEditorElement) paintMinimap(cvs canvas.Canvas, miniX, areaTop, area
 	sep.Color = elBorder()
 	cvs.DrawLine(miniX, areaTop, miniX, areaTop+areaH, sep)
 
-	nRows := len(e.visRows)
+	// 按视觉段（wrapSegs）逐行画：scrollY 是视觉行单位，缩略图随之对齐（换行时一段一行）。
+	nRows := len(e.wrapSegs)
 	totalH := float64(nRows) * ceMiniLineH
 	// 缩略图内容超出可视高时，按编辑器滚动比例同步偏移
 	e.miniScrollY = 0
@@ -39,13 +40,24 @@ func (e *CodeEditorElement) paintMinimap(cvs canvas.Canvas, miniX, areaTop, area
 		if ly+ceMiniLineH < areaTop || ly > areaTop+areaH {
 			continue
 		}
-		line := e.visRows[vi]
-		for _, tk := range e.hl[line] {
-			x := miniX + 3 + float64(tk.start)*ceMiniCharW
-			if x > miniX+ceMiniW {
-				break
+		s := e.wrapSegs[vi]
+		for _, tk := range e.hl[s.line] {
+			// token 裁剪到本段 [s.start,s.end)，并以段起列为 0 平移
+			a, b := tk.start, tk.end
+			if b <= s.start || a >= s.end {
+				continue
 			}
-			ww := float64(tk.end-tk.start) * ceMiniCharW
+			if a < s.start {
+				a = s.start
+			}
+			if b > s.end {
+				b = s.end
+			}
+			x := miniX + 3 + float64(a-s.start)*ceMiniCharW
+			if x > miniX+ceMiniW {
+				continue
+			}
+			ww := float64(b-a) * ceMiniCharW
 			if x+ww > miniX+ceMiniW {
 				ww = miniX + ceMiniW - x
 			}
@@ -78,7 +90,7 @@ func (e *CodeEditorElement) minimapJump(my float64) {
 	}
 	vi := (my - e.miniRect.Y + e.miniScrollY) / ceMiniLineH
 	viewH := e.size.Height - 8
-	contentH := float64(len(e.visRows)) * ceLineH
+	contentH := float64(len(e.wrapSegs)) * ceLineH
 	maxScrollY := contentH - viewH
 	if maxScrollY < 0 {
 		maxScrollY = 0

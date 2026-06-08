@@ -1194,6 +1194,100 @@ func TestStructEditorFold(t *testing.T) {
 	}
 }
 
+// TestCodeEditorWordWrap 验证软自动换行：长行折成多视觉段 + 点击/列往返 + 关闭恢复单段。
+func TestCodeEditorWordWrap(t *testing.T) {
+	// 一条很长的单行（无空格 → 走硬断），开启换行 + 小宽度。
+	long := strings.Repeat("abcdefghij", 20) // 200 字符
+	ce := NewCodeEditor("go", long).WithSize(180, 200)
+	ce.WordWrap = true
+	e := ce.CreateElement().(*CodeEditorElement)
+
+	// 模拟 Paint 里的视觉段构建（用一个很小的文本可视宽，必折多段）。
+	viewW := 120.0
+	e.rebuildWrapSegs(viewW)
+	if len(e.wrapSegs) <= 1 {
+		t.Fatalf("长行开启换行应折成多视觉段，实际 %d 段（每段=%+v）", len(e.wrapSegs), e.wrapSegs)
+	}
+	// 段必须无缝覆盖整行、不丢字符：首段从 0 起，末段到行尾，相邻段首尾相接。
+	if e.wrapSegs[0].start != 0 {
+		t.Errorf("首段应从列 0 起，实际 %d", e.wrapSegs[0].start)
+	}
+	if last := e.wrapSegs[len(e.wrapSegs)-1]; last.end != len([]rune(long)) {
+		t.Errorf("末段应到行尾 %d，实际 %d", len([]rune(long)), last.end)
+	}
+	for i := 1; i < len(e.wrapSegs); i++ {
+		if e.wrapSegs[i].start != e.wrapSegs[i-1].end {
+			t.Errorf("段 %d 起列(%d)应接上一段末列(%d)，有缝隙/丢字", i, e.wrapSegs[i].start, e.wrapSegs[i-1].end)
+		}
+		if e.wrapSegs[i].line != 0 {
+			t.Errorf("段 %d 应仍属逻辑行 0，实际 %d", i, e.wrapSegs[i].line)
+		}
+	}
+
+	// 点击第 2 个视觉行 → 落到行中段的某一列（应 > 第 1 段范围、< 行尾）。
+	pos := e.Offset()
+	contentTop := pos.Y + 4
+	editorTextX := pos.X + e.gutterW + ceTextPad
+	seg2 := e.wrapSegs[1]
+	clickY := contentTop + 1.5*ceLineH // 第 2 视觉行中部
+	// 点在第 2 段中部偏右：取段中列的 x。
+	midCol := (seg2.start + seg2.end) / 2
+	clickX := e.posX(0, midCol, editorTextX)
+	got := e.posFromXY(clickX, clickY)
+	if got.line != 0 {
+		t.Errorf("点击应仍在逻辑行 0，实际行 %d", got.line)
+	}
+	if got.col <= e.wrapSegs[0].end-1 || got.col >= len([]rune(long)) {
+		t.Errorf("点击第 2 视觉行中部应落在行中列（>%d 且 <%d），实际 %d", e.wrapSegs[0].end, len([]rune(long)), got.col)
+	}
+
+	// 列 → 视觉行 → 列 往返一致：midCol 的视觉行应是第 2 行，且该行内由其 x 反解回 midCol。
+	row := e.segRowOf(0, midCol)
+	if row != 1 {
+		t.Errorf("midCol=%d 应在第 2 视觉行(下标1)，实际下标 %d", midCol, row)
+	}
+	lx := e.posX(0, midCol, editorTextX) - editorTextX // 段内局部 x
+	back := e.segColAtX(seg2, lx)
+	if back != midCol {
+		t.Errorf("列→x→列往返不一致：midCol=%d 反解得 %d", midCol, back)
+	}
+
+	// 关闭换行：同一长行应只剩 1 个整行段（与不换行旧行为一致）。
+	e.wrap = false
+	e.rebuildWrapSegs(viewW)
+	if len(e.wrapSegs) != 1 {
+		t.Errorf("关闭换行后长行应只 1 个视觉段，实际 %d", len(e.wrapSegs))
+	}
+	if e.wrapSegs[0].start != 0 || e.wrapSegs[0].end != len([]rune(long)) {
+		t.Errorf("关闭换行段应为整行 [0,%d)，实际 [%d,%d)", len([]rune(long)), e.wrapSegs[0].start, e.wrapSegs[0].end)
+	}
+}
+
+// TestCodeEditorWrapSpaceBreak 验证换行优先在空白处断行。
+func TestCodeEditorWrapSpaceBreak(t *testing.T) {
+	// 多个等长单词用空格分隔，小宽度下应在空格后断，使段末为空格、续段从单词首起。
+	line := strings.Repeat("word ", 30) // "word word word ..."
+	ce := NewCodeEditor("go", line).WithSize(180, 200)
+	ce.WordWrap = true
+	e := ce.CreateElement().(*CodeEditorElement)
+	e.rebuildWrapSegs(120)
+	if len(e.wrapSegs) <= 1 {
+		t.Fatalf("应折多段，实际 %d", len(e.wrapSegs))
+	}
+	r := []rune(line)
+	// 至少有一个内部断点落在空格之后（段的末字符是空格）。
+	spaceBreaks := 0
+	for i := 0; i < len(e.wrapSegs)-1; i++ {
+		s := e.wrapSegs[i]
+		if s.end > 0 && s.end <= len(r) && r[s.end-1] == ' ' {
+			spaceBreaks++
+		}
+	}
+	if spaceBreaks == 0 {
+		t.Errorf("有空格的长行应优先在空白处断行，但无一段在空格后断：%+v", e.wrapSegs)
+	}
+}
+
 // TestCodeEditorBackspaceMerge 验证退格在行首合并到上一行。
 func TestCodeEditorBackspaceMerge(t *testing.T) {
 	ce := NewCodeEditor("go", "ab\ncd")

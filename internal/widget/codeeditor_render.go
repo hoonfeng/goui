@@ -144,27 +144,27 @@ func (e *CodeEditorElement) maxLineWidth() float64 {
 	return m
 }
 
-// posFromXY 屏幕坐标 → (行,列)。
+// posFromXY 屏幕坐标 → (行,列)。换行时按视觉段定位：视觉行→段→段内列。
 func (e *CodeEditorElement) posFromXY(sx, sy float64) cePos {
 	pos := e.Offset()
 	contentTop := pos.Y + 4
-	vi := int((sy - contentTop + e.scrollY) / ceLineH) // 可见行索引
+	vi := int((sy - contentTop + e.scrollY) / ceLineH) // 视觉行索引
 	if vi < 0 {
 		vi = 0
 	}
-	if vi >= len(e.visRows) {
-		vi = len(e.visRows) - 1
+	if len(e.wrapSegs) == 0 {
+		return cePos{0, 0}
 	}
-	line := 0
-	if vi >= 0 && vi < len(e.visRows) {
-		line = e.visRows[vi]
+	if vi >= len(e.wrapSegs) {
+		vi = len(e.wrapSegs) - 1
 	}
+	s := e.wrapSegs[vi]
 	editorTextX := pos.X + e.gutterW + ceTextPad
 	lx := sx - (editorTextX - e.scrollX)
 	if lx < 0 {
 		lx = 0
 	}
-	return cePos{line, e.xToCol(line, lx)}
+	return cePos{s.line, e.segColAtX(s, lx)}
 }
 
 // ── Paint ──
@@ -194,19 +194,26 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	editorX := pos.X + e.gutterW
 	editorTextX := editorX + ceTextPad
 
-	// 滚动范围 + 滚动条占位（按折叠后的可见行数算高度）
-	contentH := float64(len(e.visRows)) * ceLineH
-	maxLineW := e.maxLineWidth()
+	// 滚动范围 + 滚动条占位。换行开启时高度按视觉段数算、横向不滚（maxLineW 视作 ≤ viewW）。
 	miniW := 0.0
 	if e.showMinimap && w > 260 { // 太窄不显示缩略图
 		miniW = ceMiniW
 	}
+	// 先估一遍 editorViewW 以构建视觉段（v 条按内容是否溢出预留；换行下 h 条恒不占位）。
+	estViewW := w - e.gutterW - ceTextPad - miniW
+	if miniW == 0 {
+		estViewW -= sbThick // 长文一般溢出，预留竖条宽，避免段宽来回抖动
+	}
+	e.ensureWrapSegs(estViewW)
+
+	contentH := float64(len(e.wrapSegs)) * ceLineH
+	maxLineW := e.maxLineWidth()
 	vBar, hBar := 0.0, 0.0
 	if miniW == 0 && contentH > h-8 { // 有缩略图时用其视口框代替竖滚动条
 		vBar = sbThick
 	}
 	editorViewW := w - e.gutterW - ceTextPad - vBar - miniW
-	if maxLineW > editorViewW {
+	if !e.wrap && maxLineW > editorViewW { // 换行时不出横条
 		hBar = sbThick
 	}
 	viewH := h - 8 - hBar
@@ -214,32 +221,40 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		vBar = sbThick
 		editorViewW = w - e.gutterW - ceTextPad - vBar - miniW
 	}
+	// editorViewW 定下后再确保视觉段按它构建（宽度变才会真重建）。
+	e.ensureWrapSegs(editorViewW)
+	contentH = float64(len(e.wrapSegs)) * ceLineH
 	maxScrollY := contentH - viewH
 	if maxScrollY < 0 {
 		maxScrollY = 0
 	}
 	maxScrollX := maxLineW - editorViewW + 4
-	if maxScrollX < 0 {
-		maxScrollX = 0
+	if e.wrap || maxScrollX < 0 {
+		maxScrollX = 0 // 换行：无横向滚动
 	}
 
-	// 光标跟随（按可见索引）
+	// 光标跟随（按视觉行 + 段内 x）
 	if e.focused && e.cursorMoved {
-		curTop := float64(e.visIndexOf(e.cursor.line)) * ceLineH
+		curTop := float64(e.segRowOf(e.cursor.line, e.cursor.col)) * ceLineH
 		if curTop-e.scrollY < 0 {
 			e.scrollY = curTop
 		}
 		if curTop+ceLineH-e.scrollY > viewH {
 			e.scrollY = curTop + ceLineH - viewH
 		}
-		curX := e.colToX(e.cursor.line, e.cursor.col)
-		if curX-e.scrollX < 0 {
-			e.scrollX = curX
-		}
-		if curX-e.scrollX > editorViewW-6 {
-			e.scrollX = curX - editorViewW + 6
+		if !e.wrap {
+			curX := e.colToX(e.cursor.line, e.cursor.col)
+			if curX-e.scrollX < 0 {
+				e.scrollX = curX
+			}
+			if curX-e.scrollX > editorViewW-6 {
+				e.scrollX = curX - editorViewW + 6
+			}
 		}
 		e.cursorMoved = false
+	}
+	if e.wrap {
+		e.scrollX = 0
 	}
 	e.scrollY = clamp(e.scrollY, 0, maxScrollY)
 	e.scrollX = clamp(e.scrollX, 0, maxScrollX)
@@ -252,19 +267,23 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	gb.Color = CurrentTheme().CodeEditor.GutterBg
 	cvs.DrawRect(pos.X+1, pos.Y+1, e.gutterW, h-2, gb)
 
+	// firstVis/lastVis 现为 wrapSegs（视觉行）下标范围。
 	firstVis := int(e.scrollY/ceLineH) - 1
 	if firstVis < 0 {
 		firstVis = 0
 	}
 	lastVis := int((e.scrollY+viewH)/ceLineH) + 1
-	if lastVis >= len(e.visRows) {
-		lastVis = len(e.visRows) - 1
+	if lastVis >= len(e.wrapSegs) {
+		lastVis = len(e.wrapSegs) - 1
 	}
 
-	// 当前行高亮（编辑区 + 行号栏）
+	// 当前行高亮（编辑区 + 行号栏）：换行时高亮光标逻辑行覆盖的【所有可见】视觉行（限可视范围，免大文件每帧全扫）。
 	if e.focused && !e.hasSel() {
-		cy := e.lineTopY(e.cursor.line, top)
-		if cy+ceLineH >= pos.Y && cy <= pos.Y+h {
+		for i := firstVis; i <= lastVis; i++ {
+			if i < 0 || i >= len(e.wrapSegs) || e.wrapSegs[i].line != e.cursor.line {
+				continue
+			}
+			cy := top + float64(i)*ceLineH
 			cl := paint.DefaultPaint()
 			cl.Color = CurrentTheme().CodeEditor.CurrentLineBg
 			cvs.DrawRect(editorX+1, cy, w-e.gutterW-2, ceLineH, cl)
@@ -303,10 +322,14 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		dash.Color = types.ColorFromRGB(0xDD, 0xE2, 0xE8)
 		dash.StrokeWidth = 1
 		for vi := firstVis; vi <= lastVis; vi++ {
-			if vi < 0 || vi >= len(e.visRows) {
+			if vi < 0 || vi >= len(e.wrapSegs) {
 				continue
 			}
-			i := e.visRows[vi]
+			s := e.wrapSegs[vi]
+			if s.start != 0 { // 缩进连线只画在逻辑行首段（缩进在那）
+				continue
+			}
+			i := s.line
 			ly := top + float64(vi)*ceLineH
 			for k := 0; (k+1)*ceIndentSize <= leadingSpaces(e.lines[i]); k++ {
 				gx := left + e.colToX(i, k*ceIndentSize) + 0.5
@@ -324,12 +347,12 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 				solid := paint.DefaultStrokePaint()
 				solid.Color = types.ColorFromRGB(0x6F, 0x8F, 0xD0)
 				solid.StrokeWidth = 1.3
-				gx := left + e.colToX(ol, leadingSpaces(e.lines[ol])) + 0.5 // 竖线在开括号行缩进列
-				ocx := left + e.colToX(ol, oc) + 0.5                        // 开括号 { 的 x（行末，文字右侧）
-				ccx := left + e.colToX(cl, cc) + 0.5                        // 闭括号 } 的 x
-				oyTop := e.lineTopY(ol, top)
+				gx := e.posX(ol, leadingSpaces(e.lines[ol]), left) + 0.5 // 竖线在开括号行缩进列
+				ocx := e.posX(ol, oc, left) + 0.5                        // 开括号 { 的 x（行末，文字右侧）
+				ccx := e.posX(cl, cc, left) + 0.5                        // 闭括号 } 的 x
+				oyTop := e.posTopY(ol, oc, top)
 				oyBot := oyTop + ceLineH
-				cyTop := e.lineTopY(cl, top)
+				cyTop := e.posTopY(cl, cc, top)
 				cvs.DrawLine(ocx, oyTop+ceLineH/2, ocx, oyBot, solid) // 开括号 → 本行底（沿括号右侧下行）
 				cvs.DrawLine(ocx, oyBot, gx, oyBot, solid)            // 行底横折到竖线列（在文字下方空隙）
 				cvs.DrawLine(gx, oyBot, gx, cyTop, solid)             // 块体竖线
@@ -339,34 +362,48 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		}
 	}
 
-	// 文本（遍历可见行，逐行按 token 着色）
+	// 文本（遍历视觉段，逐段按 token 着色；token 按列裁剪到段区间并平移到段起点）
 	for vi := firstVis; vi <= lastVis; vi++ {
-		if vi < 0 || vi >= len(e.visRows) {
+		if vi < 0 || vi >= len(e.wrapSegs) {
 			continue
 		}
-		i := e.visRows[vi] // 实际行号
+		sg := e.wrapSegs[vi]
+		i := sg.line // 实际行号
 		ly := top + float64(vi)*ceLineH
 		baseY := canvas.BaselineFor(ly, ceLineH, e.font.Size, canvas.VAlignMiddle)
 		runes := []rune(e.lines[i])
-		lineEndX := left
-		toks := e.hl[i]
-		drawn := 0
-		for _, tk := range toks {
-			if tk.start > drawn { // token 之间的空白/未着色段
-				seg := string(runes[drawn:tk.start])
-				cvs.DrawText(seg, left+e.colToX(i, drawn), baseY, e.font, mkPaint(ceTokenColor(tkText)))
+		segX := func(col int) float64 { // 段内列 → 屏幕 x（从段起列量起）
+			if col <= sg.start {
+				return left
 			}
-			seg := string(runes[tk.start:tk.end])
-			cvs.DrawText(seg, left+e.colToX(i, tk.start), baseY, e.font, mkPaint(ceTokenColor(tk.kind)))
-			drawn = tk.end
+			return left + e.measure(string(runes[sg.start:col]))
 		}
-		if drawn < len(runes) {
-			seg := string(runes[drawn:])
-			cvs.DrawText(seg, left+e.colToX(i, drawn), baseY, e.font, mkPaint(ceTokenColor(tkText)))
+		toks := e.hl[i]
+		drawn := sg.start
+		for _, tk := range toks {
+			s, en := tk.start, tk.end // token 裁剪到本段 [sg.start,sg.end)
+			if en <= sg.start || s >= sg.end {
+				continue
+			}
+			if s < sg.start {
+				s = sg.start
+			}
+			if en > sg.end {
+				en = sg.end
+			}
+			if s > drawn { // token 之前的未着色段
+				cvs.DrawText(string(runes[drawn:s]), segX(drawn), baseY, e.font, mkPaint(ceTokenColor(tkText)))
+			}
+			cvs.DrawText(string(runes[s:en]), segX(s), baseY, e.font, mkPaint(ceTokenColor(tk.kind)))
+			drawn = en
 		}
-		// 折叠提示：该行被折叠 → 行尾画 ⋯ 块
-		if e.folded[i] && e.isFoldStart(i) {
-			lineEndX = left + e.colToX(i, len(runes))
+		if drawn < sg.end {
+			cvs.DrawText(string(runes[drawn:sg.end]), segX(drawn), baseY, e.font, mkPaint(ceTokenColor(tkText)))
+		}
+		// 折叠提示：该行被折叠 → 行尾画 ⋯ 块（画在末段尾部）
+		isLastSeg := vi+1 >= len(e.wrapSegs) || e.wrapSegs[vi+1].line != i
+		if isLastSeg && e.folded[i] && e.isFoldStart(i) {
+			lineEndX := segX(sg.end)
 			fp := paint.DefaultPaint()
 			fp.Color = types.ColorFromRGB(0xE8, 0xEC, 0xF0)
 			cvs.DrawRoundedRect(lineEndX+6, ly+4, 22, ceLineH-8, 3, fp)
@@ -386,8 +423,8 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	}
 
 	// IME 组合预览 + 光标
-	baseCx := left + e.colToX(e.cursor.line, e.cursor.col)
-	cyTop := e.lineTopY(e.cursor.line, top)
+	baseCx := e.posX(e.cursor.line, e.cursor.col, left)
+	cyTop := e.posTopY(e.cursor.line, e.cursor.col, top)
 	cBase := canvas.BaselineFor(cyTop, ceLineH, e.font.Size, canvas.VAlignMiddle)
 	caretX := baseCx
 	if e.composition != "" && !e.findActive { // 组合预览：白底盖后方文字 + 文本 + 蓝下划线（查找激活时改在查找框显示）
@@ -420,8 +457,8 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	// 额外光标（多光标）
 	if e.focused && e.isCursorVisible() {
 		for _, c := range e.extraCarets {
-			ecx := left + e.colToX(c.cursor.line, c.cursor.col)
-			ecBase := canvas.BaselineFor(e.lineTopY(c.cursor.line, top), ceLineH, e.font.Size, canvas.VAlignMiddle)
+			ecx := e.posX(c.cursor.line, c.cursor.col, left)
+			ecBase := canvas.BaselineFor(e.posTopY(c.cursor.line, c.cursor.col, top), ceLineH, e.font.Size, canvas.VAlignMiddle)
 			cp := paint.DefaultStrokePaint()
 			cp.Color = types.ColorFromRGB(0x24, 0x29, 0x2E)
 			cp.StrokeWidth = 1.6
@@ -434,10 +471,14 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	cvs.Save()
 	cvs.ClipRect(pos.X+1, pos.Y+1, e.gutterW, h-2-hBar)
 	for vi := firstVis; vi <= lastVis; vi++ {
-		if vi < 0 || vi >= len(e.visRows) {
+		if vi < 0 || vi >= len(e.wrapSegs) {
 			continue
 		}
-		i := e.visRows[vi]
+		sg := e.wrapSegs[vi]
+		if sg.start != 0 { // 续接段不画行号/折叠箭头（行号只在逻辑行首段显示）
+			continue
+		}
+		i := sg.line
 		ly := top + float64(vi)*ceLineH
 		numColor := CurrentTheme().CodeEditor.GutterText
 		if i == e.cursor.line && e.focused {
@@ -478,9 +519,9 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 
 // paintBracketBox 在括号字符位置画一个蓝色边框（匹配高亮）。
 func (e *CodeEditorElement) paintBracketBox(cvs canvas.Canvas, p cePos, left, top float64) {
-	x0 := left + e.colToX(p.line, p.col)
-	x1 := left + e.colToX(p.line, p.col+1)
-	ly := e.lineTopY(p.line, top)
+	x0 := e.posX(p.line, p.col, left)
+	x1 := e.posX(p.line, p.col+1, left)
+	ly := e.posTopY(p.line, p.col, top)
 	bp := paint.DefaultStrokePaint()
 	bp.Color = types.ColorFromRGB(0x40, 0x9E, 0xFF)
 	bp.StrokeWidth = 1
@@ -493,7 +534,8 @@ func (e *CodeEditorElement) paintSelection(cvs canvas.Canvas, left, top float64)
 	e.paintSelRange(cvs, left, top, lo, hi)
 }
 
-// paintSelRange 逐行画 [lo,hi) 选区高亮（主选区 + 多光标额外选区共用）。
+// paintSelRange 逐【视觉行】画 [lo,hi) 选区高亮（主选区 + 多光标额外选区共用）。
+// 换行时一个逻辑行的列区间会被 forSegSpans 拆到其各视觉段上。
 func (e *CodeEditorElement) paintSelRange(cvs canvas.Canvas, left, top float64, lo, hi cePos) {
 	sel := paint.DefaultPaint()
 	sel.Color = CurrentTheme().CodeEditor.Selection
@@ -507,15 +549,12 @@ func (e *CodeEditorElement) paintSelRange(cvs canvas.Canvas, left, top float64, 
 		if ln == hi.line {
 			endCol = hi.col
 		}
-		x0 := left + e.colToX(ln, startCol)
-		x1 := left + e.colToX(ln, endCol)
-		if ln < hi.line {
-			x1 += 6 // 跨行：行尾补一小段表示选中换行
-		}
-		ly := e.lineTopY(ln, top)
-		if x1 > x0 {
-			cvs.DrawRect(x0, ly, x1-x0, ceLineH, sel)
-		}
+		crossNL := ln < hi.line // 跨行：行尾补一小段表示选中换行
+		e.forSegSpans(ln, startCol, endCol, left, top, crossNL, func(rowTopY, x0, x1 float64) {
+			if x1 > x0 {
+				cvs.DrawRect(x0, rowTopY, x1-x0, ceLineH, sel)
+			}
+		})
 	}
 }
 
@@ -581,17 +620,41 @@ func (e *CodeEditorElement) moveCursor(dLine, dCol int, extend bool) {
 		}
 	}
 	if dLine != 0 {
-		vi := e.visIndexOf(c.line) + dLine // 上/下移按可见行
-		if vi < 0 {
-			vi = 0
+		if e.wrap { // 换行：按【视觉段】上/下移，保持目标 x 像素尽量不变
+			row := e.segRowOf(c.line, c.col)
+			cur := e.segAt(row)
+			r := e.lineRunes(c.line)
+			cc := c.col
+			if cc > len(r) {
+				cc = len(r)
+			}
+			if cc < cur.start {
+				cc = cur.start
+			}
+			wantX := e.measure(string(r[cur.start:cc])) // 段内目标横向像素
+			nrow := row + dLine
+			if nrow < 0 {
+				nrow = 0
+			}
+			if nrow >= len(e.wrapSegs) {
+				nrow = len(e.wrapSegs) - 1
+			}
+			tgt := e.segAt(nrow)
+			c.line = tgt.line
+			c.col = e.segColAtX(tgt, wantX) // 目标段内找最近列
+		} else {
+			vi := e.visIndexOf(c.line) + dLine // 上/下移按可见行
+			if vi < 0 {
+				vi = 0
+			}
+			if vi >= len(e.visRows) {
+				vi = len(e.visRows) - 1
+			}
+			if vi >= 0 && vi < len(e.visRows) {
+				c.line = e.visRows[vi]
+			}
+			c = e.clampPos(c) // 保持列，clamp 到目标行长度
 		}
-		if vi >= len(e.visRows) {
-			vi = len(e.visRows) - 1
-		}
-		if vi >= 0 && vi < len(e.visRows) {
-			c.line = e.visRows[vi]
-		}
-		c = e.clampPos(c) // 保持列，clamp 到目标行长度
 	}
 	e.cursor = c
 	if !extend {
@@ -944,7 +1007,12 @@ func (e *CodeEditorElement) handleKeyDown(k *event.KeyEvent) bool {
 	case "ArrowDown":
 		e.moveCursor(1, 0, extend)
 	case "Home":
-		e.cursor.col = 0
+		// 换行时 Home/End 落到【当前视觉段】首/尾（贴合所见行，非整逻辑行）；不换行同旧=逻辑行首/尾。
+		if e.wrap {
+			e.cursor.col = e.segAt(e.segRowOf(e.cursor.line, e.cursor.col)).start
+		} else {
+			e.cursor.col = 0
+		}
 		if !extend {
 			e.anchor = e.cursor
 		}
@@ -952,7 +1020,14 @@ func (e *CodeEditorElement) handleKeyDown(k *event.KeyEvent) bool {
 		e.resetBlink()
 		repaint()
 	case "End":
-		e.cursor.col = len(e.lineRunes(e.cursor.line))
+		// 设计选择：换行时 End 落到当前视觉段末列 seg.end（贴合所见行宽，而非整逻辑行尾）。
+		// 末段时 seg.end==逻辑行尾；中间段（硬断）时 seg.end 是断点列——其插入符会渲染在下一视觉行行首
+		// （断点处无 affinity 双向状态，取“归属后续字符”的统一约定，与 segRowOf 一致）。
+		if e.wrap {
+			e.cursor.col = e.segAt(e.segRowOf(e.cursor.line, e.cursor.col)).end
+		} else {
+			e.cursor.col = len(e.lineRunes(e.cursor.line))
+		}
 		if !extend {
 			e.anchor = e.cursor
 		}

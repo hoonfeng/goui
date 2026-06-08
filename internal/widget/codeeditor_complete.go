@@ -247,12 +247,12 @@ func (e *CodeEditorElement) paintCompletion(cvs canvas.Canvas, left, top float64
 	if maxW > 380 {
 		maxW = 380
 	}
-	x := left + e.colToX(e.compStart.line, e.compStart.col)
+	x := e.posX(e.compStart.line, e.compStart.col, left)
 	rowsH := float64(visN)*ceCompRowH + 4
-	yTop := e.lineTopY(e.cursor.line, top) + ceLineH
+	yTop := e.posTopY(e.cursor.line, e.cursor.col, top) + ceLineH
 	pos := e.Offset()
 	if yTop+rowsH > pos.Y+e.size.Height-2 { // 下方放不下→往上弹
-		yTop = e.lineTopY(e.cursor.line, top) - rowsH
+		yTop = e.posTopY(e.cursor.line, e.cursor.col, top) - rowsH
 	}
 
 	// 阴影 + 背景 + 边框

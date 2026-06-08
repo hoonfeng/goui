@@ -153,17 +153,17 @@ func (e *CodeEditorElement) paintDiagnostics(cvs canvas.Canvas, left, top float6
 		if d.Range.End.Line != d.Range.Start.Line {
 			endCol = len(e.lineRunes(ln))
 		}
-		x0 := left + e.colToX(ln, startCol)
-		x1 := left + e.colToX(ln, endCol)
-		if x1 <= x0 {
-			x1 = x0 + 6
-		}
-		ly := e.lineTopY(ln, top)
 		col := types.ColorFromRGB(0xE5, 0x1C, 0x23) // 红=error
 		if d.Severity == lsp.SeverityWarning {
 			col = types.ColorFromRGB(0xE6, 0xA2, 0x3C) // 橙=warning
 		}
-		e.drawSquiggle(cvs, x0, x1, ly+ceLineH-3, col)
+		// 换行时诊断区间可能跨视觉段，逐段画波浪线。
+		e.forSegSpans(ln, startCol, endCol, left, top, false, func(rowTopY, x0, x1 float64) {
+			if x1 <= x0 {
+				x1 = x0 + 6
+			}
+			e.drawSquiggle(cvs, x0, x1, rowTopY+ceLineH-3, col)
+		})
 	}
 }
 

@@ -56,6 +56,7 @@ type CodeEditor struct {
 	OnEnter     func()             // 按回车换行后触发（StructEditor 用作「回车自动声明变量」时机）
 	ExtraIdents func() []CECompletion // 外部补全源（StructEditor 注入：已声明变量/子程序/命令库）
 	Minimap     bool               // 是否显示右侧缩略图（默认开）
+	WordWrap    bool               // 软自动换行：长行按编辑区宽折成多视觉行（默认关，可 toggleWrap 切换）
 	FontSize    float64            // 等宽字号（<=0 用默认 14）
 	Embedded bool // 嵌入模式：去掉独立白卡圆角/聚焦蓝框，无缝融入父容器（StructEditor 用）
 
@@ -107,12 +108,13 @@ func (e *CodeEditorElement) revealLine(line int) {
 	}
 	e.cursor = e.clampPos(cePos{row, 0})
 	e.anchor = e.cursor
-	if y := float64(e.cursor.line-3) * ceLineH; y > 0 { // 目标行上方留 3 行
+	if y := float64(e.cursor.line-3) * ceLineH; y > 0 { // 目标行上方留 3 行（预定位，Paint 再精确跟随）
 		e.scrollY = y
 	} else {
 		e.scrollY = 0
 	}
 	e.computeVisible()
+	e.cursorMoved = true // 让 Paint 用换行/折叠感知逻辑把光标精确滚入视野
 	e.MarkNeedsPaint()
 }
 
@@ -135,6 +137,8 @@ func (c *CodeEditor) CreateElement() Element {
 		font:        canvas.Font{Family: "Consolas", Size: fsz},
 		folded:      map[int]bool{},
 		showMinimap: c.Minimap,
+		wrap:        c.WordWrap,
+		wrapDirty:   true,
 	}
 	e.rehighlight()
 	e.computeVisible()
@@ -227,6 +231,12 @@ type CodeEditorElement struct {
 	folded      map[int]bool // 折叠起始行 → 是否已折叠
 	visRows     []int        // 折叠后可见行的实际行号（按显示顺序）
 	actualToVis map[int]int  // 实际行号 → 可见行索引（隐藏行映射到其上方可见行）
+
+	// 软自动换行（详见 codeeditor_wrap.go）
+	wrap      bool      // 是否开启换行（从 CodeEditor.WordWrap 复制，可 toggleWrap 翻转）
+	wrapSegs  []wrapSeg // 视觉段（显示顺序，含折叠）；关闭时每可见行一个整行段
+	wrapW     float64   // 上次构建用的编辑区文本宽，宽度变 → 重建
+	wrapDirty bool      // 内容/折叠/可见行变化后置脏，下次 Paint 惰性重建
 
 	// 缩略图 minimap
 	showMinimap  bool       // 是否显示右侧缩略图
@@ -731,6 +741,11 @@ var SuppressEditorContextMenu bool
 // HasFocusedEditor 当前是否有聚焦的代码编辑器（供宿主菜单决定剪切/复制等项是否可用）。
 func HasFocusedEditor() bool { return focusedCodeEditor != nil }
 
+// EditorWrapEnabled 返回当前聚焦编辑器是否开启软自动换行（无聚焦→false）。供菜单勾选状态。
+func EditorWrapEnabled() bool {
+	return focusedCodeEditor != nil && focusedCodeEditor.wrap
+}
+
 // runCommand 执行一条编辑命令（与右键菜单 contextItems 同源逻辑）。
 func (e *CodeEditorElement) runCommand(cmd string) {
 	switch cmd {
@@ -761,6 +776,13 @@ func (e *CodeEditorElement) runCommand(cmd string) {
 		repaint()
 	case "format":
 		e.formatGo()
+	case "toggleWrap":
+		// 切换软自动换行：翻转开关 → 视觉段失效重建、横向滚动归零、重绘。
+		e.wrap = !e.wrap
+		e.invalidateWrap()
+		e.scrollX = 0
+		e.cursorMoved = true // 让 Paint 重新把光标滚入视野（视觉行数变了）
+		repaint()
 	}
 }
 
@@ -795,12 +817,15 @@ func (e *CodeEditorElement) formatGo() {
 // 使代码区像变量表一样"恰好包住内容"地流式排布、融入 StructEditor，纵向不再单独滚动（由外层滚）。
 func (e *CodeEditorElement) EmbeddedContentHeight() float64 {
 	rows := len(e.visRows)
+	if e.wrap && len(e.wrapSegs) > 0 { // 换行：按视觉段数算高度（每段一行）
+		rows = len(e.wrapSegs)
+	}
 	if rows < 3 {
 		rows = 3 // 至少留 3 行，太矮不便点击
 	}
 	h := float64(rows)*ceLineH + 8
-	if e.maxLineWidth() > e.size.Width-e.gutterW-ceTextPad {
-		h += sbThick // 长行需要横向滚动条占位
+	if !e.wrap && e.maxLineWidth() > e.size.Width-e.gutterW-ceTextPad {
+		h += sbThick // 长行需要横向滚动条占位（换行时无横条）
 	}
 	return h
 }

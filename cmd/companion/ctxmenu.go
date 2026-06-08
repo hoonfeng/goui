@@ -357,6 +357,12 @@ func editorContentItems() []widget.MenuItem {
 		{Icon: "list", Label: "全选", Enabled: codeEd, OnClick: func() { widget.RunEditorCommand("selectAll") }, Shortcut: "Ctrl+A"},
 		{Icon: "braces", Label: "格式化文档", Enabled: codeEd, OnClick: func() { widget.RunEditorCommand("format") }},
 	}
+	// 自动换行（切换；开启时左侧显示对勾，作勾选标记）——对照参考补齐。
+	wrapIcon := ""
+	if widget.EditorWrapEnabled() {
+		wrapIcon = "check"
+	}
+	items = append(items, sep(), widget.MenuItem{Icon: wrapIcon, Label: "自动换行", Enabled: codeEd, OnClick: func() { widget.RunEditorCommand("toggleWrap") }})
 	// 文件操作（对照参考补齐：在资源管理器中显示 / 复制路径 / 复制文件名）
 	if t := theEditor.activeTab(); t != nil {
 		items = append(items, sep(),
