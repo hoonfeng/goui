@@ -240,13 +240,15 @@ func (e *editorState) Build(ctx widget.BuildContext) widget.Widget {
 
 // tabBar 编辑区顶部标签栏：每个打开的文件一个标签（类型图标+名+dirty●/关闭×），点切换、×关闭。
 func (e *editorState) tabBar() widget.Widget {
-	items := make([]widget.Widget, 0, len(e.tabs))
+	items := make([]widget.Widget, 0, len(e.tabs)*2)
 	for i, t := range e.tabs {
+		if i > 0 { // 相邻标签间 1px 竖分隔条（stretch 撑满高）
+			items = append(items, widget.Div(widget.Style{Width: 1, BackgroundColor: cBorder}))
+		}
 		items = append(items, e.tabItem(i, t))
 	}
 	return widget.Div(
-		widget.Style{Height: 32, BackgroundColor: cSide, FlexDirection: "row", AlignItems: "stretch",
-			BorderColor: cBorder, BorderWidth: 1},
+		widget.Style{Height: 34, BackgroundColor: cSide, FlexDirection: "row", AlignItems: "stretch"},
 		items,
 	)
 }
@@ -272,9 +274,10 @@ func (e *editorState) tabItem(i int, t *editorTab) widget.Widget {
 		row = append(row, e.closeBtn(i))
 	}
 	tab := &widget.Clickable{
+		// 显式 Height 让标签稳定填满标签栏高度并使内容垂直居中（不依赖 stretch 链路，单/多文件一致）。
+		// 不再用整框边框（之前因标签按内容高、边框只有文字大小）；相邻标签靠 tabBar 里的分隔条区分。
 		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
-			widget.Style{FlexDirection: "row", AlignItems: "center", Padding: types.EdgeInsetsLTRB(12, 0, 8, 0),
-				BorderColor: cBorder, BorderWidth: 1},
+			widget.Style{Height: 34, FlexDirection: "row", AlignItems: "center", Padding: types.EdgeInsetsLTRB(12, 0, 8, 0)},
 			row,
 		)},
 		OnClick:    func() { e.switchTo(i) },
