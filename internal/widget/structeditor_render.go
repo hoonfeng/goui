@@ -34,15 +34,16 @@ func (e *StructEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		miniW = seMiniW
 	}
 
+	stickyH := seRowH // 顶部保留一行给「当前区段」常驻标签，内容裁剪到其下方（不再遮盖内容）
 	cvs.Save()
-	cvs.ClipRect(pos.X+1, pos.Y+1, w-2-miniW, h-2)
+	cvs.ClipRect(pos.X+1, pos.Y+1+stickyH, w-2-miniW, h-2-stickyH)
 	e.cells = e.cells[:0]
 	e.foldHits = e.foldHits[:0]
 	e.miniSegs = e.miniSegs[:0]
 	e.secRanges = e.secRanges[:0]
 	x := pos.X + sePad
 	innerW := w - sePad*2 - miniW
-	top := pos.Y + sePad - e.scrollY
+	top := pos.Y + stickyH + sePad - e.scrollY
 	y := top
 
 	gw := e.gutterWidth() // 统一行号栏宽度：变量表行号列与代码行号栏对齐成最左一条
@@ -146,11 +147,11 @@ func (e *StructEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		e.secRanges = append(e.secRanges, secRange{"函数 " + sub.Name, fStart, y})
 	}
 	e.contentH = y - top
-	e.paintStickyHeader(cvs, pos, w, miniW) // 顶部「当前区段」悬浮标签
 	if e.se.ScrollRef != nil { // 同步滚动位置，供切换视图后恢复
 		*e.se.ScrollRef = e.scrollY
 	}
 	cvs.Restore()
+	e.paintStickyHeader(cvs, pos, w, miniW, stickyH) // 顶部保留区画「当前区段」常驻标签（不裁剪、不遮内容）
 
 	if miniW > 0 { // 缩略图（其视口框代替竖滚动条）
 		e.paintSEMinimap(cvs, pos.X+w-miniW-1, pos.Y+2, h-4)
@@ -174,12 +175,13 @@ func (e *StructEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	}
 }
 
-// paintStickyHeader 在视口顶端画一条「当前区段」常驻标签（随滚动更新），让用户始终知道在看哪段内容。
-func (e *StructEditorElement) paintStickyHeader(cvs canvas.Canvas, pos types.Point, w, miniW float64) {
-	viewTop := pos.Y + sePad
+// paintStickyHeader 在顶部保留区画「当前区段」常驻标签（随滚动更新），让用户始终知道在看哪段内容。
+// 画在保留的 stickyH 行内（内容已裁剪到其下方），故不遮盖内容。
+func (e *StructEditorElement) paintStickyHeader(cvs canvas.Canvas, pos types.Point, w, miniW, stickyH float64) {
+	viewTop := pos.Y + stickyH + sePad + 2 // 内容逻辑顶端
 	label := ""
 	for _, sr := range e.secRanges {
-		if sr.y0 <= viewTop+3 { // 起点已在视口顶之上 → 当前所在（取最后一个）区段
+		if sr.y0 <= viewTop { // 起点已滚到视口顶之上 → 当前所在（取最后一个）区段
 			label = sr.label
 		}
 	}
@@ -189,12 +191,12 @@ func (e *StructEditorElement) paintStickyHeader(cvs canvas.Canvas, pos types.Poi
 	barW := w - 2 - miniW
 	bp := paint.DefaultPaint()
 	bp.Color = seHeaderBG()
-	cvs.DrawRect(pos.X+1, pos.Y+1, barW, seRowH, bp)
+	cvs.DrawRect(pos.X+1, pos.Y+1, barW, stickyH, bp)
 	ln := paint.DefaultStrokePaint()
 	ln.Color = seLineColor()
-	cvs.DrawLine(pos.X+1, pos.Y+1+seRowH, pos.X+1+barW, pos.Y+1+seRowH, ln)
+	cvs.DrawLine(pos.X+1, pos.Y+1+stickyH, pos.X+1+barW, pos.Y+1+stickyH, ln)
 	f, _, _ := canvas.FontWithStyle("monospace", 12, canvas.FontRegular)
-	canvas.DrawTextAligned(cvs, "当前："+label, types.Rect{X: pos.X + 10, Y: pos.Y + 1, Width: barW - 16, Height: seRowH},
+	canvas.DrawTextAligned(cvs, "当前："+label, types.Rect{X: pos.X + 10, Y: pos.Y + 1, Width: barW - 16, Height: stickyH},
 		f, seHeaderText(), canvas.HAlignLeft, canvas.VAlignMiddle)
 }
 
@@ -544,10 +546,11 @@ var typeDefCols = []SECol{
 }
 
 // typeFieldCols 类型展开后的字段/方法表列定义。
+// 列边界对齐类型头(typeDefCols)：字段名↔类型名(0.22)、类型/签名跨 种类+成员(0.58)、注释↔备注(0.20)。
 var typeFieldCols = []SECol{
-	{Title: "字段/方法", Field: SEFieldName, Weight: 0.30},
-	{Title: "类型/签名", Field: SEFieldType, Weight: 0.45},
-	{Title: "备注", Field: SEFieldNote, Weight: 0.25},
+	{Title: "字段/方法", Field: SEFieldName, Weight: 0.22},
+	{Title: "类型/签名", Field: SEFieldType, Weight: 0.58},
+	{Title: "备注", Field: SEFieldNote, Weight: 0.20},
 }
 
 // sectionTitle 取区段的标题文字。

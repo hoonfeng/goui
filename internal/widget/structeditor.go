@@ -533,7 +533,7 @@ func (e *StructEditorElement) HandleEvent(ev event.Event) bool {
 		if e.scrollY < 0 {
 			e.scrollY = 0
 		}
-		max := e.contentH - (e.size.Height - 4)
+		max := e.contentH - (e.size.Height - seRowH - 4) // 顶部保留了一行常驻标签，可视高度相应减少
 		if max < 0 {
 			max = 0
 		}
