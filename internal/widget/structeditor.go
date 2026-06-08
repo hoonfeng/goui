@@ -168,7 +168,7 @@ func (s *StructEditor) WithLSP(server, workspaceURI, fileURI string) *StructEdit
 
 func (s *StructEditor) CreateElement() Element {
 	e := &StructEditorElement{BaseElement: BaseElement{widget: s}, se: s, program: s.program,
-		schema: s.effectiveSchema(), showMinimap: s.ShowMinimap, selSection: "", selRow: -1, selCol: -1}
+		schema: s.effectiveSchema(), showMinimap: s.ShowMinimap, selSection: "", selRow: -1, selCol: -1, popupType: -1}
 	if s.ScrollRef != nil { // 跨重建恢复滚动位置（切换视图保持）
 		e.scrollY = *s.ScrollRef
 	}
@@ -219,8 +219,9 @@ type StructEditorElement struct {
 	collapsed  map[int]bool // 折叠（收起）的子程序
 	globalsCollapsed bool   // 程序集变量表是否收起（折叠后只剩表头，行号仍累加）
 	constsCollapsed  bool   // 常量表是否收起
-	typeCollapsed    map[int]bool // 折叠（收起字段）的类型，按类型下标
 	secRanges        []secRange   // Paint 缓存：各区段标题+纵向范围（顶部当前区段悬浮标签用）
+	popupType        int          // 浮窗显示的类型下标（-1=无）；点类型行▸/成员列弹出字段表浮窗
+	popupRect        types.Rect   // Paint 缓存：浮窗面板矩形（点外部关闭判定）
 	selSection string
 	selRow     int
 	selCol     int
@@ -434,11 +435,7 @@ func (e *StructEditorElement) applyFold(fh seFoldHit) {
 	case fh.section == "consts":
 		e.constsCollapsed = !e.constsCollapsed
 	case strings.HasPrefix(fh.section, "type:"):
-		i := atoiSafe(fh.section[5:])
-		if e.typeCollapsed == nil {
-			e.typeCollapsed = map[int]bool{}
-		}
-		e.typeCollapsed[i] = !e.typeCollapsed[i]
+		e.popupType = atoiSafe(fh.section[5:]) // ▸ → 打开字段表浮窗（取代内联折叠）
 	case fh.sub < 0:
 		e.globalsCollapsed = !e.globalsCollapsed
 	default:
@@ -550,6 +547,28 @@ func (e *StructEditorElement) HandleEvent(ev event.Event) bool {
 			break
 		}
 		e.focused = true
+		if e.popupType >= 0 { // 字段表浮窗模态：面板外/点关闭→收起；面板内→点字段格编辑
+			pr := e.popupRect
+			inPanel := me.X >= pr.X && me.X <= pr.X+pr.Width && me.Y >= pr.Y && me.Y <= pr.Y+pr.Height
+			closeHit := me.X >= pr.X+pr.Width-80 && me.X <= pr.X+pr.Width && me.Y >= pr.Y && me.Y <= pr.Y+seRowH
+			if !inPanel || closeHit {
+				e.popupType = -1
+				e.commitEdit()
+				repaint()
+				return true
+			}
+			for k := len(e.cells) - 1; k >= 0; k-- { // 逆序：浮窗字段格在 e.cells 末尾，优先于其后的主体格
+				c := e.cells[k]
+				if !strings.HasPrefix(c.section, "typefields:") {
+					continue // 浮窗内只认字段格（不误触面板后的主体格）
+				}
+				if me.X >= c.rect.X && me.X <= c.rect.X+c.rect.Width && me.Y >= c.rect.Y && me.Y <= c.rect.Y+c.rect.Height {
+					e.beginEdit(c.section, c.row, c.col)
+					return true
+				}
+			}
+			return true // 面板内空白：保持打开
+		}
 		if e.inMinimap(me.X, me.Y) { // 缩略图点击/拖动跳转
 			e.draggingMini = true
 			e.minimapJump(me.Y)

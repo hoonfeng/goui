@@ -1,6 +1,10 @@
 package widget
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/user/goui/internal/event"
+)
 
 // TestGoParseDiag 诊断：内置 Go 解析能否把 Go 源码拆成表格数据（imports/globals/consts/types/subs）。
 func TestGoParseDiag(t *testing.T) {
@@ -71,6 +75,23 @@ var x, y = 10, 20`
 	}
 	if len(p.Globals) != 2 || p.Globals[0].Ref != "10" || p.Globals[1].Ref != "20" {
 		t.Errorf("变量 x=10,y=20，实际 %+v", p.Globals)
+	}
+}
+
+// TestStructEditorTypePopup 点类型「成员/底层」列开字段表浮窗、Esc 关闭。
+func TestStructEditorTypePopup(t *testing.T) {
+	p := &SEProgram{Types: []SEType{{Name: "Point", Fields: []SEVar{{Name: "X", Type: "int"}}}}}
+	e := NewStructEditor(p).CreateElement().(*StructEditorElement)
+	e.beginEdit("type:0", 0, 2) // 点成员/底层列 → 开浮窗（不进文本编辑）
+	if e.popupType != 0 {
+		t.Fatalf("点类型成员列应开字段表浮窗(popupType=0)，实际 %d", e.popupType)
+	}
+	if e.editing {
+		t.Error("开浮窗时不应进入单元格编辑")
+	}
+	e.handleKey(event.KeyEvent{Key: event.KeyEscape}) // Esc 关
+	if e.popupType != -1 {
+		t.Errorf("Esc 应关浮窗(popupType=-1)，实际 %d", e.popupType)
 	}
 }
 

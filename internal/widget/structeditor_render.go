@@ -81,27 +81,20 @@ func (e *StructEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	if e.se.lang == "go" && len(e.program.Types) > 0 {
 		for i := range e.program.Types {
 			td := &e.program.Types[i]
-			collapsed := e.typeCollapsed[i]
 			tStart := y
 			hdrY := y
 			hv := []SEVar{{Name: td.Name, Type: string(td.Kind), Array: typeMembersSummary(td), Note: td.Note}}
 			y = e.paintVarTable(cvs, x, y, innerW, gw, "type:"+itoaCE(i), typeDefCols, hv, gl, i == 0, false)
-			if m := e.typeMembers(i); m != nil && len(*m) > 0 { // 有成员→可折叠：画三角 + 命中区
+			if m := e.typeMembers(i); m != nil && len(*m) > 0 { // 有成员→▸ 提示：点开浮窗看字段表（不再内联展开）
 				rowY := hdrY
 				if i == 0 {
 					rowY += seRowH // 首个类型前多一行「类型定义」表头
 				}
 				triX := x + innerW - 18
-				paintFoldTriangle(cvs, triX, rowY+6, 9, collapsed, seGutterNum())
+				paintFoldTriangle(cvs, triX, rowY+6, 9, true, seGutterNum()) // ▸ 可点开
 				e.foldHits = append(e.foldHits, seFoldHit{rect: types.Rect{X: triX - 3, Y: rowY + 3, Width: 16, Height: seRowH - 6}, section: "type:" + itoaCE(i)})
 			}
 			gl++
-			if !collapsed {
-				if m := e.typeMembers(i); m != nil && len(*m) > 0 { // 字段/方法可编辑子表
-					y = e.paintVarTable(cvs, x, y, innerW, gw, "typefields:"+itoaCE(i), typeFieldCols, *m, gl, false, false)
-					gl += len(*m)
-				}
-			}
 			e.miniSegs = append(e.miniSegs, seMiniSeg{tStart - top, y - tStart, segTable})
 			e.secRanges = append(e.secRanges, secRange{"类型定义 › " + td.Name, tStart, y})
 		}
@@ -155,23 +148,28 @@ func (e *StructEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 
 	if miniW > 0 { // 缩略图（其视口框代替竖滚动条）
 		e.paintSEMinimap(cvs, pos.X+w-miniW-1, pos.Y+2, h-4)
-		return
-	}
-	e.miniRect = types.Rect{}
-	// 竖滚动条
-	viewH := h - 4
-	if e.contentH > viewH {
-		barW := 6.0
-		bx := pos.X + w - barW - 3
-		thumbH := viewH * viewH / e.contentH
-		if thumbH < 24 {
-			thumbH = 24
+	} else {
+		e.miniRect = types.Rect{}
+		// 竖滚动条
+		viewH := h - 4
+		if e.contentH > viewH {
+			barW := 6.0
+			bx := pos.X + w - barW - 3
+			thumbH := viewH * viewH / e.contentH
+			if thumbH < 24 {
+				thumbH = 24
+			}
+			ratio := e.scrollY / (e.contentH - viewH)
+			thumbY := pos.Y + 2 + ratio*(viewH-thumbH)
+			th := paint.DefaultPaint()
+			th.Color = types.ColorFromRGB(193, 193, 193)
+			cvs.DrawRoundedRect(bx, thumbY, barW, thumbH, 3, th)
 		}
-		ratio := e.scrollY / (e.contentH - viewH)
-		thumbY := pos.Y + 2 + ratio*(viewH-thumbH)
-		th := paint.DefaultPaint()
-		th.Color = types.ColorFromRGB(193, 193, 193)
-		cvs.DrawRoundedRect(bx, thumbY, barW, thumbH, 3, th)
+	}
+	if e.popupType >= 0 { // 类型字段表浮窗：画在最上层（含背景遮罩、可编辑字段表）
+		e.paintTypePopup(cvs, pos, w, h)
+	} else {
+		e.popupRect = types.Rect{}
 	}
 }
 
@@ -198,6 +196,58 @@ func (e *StructEditorElement) paintStickyHeader(cvs canvas.Canvas, pos types.Poi
 	f, _, _ := canvas.FontWithStyle("monospace", 12, canvas.FontRegular)
 	canvas.DrawTextAligned(cvs, "当前："+label, types.Rect{X: pos.X + 10, Y: pos.Y + 1, Width: barW - 16, Height: stickyH},
 		f, seHeaderText(), canvas.HAlignLeft, canvas.VAlignMiddle)
+}
+
+// paintTypePopup 类型字段表浮窗：点类型行▸/成员列弹出，居中面板显示该类型的字段/方法可编辑表，点外部/关闭收起。
+func (e *StructEditorElement) paintTypePopup(cvs canvas.Canvas, pos types.Point, w, h float64) {
+	i := e.popupType
+	if i < 0 || i >= len(e.program.Types) {
+		e.popupType = -1
+		return
+	}
+	td := &e.program.Types[i]
+	m := e.typeMembers(i)
+	n := 0
+	if m != nil {
+		n = len(*m)
+	}
+	// 背景遮罩（点它=点面板外→关闭）
+	bd := paint.DefaultPaint()
+	bd.Color = types.Color{R: 20, G: 20, B: 25, A: 120}
+	cvs.DrawRect(pos.X+1, pos.Y+1, w-2, h-2, bd)
+	// 面板尺寸/居中
+	pw := w * 0.82
+	if pw > 560 {
+		pw = 560
+	}
+	ph := float64(n+2)*seRowH + 18 // 标题 + 列头 + n 字段 + 留白
+	if ph > h-24 {
+		ph = h - 24
+	}
+	px := pos.X + (w-pw)/2
+	py := pos.Y + (h-ph)/2
+	e.popupRect = types.Rect{X: px, Y: py, Width: pw, Height: ph}
+	// 面板底 + 边框
+	pb := paint.DefaultPaint()
+	pb.Color = seBackground()
+	cvs.DrawRoundedRect(px, py, pw, ph, 8, pb)
+	brd := paint.DefaultStrokePaint()
+	brd.Color = elPrimary()
+	brd.StrokeWidth = 1.5
+	cvs.DrawRoundedRect(px+0.5, py+0.5, pw-1, ph-1, 8, brd)
+	// 标题条（类型名 + 关闭）
+	hb := paint.DefaultPaint()
+	hb.Color = seFuncRowBG()
+	cvs.DrawRect(px+1, py+1, pw-2, seRowH, hb)
+	f, _, _ := canvas.FontWithStyle("monospace", 13, canvas.FontRegular)
+	canvas.DrawTextAligned(cvs, "type "+td.Name+" "+string(td.Kind), types.Rect{X: px + 12, Y: py + 1, Width: pw - 92, Height: seRowH}, f, seFuncRowText(), canvas.HAlignLeft, canvas.VAlignMiddle)
+	canvas.DrawTextAligned(cvs, "关闭 ✕", types.Rect{X: px + pw - 80, Y: py + 1, Width: 72, Height: seRowH}, f, seText(), canvas.HAlignRight, canvas.VAlignMiddle)
+	// 字段/方法可编辑表（gw=0 无行号栏；showHeader→列标题；注册命中格供点击编辑）
+	if m != nil && n > 0 {
+		e.paintVarTable(cvs, px+8, py+seRowH+6, pw-16, 0, "typefields:"+itoaCE(i), typeFieldCols, *m, 0, true, false)
+	} else {
+		canvas.DrawTextAligned(cvs, "（无字段）", types.Rect{X: px + 12, Y: py + seRowH + 10, Width: pw - 24, Height: seRowH}, f, types.ColorFromRGB(150, 150, 150), canvas.HAlignLeft, canvas.VAlignMiddle)
+	}
 }
 
 const seMiniW = 72.0 // 缩略图宽
@@ -581,6 +631,11 @@ func sectionTitle(section string, cols []SECol) string {
 		return "常量"
 	case section == "types" || strings.HasPrefix(section, "type:"):
 		return "类型定义"
+	case strings.HasPrefix(section, "typefields:"):
+		if len(cols) > 0 {
+			return cols[0].Title // 「字段/方法」
+		}
+		return "字段"
 	case strings.HasPrefix(section, "params:"):
 		if len(cols) > 0 {
 			return cols[0].Title

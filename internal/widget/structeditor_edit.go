@@ -280,6 +280,16 @@ func (e *StructEditorElement) sectionRows(section string) int {
 // ── 编辑 ──
 
 func (e *StructEditorElement) beginEdit(section string, row, col int) {
+	if strings.HasPrefix(section, "type:") && col == 2 { // 类型「成员/底层」列：有成员→开字段表浮窗（不进文本编辑）
+		if i := atoiSafe(section[5:]); i >= 0 && i < len(e.program.Types) {
+			if m := e.typeMembers(i); m != nil && len(*m) > 0 {
+				e.popupType = i
+				e.editing = false
+				repaint()
+				return
+			}
+		}
+	}
 	cols := e.cols(section)
 	if col >= 0 && col < len(cols) && cols[col].Check { // 复选框列：点击切换 是/空（如参考/传址），不进文本编辑
 		if v := e.varPtr(section, row); v != nil {
@@ -350,6 +360,12 @@ func (e *StructEditorElement) editEnd() {
 func (e *StructEditorElement) handleKey(ev event.KeyEvent) {
 	switch ev.Key {
 	case event.KeyEscape:
+		if e.popupType >= 0 { // 字段表浮窗打开：Esc 先关浮窗
+			e.commitEdit()
+			e.popupType = -1
+			repaint()
+			return
+		}
 		if e.editing {
 			e.commitEdit()
 		} else {
