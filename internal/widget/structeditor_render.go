@@ -124,9 +124,9 @@ func (e *StructEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 			continue
 		}
 		gl += 1 + len(sub.Params) + len(sub.Returns) // 函数声明 1 行 + 参数 + 返回值各 1 行
-		// 局部变量表（schema 驱动，首列即表头「局部变量」）+ 逻辑代码 合为一段缩略
+		// 局部变量表（showHeader=true→显示「局部变量」表头，与参数/返回值明确区分）+ 逻辑代码
 		cStart := y
-		y = e.paintVarTable(cvs, x, y, innerW, gw, "locals:"+itoaCE(si), e.curSchema().Locals, sub.Locals, gl, false, false)
+		y = e.paintVarTable(cvs, x, y, innerW, gw, "locals:"+itoaCE(si), e.curSchema().Locals, sub.Locals, gl, true, false)
 		gl += len(sub.Locals)
 		// 逻辑代码：内嵌 CodeEditor，行号接续全局计数，直接接在局部变量表后
 		cel.ed.LineNumberOffset = gl - 1
