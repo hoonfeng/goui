@@ -334,7 +334,12 @@ func (b *settingsBodyState) Build(ctx widget.BuildContext) widget.Widget {
 		// 统一左右内边距(10)：内容左缘与上方标签文字对齐、左右留白对称（各 tab 不再各自设 padding）。
 		widget.Div(widget.Style{Height: 420, FlexDirection: "column", AlignItems: "stretch",
 			Padding: types.EdgeInsetsLTRB(10, 0, 10, 0)},
-			expand(widget.NewScrollView(b.content())),
+			// ScrollView 是 el 风格的「悬浮滚动条」（盖在内容上）。给内容右侧留 14px 槽，
+			// 让悬浮竖条落在空槽里、不遮挡满宽组件（输入框/下拉/多行框的右边框）。
+			expand(widget.NewScrollView(widget.Div(
+				widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(0, 0, 14, 0)},
+				b.content(),
+			))),
 		),
 	)
 }
@@ -879,7 +884,7 @@ func settingsToggle(lbl string, on bool, toggle func()) widget.Widget {
 	)
 }
 
-const settingsCtlW = 536 // 设置控件（下拉/输入）宽度，对齐内容区（556 - 左右内边距 10）
+const settingsCtlW = 522 // 设置控件（下拉/输入）宽度：内容区 536 - 右侧滚动条让位槽 14
 
 // providerSelect 服务商下拉。onPick(v) 在切换时由调用方处理 baseURL/模型联动。
 func providerSelect(value string, onPick func(string)) widget.Widget {
