@@ -156,11 +156,10 @@ func (m *termManager) tabBar() widget.Widget {
 	for _, sh := range availableShells() {
 		plusItems = append(plusItems, widget.DropdownItem{Label: "新建 " + sh.label, Command: sh.code})
 	}
-	plusTrigger := &widget.Button{
-		SingleChildWidget: widget.SingleChildWidget{Child: widget.Lucide("plus", widget.IconSize(13), widget.IconColor(*cStatus))},
-		Color:             *cStatusBar,
-		Padding:           types.EdgeInsetsLTRB(8, 5, 8, 5),
-	}
+	// 触发器用 Div（非 Button）：Button 默认强加 minHeight=32 > 标签栏 28，会把整行顶到 32、加号偏下；
+	// Div 跟标签同结构、随 stretch 填满并居中图标（Dropdown 自身拦截点击，触发器无需可点）。
+	plusTrigger := widget.Div(widget.Style{Padding: types.EdgeInsetsLTRB(8, 5, 8, 5)},
+		widget.Lucide("plus", widget.IconSize(13), widget.IconColor(*cStatus)))
 	kids = append(kids, widget.NewDropdown(plusTrigger, plusItems...).
 		WithOnCommand(func(code string) { m.newTabWithShell(code) }).
 		WithPlacement(widget.PlacementBottomStart))

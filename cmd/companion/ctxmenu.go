@@ -305,22 +305,10 @@ func editorTabMenu(x, y float64, i int) { showMenu(x, y, editorTabItems(i)) }
 
 // ─── 终端菜单 ─────────────────────────────────────────────
 
+// terminalItems 终端右键菜单：只放与当前内容相关的操作（复制/粘贴/清屏/加到对话）。
+// 新建/切换 shell 放在「+ 下拉」与菜单栏「终端」菜单里，不塞进右键菜单。
 func terminalItems() []widget.MenuItem {
-	shells := availableShells()
-	var newItems, switchItems []widget.MenuItem
-	for _, sh := range shells {
-		code := sh.code
-		newItems = append(newItems, mi("terminal", sh.label, func() { theTermMgr.newTabWithShell(code) }))
-		icon := "terminal"
-		if theTerminal != nil && theTerminal.shell == code {
-			icon = "check" // 当前 shell 打勾
-		}
-		switchItems = append(switchItems, mi(icon, sh.label, func() { theTermMgr.setActiveShell(code) }))
-	}
 	return []widget.MenuItem{
-		{Icon: "plus", Label: "新建终端", Enabled: true, Children: newItems},
-		{Icon: "repeat", Label: "切换 Shell", Enabled: true, Children: switchItems},
-		sep(),
 		mi("copy", "复制全部", func() { copyToClipboard(theTerminal.copyAll()) }),
 		mi("clipboard", "粘贴", func() { theTerminal.pasteToInput() }),
 		mi("eraser", "清屏", func() { theTerminal.clearScreen() }),
