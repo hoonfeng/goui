@@ -357,7 +357,8 @@ func extractGoLocals(body *ast.BlockStmt, params []SEVar, fset *token.FileSet, t
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch d := n.(type) {
 		case *ast.GenDecl:
-			if d.Tok == token.VAR {
+			if d.Tok == token.VAR || d.Tok == token.CONST { // 局部 var 与 局部 const(含 const w,h=1200,760 快捷声明)
+				isConst := d.Tok == token.CONST
 				for _, spec := range d.Specs {
 					if vs, ok := spec.(*ast.ValueSpec); ok {
 						typ := exprStr(vs.Type)
@@ -367,7 +368,23 @@ func extractGoLocals(body *ast.BlockStmt, params []SEVar, fset *token.FileSet, t
 							if t == "" && i < len(vs.Values) {
 								t = inferGoType(vs.Values[i], subRet)
 							}
-							add(name.Name, t, note)
+							nt := note
+							if isConst { // 局部常量：标注 const + 值，方便在表里看出（值仍以函数体为准）
+								cv := ""
+								if i < len(vs.Values) {
+									cv = exprStr(vs.Values[i])
+								}
+								tag := "const"
+								if cv != "" {
+									tag = "const = " + cv
+								}
+								if nt != "" {
+									nt = tag + " | " + nt
+								} else {
+									nt = tag
+								}
+							}
+							add(name.Name, t, nt)
 						}
 					}
 				}

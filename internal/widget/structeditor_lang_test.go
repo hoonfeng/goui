@@ -78,6 +78,37 @@ var x, y = 10, 20`
 	}
 }
 
+// TestGoLocalConst 函数内的局部常量（含 const w,h=1200,760 快捷声明）被解析进局部变量表。
+func TestGoLocalConst(t *testing.T) {
+	src := `package main
+
+func draw() {
+	const w, h = 1200, 760
+	const dpi = 96
+	x := 5
+	_ = x
+}`
+	p, err := goLangProvider{}.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Subs) != 1 {
+		t.Fatalf("应 1 个函数，实际 %d", len(p.Subs))
+	}
+	got := map[string]string{}
+	for _, l := range p.Subs[0].Locals {
+		got[l.Name] = l.Type
+	}
+	for _, n := range []string{"w", "h", "dpi", "x"} {
+		if _, ok := got[n]; !ok {
+			t.Errorf("局部声明 %q 未解析，locals=%v", n, got)
+		}
+	}
+	if got["w"] != "int" {
+		t.Errorf("w 类型应推导为 int，实际 %q", got["w"])
+	}
+}
+
 // TestStructEditorTypePopup 点类型「成员/底层」列开字段表浮窗、Esc 关闭。
 func TestStructEditorTypePopup(t *testing.T) {
 	p := &SEProgram{Types: []SEType{{Name: "Point", Fields: []SEVar{{Name: "X", Type: "int"}}}}}
