@@ -529,9 +529,10 @@ func (e *StructEditorElement) paintFuncTable(cvs canvas.Canvas, x, y, innerW, gw
 
 // constCols 常量表的列定义。
 var constCols = []SECol{
-	{Title: "常量", Field: SEFieldName, Weight: 0.30},
-	{Title: "类型", Field: SEFieldType, Weight: 0.20},
-	{Title: "值/备注", Field: SEFieldNote, Weight: 0.50},
+	{Title: "常量", Field: SEFieldName, Weight: 0.24},
+	{Title: "类型", Field: SEFieldType, Weight: 0.18},
+	{Title: "常量值", Field: SEFieldArray, Weight: 0.33}, // 值单独一列（存 Array 字段）
+	{Title: "注释", Field: SEFieldNote, Weight: 0.25},   // 注释单独一列
 }
 
 // typeDefCols 类型定义表的列定义。

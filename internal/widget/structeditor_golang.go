@@ -60,15 +60,8 @@ func ParseGo(src string) (*SEProgram, error) {
 						val = exprStr(vs.Values[0])
 					}
 					for _, name := range vs.Names {
-						note := commentText(d.Doc)
-						if val != "" {
-							if note != "" {
-								note = val + " | " + note
-							} else {
-								note = val
-							}
-						}
-						p.Consts = append(p.Consts, SEVar{Name: name.Name, Type: typ, Note: note})
+						// 值进 Array 列、注释进 Note 列，各自独立成列。
+						p.Consts = append(p.Consts, SEVar{Name: name.Name, Type: typ, Array: val, Note: commentText(d.Doc)})
 					}
 				}
 			case token.TYPE: // 类型定义（struct / interface / alias）
@@ -205,24 +198,18 @@ func (p *SEProgram) goDoc(overrideSi int, overrideBody string) (string, int) {
 		if i == 0 && (len(p.Imports) > 0 || line > 0) {
 			wr("\n")
 		}
-		note := v.Note
-		val := ""
-		if strings.Contains(note, " | ") {
-			parts := strings.SplitN(note, " | ", 2)
-			val = parts[0]
-			note = parts[1]
-		} else if note != "" && !strings.HasPrefix(note, "//") {
-			val = note
-			note = ""
+		if v.Note != "" {
+			wr("// " + v.Note + "\n")
 		}
-		if note != "" {
-			wr("// " + note + "\n")
-		}
-		if val != "" {
+		val := v.Array // 常量值（独立列）
+		switch {
+		case val != "" && v.Type != "":
+			wr("const " + v.Name + " " + v.Type + " = " + val + "\n")
+		case val != "":
 			wr("const " + v.Name + " = " + val + "\n")
-		} else if v.Type != "" {
+		case v.Type != "":
 			wr("const " + v.Name + " " + v.Type + "\n")
-		} else {
+		default:
 			wr("const " + v.Name + "\n")
 		}
 	}
