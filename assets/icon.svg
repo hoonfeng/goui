@@ -51,13 +51,7 @@
         stroke="url(#rightBracket)" stroke-width="40" stroke-linejoin="round" fill="none"
         filter="url(#glow)"/>
 
-  <!-- 中间 = 连接线（蓝绿渐变 — 代表"等于"、"配对"、"协同"）-->
-  <line x1="200" y1="228" x2="312" y2="228"
-        stroke="url(#connector)" stroke-width="18" stroke-linecap="round"
-        filter="url(#softGlow)"/>
-  <line x1="200" y1="284" x2="312" y2="284"
-        stroke="url(#connector)" stroke-width="18" stroke-linecap="round"
-        filter="url(#softGlow)"/>
+  <!-- 中间「=」连接线已移除（图标只留 < > 尖括号 + 中心 AI 核心光点）。 -->
 
   <!-- 中心光点（代表 AI 核心 — 亮青色） -->
   <circle cx="256" cy="256" r="18" fill="transparent" stroke="#00e5ff" stroke-width="3" opacity="0.6"/>

@@ -206,11 +206,12 @@ func (e *editorState) Build(ctx widget.BuildContext) widget.Widget {
 			label("AI 结对编程助手", cTextDim, 13),
 			widget.Div(widget.Style{Height: 22}),
 			label("点击左侧文件树打开文件，或", cTextDim, 12),
-			widget.Div(widget.Style{Height: 10}),
+			widget.Div(widget.Style{Height: 14}),
 			&widget.Button{
-				SingleChildWidget: widget.SingleChildWidget{Child: label("打开文件夹", cWhite, 12)},
-				OnClick:           openFolderViaDialog,
-				Color:             *ghAccentEmph, BorderRadius: 5, Padding: types.EdgeInsetsLTRB(14, 6, 14, 6),
+				Text: "打开文件", Icon: "file-text", IconSize: 15, IconColor: &cWhite,
+				OnClick:    openFileViaDialog,
+				Color:      *ghAccentEmph, HoverColor: *ghAccent, TextColor: cWhite, FontSize: 13,
+				BorderRadius: 8, Padding: types.EdgeInsetsLTRB(18, 10, 18, 10),
 			},
 		)
 	}
