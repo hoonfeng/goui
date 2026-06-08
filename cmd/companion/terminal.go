@@ -36,8 +36,14 @@ var (
 	cTermErr = types.ColorFromRGB(240, 105, 98) // stderr 红
 )
 
-// theTerminal 终端状态（包级单例，跨 relayout 存活，理由同 theChatState）。
-var theTerminal = newTerminalState()
+// 多实例终端：theTermMgr 管多个标签，theTerminal 始终指向「当前活动标签」
+// （外部 openDir/copyAll/clearScreen/shell 等照旧用 theTerminal，自动作用于活动标签）。
+var (
+	theTermMgr  *termManager
+	theTerminal *terminalState
+)
+
+func init() { theTermMgr = newTermManager() }
 
 func newTerminalState() *terminalState {
 	cwd, err := os.Getwd()
@@ -46,6 +52,113 @@ func newTerminalState() *terminalState {
 	}
 	return &terminalState{cwd: cwd, shell: "cmd"}
 }
+
+// ─── 多标签管理器 ───────────────────────────────────────────────
+type termManager struct {
+	widget.BaseState
+	tabs   []*terminalState
+	active int
+}
+
+func newTermManager() *termManager {
+	m := &termManager{tabs: []*terminalState{newTerminalState()}}
+	theTerminal = m.tabs[0]
+	return m
+}
+
+// newTab 新建标签（继承当前标签的 shell/cwd），切到它。
+func (m *termManager) newTab() {
+	t := newTerminalState()
+	if cur := m.tabs[m.active]; cur != nil {
+		t.shell, t.cwd = cur.shell, cur.cwd
+	}
+	m.tabs = append(m.tabs, t)
+	m.active = len(m.tabs) - 1
+	theTerminal = t
+	m.SetState()
+}
+
+// switchTab 切到第 i 个标签。
+func (m *termManager) switchTab(i int) {
+	if i < 0 || i >= len(m.tabs) || i == m.active {
+		return
+	}
+	m.active = i
+	theTerminal = m.tabs[i]
+	m.SetState()
+}
+
+// closeTab 关闭第 i 个标签（至少留一个；正在跑的命令其读协程自行收尾）。
+func (m *termManager) closeTab(i int) {
+	if i < 0 || i >= len(m.tabs) || len(m.tabs) == 1 {
+		return // 仅剩一个不关闭
+	}
+	m.tabs[i].stopPump()
+	m.tabs = append(m.tabs[:i], m.tabs[i+1:]...)
+	if m.active >= len(m.tabs) {
+		m.active = len(m.tabs) - 1
+	} else if m.active > i {
+		m.active--
+	}
+	theTerminal = m.tabs[m.active]
+	m.SetState()
+}
+
+func (m *termManager) Build(ctx widget.BuildContext) widget.Widget {
+	return widget.Div(
+		widget.Style{FlexDirection: "column", AlignItems: "stretch", BackgroundColor: cEditor},
+		m.tabBar(),
+		expand(&termInstance{st: m.tabs[m.active]}),
+	)
+}
+
+// tabBar 顶部标签栏：每标签 shell 徽标 + 目录名 + 关闭×；末尾「+」新建。
+func (m *termManager) tabBar() widget.Widget {
+	kids := make([]widget.Widget, 0, len(m.tabs)+1)
+	for i, t := range m.tabs {
+		idx := i
+		bg, tc := cStatusBar, cTextDim
+		if i == m.active {
+			bg, tc = cEditor, cText
+		}
+		kids = append(kids, &widget.Clickable{
+			SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
+				widget.Style{BackgroundColor: bg, Padding: types.EdgeInsetsLTRB(10, 5, 10, 5)},
+				label(shellLabel(t.shell)+" "+filepath.Base(t.cwd), tc, 11),
+			)},
+			OnClick: func() { m.switchTab(idx) },
+		})
+		if len(m.tabs) > 1 { // 关闭× 作为相邻独立小按钮
+			kids = append(kids, &widget.Clickable{
+				SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
+					widget.Style{BackgroundColor: bg, Padding: types.EdgeInsetsLTRB(0, 5, 8, 5)},
+					widget.Lucide("x", widget.IconSize(11), widget.IconColor(cTextDim)),
+				)},
+				OnClick: func() { m.closeTab(idx) },
+			})
+		}
+	}
+	kids = append(kids, &widget.Clickable{ // 新建标签
+		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
+			widget.Style{Padding: types.EdgeInsetsLTRB(8, 5, 8, 5)},
+			widget.Lucide("plus", widget.IconSize(13), widget.IconColor(*cStatus)),
+		)},
+		OnClick: func() { m.newTab() },
+	})
+	return widget.Div(
+		widget.Style{FlexDirection: "row", AlignItems: "center", BackgroundColor: cStatusBar, Height: 28},
+		kids,
+	)
+}
+
+// termInstance 把某个终端标签作为子 StatefulWidget 挂载（活动标签才挂载渲染；
+// 切换=挂另一标签；后台标签数据仍在其 *terminalState 里累积，切回即见）。
+type termInstance struct {
+	widget.StatefulWidget
+	st *terminalState
+}
+
+func (w *termInstance) CreateState() widget.State { return w.st }
 
 // shellLabel 当前 shell 的短标签。
 func shellLabel(shell string) string {
@@ -99,7 +212,7 @@ type terminalState struct {
 // TerminalPanel 终端面板组件。
 type TerminalPanel struct{ widget.StatefulWidget }
 
-func (t *TerminalPanel) CreateState() widget.State { return theTerminal }
+func (t *TerminalPanel) CreateState() widget.State { return theTermMgr }
 
 func (t *terminalState) Build(ctx widget.BuildContext) widget.Widget {
 	if theSettings.TermFontSize > 0 { // 外观/终端设置：字号（单终端，直接调共享 termFont）
