@@ -39,6 +39,7 @@ func (e *StructEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	e.cells = e.cells[:0]
 	e.foldHits = e.foldHits[:0]
 	e.miniSegs = e.miniSegs[:0]
+	e.secRanges = e.secRanges[:0]
 	x := pos.X + sePad
 	innerW := w - sePad*2 - miniW
 	top := pos.Y + sePad - e.scrollY
@@ -60,33 +61,49 @@ func (e *StructEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		iStart := y
 		y = e.paintVarTable(cvs, x, y, innerW, gw, "imports", importCols, importVars, gl, false, false)
 		e.miniSegs = append(e.miniSegs, seMiniSeg{iStart - top, y - iStart, segTable})
+		e.secRanges = append(e.secRanges, secRange{"导入", iStart, y})
 		gl += n
 		y += 12
 	}
 
-	// 常量表（go 模式显示）
+	// 常量表（go 模式显示，可折叠）
 	if e.se.lang == "go" && len(e.program.Consts) > 0 {
 		cStart := y
-		y = e.paintVarTable(cvs, x, y, innerW, gw, "consts", constCols, e.program.Consts, gl, true, false)
+		y = e.paintVarTable(cvs, x, y, innerW, gw, "consts", constCols, e.program.Consts, gl, true, e.constsCollapsed)
 		e.miniSegs = append(e.miniSegs, seMiniSeg{cStart - top, y - cStart, segTable})
+		e.secRanges = append(e.secRanges, secRange{"常量", cStart, y})
 		gl += len(e.program.Consts)
 		y += 12
 	}
 
-	// 类型定义表（go 模式显示）：一行为一个类型名 + 种类 + 注释
+	// 类型定义（go 模式）：每类型一行头(名|种类|成员摘要|备注)+折叠三角；展开→字段/方法成可编辑子表。
 	if e.se.lang == "go" && len(e.program.Types) > 0 {
-		tStart := y
-		typeVars := make([]SEVar, len(e.program.Types))
 		for i := range e.program.Types {
 			td := &e.program.Types[i]
-			typeVars[i].Name = td.Name
-			typeVars[i].Type = string(td.Kind)
-			typeVars[i].Array = typeMembersSummary(td) // 成员列：字段/方法列表直观显示（取代「N 项」）
-			typeVars[i].Note = td.Note
+			collapsed := e.typeCollapsed[i]
+			tStart := y
+			hdrY := y
+			hv := []SEVar{{Name: td.Name, Type: string(td.Kind), Array: typeMembersSummary(td), Note: td.Note}}
+			y = e.paintVarTable(cvs, x, y, innerW, gw, "type:"+itoaCE(i), typeDefCols, hv, gl, i == 0, false)
+			if m := e.typeMembers(i); m != nil && len(*m) > 0 { // 有成员→可折叠：画三角 + 命中区
+				rowY := hdrY
+				if i == 0 {
+					rowY += seRowH // 首个类型前多一行「类型定义」表头
+				}
+				triX := x + innerW - 18
+				paintFoldTriangle(cvs, triX, rowY+6, 9, collapsed, seGutterNum())
+				e.foldHits = append(e.foldHits, seFoldHit{rect: types.Rect{X: triX - 3, Y: rowY + 3, Width: 16, Height: seRowH - 6}, section: "type:" + itoaCE(i)})
+			}
+			gl++
+			if !collapsed {
+				if m := e.typeMembers(i); m != nil && len(*m) > 0 { // 字段/方法可编辑子表
+					y = e.paintVarTable(cvs, x, y, innerW, gw, "typefields:"+itoaCE(i), typeFieldCols, *m, gl, false, false)
+					gl += len(*m)
+				}
+			}
+			e.miniSegs = append(e.miniSegs, seMiniSeg{tStart - top, y - tStart, segTable})
+			e.secRanges = append(e.secRanges, secRange{"类型定义 › " + td.Name, tStart, y})
 		}
-		y = e.paintVarTable(cvs, x, y, innerW, gw, "types", typeDefCols, typeVars, gl, true, false)
-		e.miniSegs = append(e.miniSegs, seMiniSeg{tStart - top, y - tStart, segTable})
-		gl += len(e.program.Types)
 		y += 12
 	}
 
@@ -94,6 +111,7 @@ func (e *StructEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	gStart := y
 	y = e.paintVarTable(cvs, x, y, innerW, gw, "globals", e.curSchema().Globals, e.program.Globals, gl, true, e.globalsCollapsed)
 	e.miniSegs = append(e.miniSegs, seMiniSeg{gStart - top, y - gStart, segTable})
+	e.secRanges = append(e.secRanges, secRange{"程序集变量", gStart, y})
 	gl += len(e.program.Globals) // 行号始终累加（折叠也连续，与子程序折叠一致）
 	y += 12
 
@@ -108,6 +126,7 @@ func (e *StructEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		if collapsed { // 收起：跳过内容，但 gl 继续累加保持全局行号连续
 			gl += 1 + len(sub.Params) + len(sub.Returns) + len(sub.Locals) + len(cel.lines)
 			y += 8
+			e.secRanges = append(e.secRanges, secRange{"函数 " + sub.Name, fStart, y})
 			continue
 		}
 		gl += 1 + len(sub.Params) + len(sub.Returns) // 函数声明 1 行 + 参数 + 返回值各 1 行
@@ -124,8 +143,10 @@ func (e *StructEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		gl += len(cel.lines)
 		y += bh + 10
 		e.miniSegs = append(e.miniSegs, seMiniSeg{cStart - top, y - cStart, segCode})
+		e.secRanges = append(e.secRanges, secRange{"函数 " + sub.Name, fStart, y})
 	}
 	e.contentH = y - top
+	e.paintStickyHeader(cvs, pos, w, miniW) // 顶部「当前区段」悬浮标签
 	if e.se.ScrollRef != nil { // 同步滚动位置，供切换视图后恢复
 		*e.se.ScrollRef = e.scrollY
 	}
@@ -151,6 +172,30 @@ func (e *StructEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		th.Color = types.ColorFromRGB(193, 193, 193)
 		cvs.DrawRoundedRect(bx, thumbY, barW, thumbH, 3, th)
 	}
+}
+
+// paintStickyHeader 在视口顶端画一条「当前区段」常驻标签（随滚动更新），让用户始终知道在看哪段内容。
+func (e *StructEditorElement) paintStickyHeader(cvs canvas.Canvas, pos types.Point, w, miniW float64) {
+	viewTop := pos.Y + sePad
+	label := ""
+	for _, sr := range e.secRanges {
+		if sr.y0 <= viewTop+3 { // 起点已在视口顶之上 → 当前所在（取最后一个）区段
+			label = sr.label
+		}
+	}
+	if label == "" {
+		return
+	}
+	barW := w - 2 - miniW
+	bp := paint.DefaultPaint()
+	bp.Color = seHeaderBG()
+	cvs.DrawRect(pos.X+1, pos.Y+1, barW, seRowH, bp)
+	ln := paint.DefaultStrokePaint()
+	ln.Color = seLineColor()
+	cvs.DrawLine(pos.X+1, pos.Y+1+seRowH, pos.X+1+barW, pos.Y+1+seRowH, ln)
+	f, _, _ := canvas.FontWithStyle("monospace", 12, canvas.FontRegular)
+	canvas.DrawTextAligned(cvs, "当前："+label, types.Rect{X: pos.X + 10, Y: pos.Y + 1, Width: barW - 16, Height: seRowH},
+		f, seHeaderText(), canvas.HAlignLeft, canvas.VAlignMiddle)
 }
 
 const seMiniW = 72.0 // 缩略图宽
@@ -292,9 +337,11 @@ func (e *StructEditorElement) paintVarTable(cvs canvas.Canvas, x, y, innerW, gw 
 	if showHeader && len(vars) > 0 { // 画表头行（蓝底+加粗+首列名即标题）
 		hdrY := y
 		e.paintRow(cvs, x, hdrY, gw, colW, colE, section, -1, []string{sectionTitle(section, cols)}, nil, gl, true)
-		// 折叠三角
-		if section == "globals" || section == "consts" || section == "types" {
-			e.foldHits = append(e.foldHits, seFoldHit{rect: types.Rect{X: x0 + cw - 18, Y: hdrY + 3, Width: 16, Height: seRowH - 6}, sub: -1})
+		// 折叠三角（程序集变量/常量整段折叠）：画三角 + 命中区（带 section 供 applyFold 区分）
+		if section == "globals" || section == "consts" {
+			triX := x0 + cw - 18
+			paintFoldTriangle(cvs, triX, hdrY+6, 9, collapsed, seGutterNum())
+			e.foldHits = append(e.foldHits, seFoldHit{rect: types.Rect{X: triX - 3, Y: hdrY + 3, Width: 16, Height: seRowH - 6}, sub: -1, section: section})
 		}
 		y = hdrY + seRowH
 	}
@@ -495,6 +542,13 @@ var typeDefCols = []SECol{
 	{Title: "备注", Field: SEFieldNote, Weight: 0.20},
 }
 
+// typeFieldCols 类型展开后的字段/方法表列定义。
+var typeFieldCols = []SECol{
+	{Title: "字段/方法", Field: SEFieldName, Weight: 0.30},
+	{Title: "类型/签名", Field: SEFieldType, Weight: 0.45},
+	{Title: "备注", Field: SEFieldNote, Weight: 0.25},
+}
+
 // sectionTitle 取区段的标题文字。
 func sectionTitle(section string, cols []SECol) string {
 	switch {
@@ -507,7 +561,7 @@ func sectionTitle(section string, cols []SECol) string {
 		return "程序集变量"
 	case section == "consts":
 		return "常量"
-	case section == "types":
+	case section == "types" || strings.HasPrefix(section, "type:"):
 		return "类型定义"
 	case strings.HasPrefix(section, "params:"):
 		if len(cols) > 0 {

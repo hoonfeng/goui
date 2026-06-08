@@ -41,8 +41,26 @@ func (e *StructEditorElement) cols(section string) []SECol {
 		return sc.Returns
 	case strings.HasPrefix(section, "locals:"):
 		return sc.Locals
+	case strings.HasPrefix(section, "typefields:"):
+		return typeFieldCols
 	}
 	return nil
+}
+
+// typeMembers 返回类型 i 的成员切片指针：struct→Fields、interface→Methods、alias/越界→nil。
+func (e *StructEditorElement) typeMembers(i int) *[]SEVar {
+	if i < 0 || i >= len(e.program.Types) {
+		return nil
+	}
+	td := &e.program.Types[i]
+	switch td.Kind {
+	case SETypeInterface:
+		return &td.Methods
+	case SETypeAlias:
+		return nil
+	default:
+		return &td.Fields
+	}
 }
 
 func (e *StructEditorElement) varPtr(section string, row int) *SEVar {
@@ -69,6 +87,10 @@ func (e *StructEditorElement) varPtr(section string, row int) *SEVar {
 		si := atoiSafe(section[8:])
 		if si < len(e.program.Subs) && row >= 0 && row < len(e.program.Subs[si].Returns) {
 			return &e.program.Subs[si].Returns[row]
+		}
+	case strings.HasPrefix(section, "typefields:"):
+		if m := e.typeMembers(atoiSafe(section[11:])); m != nil && row >= 0 && row < len(*m) {
+			return &(*m)[row]
 		}
 	}
 	return nil
@@ -97,6 +119,23 @@ func (e *StructEditorElement) cellValue(section string, row, col int) string {
 				return string(td.Kind)
 			case 2:
 				return typeMembersSummary(td) // 成员摘要：字段/方法列表（直观）
+			case 3:
+				return td.Note
+			}
+		}
+		return ""
+	}
+	if strings.HasPrefix(section, "type:") { // 类型头行：col0 名 / col1 种类 / col2 成员摘要 / col3 备注
+		i := atoiSafe(section[5:])
+		if i >= 0 && i < len(e.program.Types) {
+			td := &e.program.Types[i]
+			switch col {
+			case 0:
+				return td.Name
+			case 1:
+				return string(td.Kind)
+			case 2:
+				return typeMembersSummary(td)
 			case 3:
 				return td.Note
 			}
@@ -151,6 +190,21 @@ func (e *StructEditorElement) setCellValue(section string, row, col int, val str
 		}
 		return
 	}
+	if strings.HasPrefix(section, "type:") { // 类型头行：名/种类/备注 可改（成员摘要列只读）
+		i := atoiSafe(section[5:])
+		if i >= 0 && i < len(e.program.Types) {
+			td := &e.program.Types[i]
+			switch col {
+			case 0:
+				td.Name = val
+			case 1:
+				td.Kind = SETypeKind(val)
+			case 3:
+				td.Note = val
+			}
+		}
+		return
+	}
 	if section == "imports" { // 导入区：写回 program.Imports（行超出则补齐，支持空表点击占位行加第一个）
 		if row < 0 {
 			return
@@ -174,8 +228,8 @@ func (e *StructEditorElement) sectionMaxCol(section string) int {
 	if strings.HasPrefix(section, "func:") {
 		return 1 // 函数声明：函数名(0) / 注释(1)
 	}
-	if section == "types" {
-		return 3 // types 有 4 列(0..3)
+	if section == "types" || strings.HasPrefix(section, "type:") {
+		return 3 // 类型表/类型头：4 列(0..3)
 	}
 	if c := e.cols(section); len(c) > 0 {
 		return len(c) - 1
@@ -212,6 +266,12 @@ func (e *StructEditorElement) sectionRows(section string) int {
 	case strings.HasPrefix(section, "returns:"):
 		if si := atoiSafe(section[8:]); si < len(e.program.Subs) {
 			return len(e.program.Subs[si].Returns)
+		}
+	case strings.HasPrefix(section, "type:"):
+		return 1 // 类型头行：名/种类/成员/备注
+	case strings.HasPrefix(section, "typefields:"):
+		if m := e.typeMembers(atoiSafe(section[11:])); m != nil {
+			return len(*m)
 		}
 	}
 	return 0
@@ -403,6 +463,10 @@ func (e *StructEditorElement) addRow(section string) {
 		if si := atoiSafe(section[8:]); si < len(e.program.Subs) {
 			e.program.Subs[si].Returns = append(e.program.Subs[si].Returns, SEVar{})
 		}
+	case strings.HasPrefix(section, "typefields:"):
+		if m := e.typeMembers(atoiSafe(section[11:])); m != nil {
+			*m = append(*m, SEVar{})
+		}
 	}
 }
 
@@ -437,6 +501,10 @@ func (e *StructEditorElement) deleteRow(section string, row int) {
 		if si := atoiSafe(section[8:]); si < len(e.program.Subs) && row >= 0 && row < len(e.program.Subs[si].Returns) {
 			e.program.Subs[si].Returns = append(e.program.Subs[si].Returns[:row], e.program.Subs[si].Returns[row+1:]...)
 		}
+	case strings.HasPrefix(section, "typefields:"):
+		if m := e.typeMembers(atoiSafe(section[11:])); m != nil && row >= 0 && row < len(*m) {
+			*m = append((*m)[:row], (*m)[row+1:]...)
+		}
 	}
 }
 
@@ -458,16 +526,7 @@ func (e *StructEditorElement) handlePointer(ev event.MouseEvent) {
 		for _, fh := range e.foldHits {
 			if cx >= fh.rect.X && cx <= fh.rect.X+fh.rect.Width &&
 				cy >= fh.rect.Y && cy <= fh.rect.Y+fh.rect.Height {
-				if fh.sub < 0 {
-					// 程序集变量折叠
-					e.globalsCollapsed = !e.globalsCollapsed
-				} else {
-					if e.collapsed == nil {
-						e.collapsed = map[int]bool{}
-					}
-					e.collapsed[fh.sub] = !e.collapsed[fh.sub]
-				}
-				repaint()
+				e.applyFold(fh)
 				return
 			}
 		}

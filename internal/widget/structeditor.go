@@ -188,10 +188,17 @@ type seCellHit struct {
 	row, col int
 }
 
-// seFoldHit 子程序折叠三角的命中区。
+// seFoldHit 折叠三角的命中区。section 非空→区段/类型折叠（globals/consts/type:i）；否则按 sub（子程序）。
 type seFoldHit struct {
-	rect types.Rect
-	sub  int
+	rect    types.Rect
+	sub     int
+	section string
+}
+
+// secRange 一个区段的标题 + 在内容里的纵向范围（供顶部「当前区段」悬浮标签按滚动定位）。
+type secRange struct {
+	label    string
+	y0, y1   float64
 }
 
 type StructEditorElement struct {
@@ -211,6 +218,9 @@ type StructEditorElement struct {
 	draggingMini bool       // 正在拖动缩略图视口框
 	collapsed  map[int]bool // 折叠（收起）的子程序
 	globalsCollapsed bool   // 程序集变量表是否收起（折叠后只剩表头，行号仍累加）
+	constsCollapsed  bool   // 常量表是否收起
+	typeCollapsed    map[int]bool // 折叠（收起字段）的类型，按类型下标
+	secRanges        []secRange   // Paint 缓存：各区段标题+纵向范围（顶部当前区段悬浮标签用）
 	selSection string
 	selRow     int
 	selCol     int
@@ -418,6 +428,28 @@ func (e *StructEditorElement) ToggleFold(i int) { e.toggleSubFold(i) }
 // ToggleGlobalsFold 折叠/展开程序集变量表（供测试/演示程序化调用）。
 func (e *StructEditorElement) ToggleGlobalsFold() { e.globalsCollapsed = !e.globalsCollapsed; repaint() }
 
+// applyFold 据折叠命中区切换对应折叠态：section="consts"→常量、"type:i"→类型字段、否则 sub<0→程序集变量 / sub>=0→子程序。
+func (e *StructEditorElement) applyFold(fh seFoldHit) {
+	switch {
+	case fh.section == "consts":
+		e.constsCollapsed = !e.constsCollapsed
+	case strings.HasPrefix(fh.section, "type:"):
+		i := atoiSafe(fh.section[5:])
+		if e.typeCollapsed == nil {
+			e.typeCollapsed = map[int]bool{}
+		}
+		e.typeCollapsed[i] = !e.typeCollapsed[i]
+	case fh.sub < 0:
+		e.globalsCollapsed = !e.globalsCollapsed
+	default:
+		if e.collapsed == nil {
+			e.collapsed = map[int]bool{}
+		}
+		e.collapsed[fh.sub] = !e.collapsed[fh.sub]
+	}
+	repaint()
+}
+
 // addSub 新建一个空子程序，并定位到其函数名格进入编辑（Ctrl+M 快捷键）。
 func (e *StructEditorElement) addSub() {
 	e.program.Subs = append(e.program.Subs, SESub{Name: "新建子程序", Returns: []SEVar{{Type: "整数型"}}})
@@ -523,14 +555,9 @@ func (e *StructEditorElement) HandleEvent(ev event.Event) bool {
 			e.minimapJump(me.Y)
 			return true
 		}
-		for _, fh := range e.foldHits { // 折叠三角（sub=-1 程序集变量表 / >=0 子程序）
+		for _, fh := range e.foldHits { // 折叠三角（区段/类型/子程序）
 			if me.X >= fh.rect.X && me.X <= fh.rect.X+fh.rect.Width && me.Y >= fh.rect.Y && me.Y <= fh.rect.Y+fh.rect.Height {
-				if fh.sub < 0 {
-					e.globalsCollapsed = !e.globalsCollapsed
-					repaint()
-				} else {
-					e.toggleSubFold(fh.sub)
-				}
+				e.applyFold(fh)
 				return true
 			}
 		}

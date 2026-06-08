@@ -45,6 +45,8 @@ func (e *StructEditorElement) sectionVarsRef(section string) *[]SEVar {
 		if si := atoiSafe(section[8:]); si < len(e.program.Subs) {
 			return &e.program.Subs[si].Returns
 		}
+	case strings.HasPrefix(section, "typefields:"):
+		return e.typeMembers(atoiSafe(section[11:]))
 	}
 	return nil
 }
