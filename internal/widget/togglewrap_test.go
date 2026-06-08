@@ -11,51 +11,57 @@ import (
 	"github.com/user/goui/internal/types"
 )
 
-// TestToggleWrapRebuilds 运行时 toggleWrap 是否真把长行折成多视觉行（对照 WordWrap 配置路径）。
-func TestToggleWrapRebuilds(t *testing.T) {
-	long := strings.Repeat("word ", 60) // ~300 字符长行
+// TestGlobalWordWrap 软自动换行是全局开关：ToggleWordWrap 翻转后，任意编辑器（无需聚焦）绘制即跟随。
+// 复刻 bug：之前做成 per-editor + 靠 focusedCodeEditor 派发，菜单覆盖层一弹出编辑器就失焦 → 切不动、对勾不亮。
+func TestGlobalWordWrap(t *testing.T) {
+	globalWordWrap = false
+	defer func() { globalWordWrap = false }()
+	if WordWrapEnabled() {
+		t.Fatal("初始全局换行应为关")
+	}
+	long := strings.Repeat("word ", 60) // 长行
 	ce := NewCodeEditor("go", "package main\n"+long+"\n").WithSize(320, 200)
-	e := ce.CreateElement().(*CodeEditorElement)
+	e := ce.CreateElement().(*CodeEditorElement) // 注意：不调用 Focus()，验证与焦点无关
 	ctx := &layout.LayoutContext{Constraints: layout.BoxConstraints{MinWidth: 320, MaxWidth: 320, MinHeight: 200, MaxHeight: 200}}
 	e.Layout(ctx)
 	sk := canvas.NewSkiaCanvas(320, 200)
 	defer sk.Release()
-	e.Paint(sk, types.Point{}) // 关闭换行下构建 wrapSegs
-	before := len(e.wrapSegs)
-	e.runCommand("toggleWrap")
-	e.Layout(ctx)
-	e.Paint(sk, types.Point{}) // 开启换行后重建 wrapSegs
-	after := len(e.wrapSegs)
-	if !e.wrap {
-		t.Fatal("toggleWrap 后 e.wrap 应为 true")
+	e.Paint(sk, types.Point{})
+	if e.wrap {
+		t.Fatal("全局关时未聚焦编辑器不应换行")
 	}
-	if after <= before {
-		t.Errorf("toggleWrap 应把长行折成多视觉行：before=%d after=%d", before, after)
+	before := len(e.wrapSegs)
+
+	ToggleWordWrap() // 全局开（不碰任何编辑器、不需要焦点）
+	if !WordWrapEnabled() {
+		t.Fatal("ToggleWordWrap 后全局换行应为开")
+	}
+	e.Layout(ctx)
+	e.Paint(sk, types.Point{}) // 编辑器绘制时经 ensureWrapSegs 跟随全局
+	if !e.wrap {
+		t.Error("全局开后，未聚焦的编辑器绘制也应跟随 e.wrap=true")
+	}
+	if len(e.wrapSegs) <= before {
+		t.Errorf("全局开后长行应折成更多视觉行：before=%d after=%d", before, len(e.wrapSegs))
 	}
 }
 
-// TestMenuTogglesAfterBlur 复刻 bug：右键菜单(覆盖层)弹出令编辑器失焦后，菜单里的命令/勾选仍要命中
-// 最近聚焦的编辑器（否则 toggleWrap 不生效、对勾永远不亮）。
-func TestMenuTogglesAfterBlur(t *testing.T) {
-	focusedCodeEditor, lastFocusedCodeEditor = nil, nil // 清全局，避免受其它测试影响
+// TestEditorCmdAfterBlur 编辑器专属命令（撤销/复制/全选…仍 per-editor）：菜单覆盖层令编辑器失焦后，
+// 经「最近聚焦」兜底仍要命中刚才那个编辑器。
+func TestEditorCmdAfterBlur(t *testing.T) {
+	focusedCodeEditor, lastFocusedCodeEditor = nil, nil
 	defer func() { focusedCodeEditor, lastFocusedCodeEditor = nil, nil }()
-	ce := NewCodeEditor("go", "package main\n").WithSize(320, 200)
+	ce := NewCodeEditor("go", "package main\nfunc x() {}\n").WithSize(320, 200)
 	e := ce.CreateElement().(*CodeEditorElement)
-	e.Focus() // 聚焦：focusedCodeEditor=e、lastFocused=e
+	e.Focus() // 聚焦
 	e.Blur()  // 失焦（模拟菜单覆盖层抢焦点）：focusedCodeEditor=nil，lastFocused 仍是 e
 	if !HasFocusedEditor() {
 		t.Error("失焦后菜单仍应认为有可操作编辑器（last 兜底）")
 	}
-	if EditorWrapEnabled() {
-		t.Error("初始换行应为关")
+	if !RunEditorCommand("selectAll") {
+		t.Fatal("失焦后编辑命令应仍命中最近聚焦编辑器")
 	}
-	if !RunEditorCommand("toggleWrap") {
-		t.Fatal("失焦后 RunEditorCommand 应仍命中最近聚焦编辑器")
-	}
-	if !e.wrap {
-		t.Error("toggleWrap 应翻转 e.wrap=true")
-	}
-	if !EditorWrapEnabled() {
-		t.Error("toggleWrap 后菜单勾选状态应为 true（经 last 兜底读到）")
+	if !e.hasSel() {
+		t.Error("selectAll 应产生选区（说明命中了最近编辑器）")
 	}
 }

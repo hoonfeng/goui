@@ -16,9 +16,23 @@ type wrapSeg struct{ line, start, end int }
 // invalidateWrap 标记需重建视觉段（内容/折叠/可见行变化后调用）。
 func (e *CodeEditorElement) invalidateWrap() { e.wrapDirty = true }
 
+// globalWordWrap 全局软自动换行开关：所有代码编辑器共享。菜单全局切换，不依赖聚焦哪个编辑器
+// （右键菜单是覆盖层，弹出即令编辑器失焦，故 per-editor 的开关在菜单里根本切不动——必须全局）。
+var globalWordWrap bool
+
+// ToggleWordWrap 翻转全局软换行——所有打开的代码编辑器下次绘制即跟随（与焦点无关）。供宿主菜单调用。
+func ToggleWordWrap() { globalWordWrap = !globalWordWrap; repaint() }
+
+// WordWrapEnabled 全局软换行是否开启。供菜单勾选状态。
+func WordWrapEnabled() bool { return globalWordWrap }
+
 // ensureWrapSegs 惰性重建视觉段：宽度变 / 标脏 / 与可见行数对不上时才重算。
 // viewW = 编辑区文本可视宽（Paint 算出的 editorViewW）。
 func (e *CodeEditorElement) ensureWrapSegs(viewW float64) {
+	if want := globalWordWrap || e.ed.WordWrap; want != e.wrap { // 跟随全局开关（或本编辑器配置常开）
+		e.wrap = want
+		e.wrapDirty = true
+	}
 	if !e.wrapDirty && e.wrapW == viewW && e.wrapSegs != nil {
 		return
 	}

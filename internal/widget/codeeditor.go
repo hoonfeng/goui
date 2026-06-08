@@ -760,11 +760,8 @@ var SuppressEditorContextMenu bool
 // HasFocusedEditor 当前(或最近)是否有代码编辑器（供宿主菜单决定剪切/复制等项是否可用）。
 func HasFocusedEditor() bool { return activeCodeEditor() != nil }
 
-// EditorWrapEnabled 返回当前(或最近)聚焦编辑器是否开启软自动换行（无则 false）。供菜单勾选状态。
-func EditorWrapEnabled() bool {
-	ed := activeCodeEditor()
-	return ed != nil && ed.wrap
-}
+// EditorWrapEnabled 软自动换行是否开启（现为全局开关，等价 WordWrapEnabled）。保留兼容旧调用。
+func EditorWrapEnabled() bool { return globalWordWrap }
 
 // runCommand 执行一条编辑命令（与右键菜单 contextItems 同源逻辑）。
 func (e *CodeEditorElement) runCommand(cmd string) {
@@ -797,12 +794,7 @@ func (e *CodeEditorElement) runCommand(cmd string) {
 	case "format":
 		e.formatGo()
 	case "toggleWrap":
-		// 切换软自动换行：翻转开关 → 视觉段失效重建、横向滚动归零、重绘。
-		e.wrap = !e.wrap
-		e.invalidateWrap()
-		e.scrollX = 0
-		e.cursorMoved = true // 让 Paint 重新把光标滚入视野（视觉行数变了）
-		repaint()
+		ToggleWordWrap() // 改全局开关：各编辑器下次绘制经 ensureWrapSegs 跟随（不依赖焦点）
 	}
 }
 
