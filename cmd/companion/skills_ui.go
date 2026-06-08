@@ -19,6 +19,7 @@ func (m *SkillEditorBody) CreateState() widget.State { return theSkillEditor }
 
 type skillEditorState struct {
 	widget.BaseState
+	level   string // 写入层级（user/project；系统级只读）
 	orig    string
 	name    string
 	mode    string
@@ -29,8 +30,9 @@ type skillEditorState struct {
 	tok     int
 }
 
-// openSkillEditor 打开「添加/编辑 Skill」对话框；保存写回 SKILL.md 后回调刷新。
-func openSkillEditor(s skillEntry, onSaved func()) {
+// openSkillEditor 打开「添加/编辑 Skill」对话框；保存写回该 level 的 SKILL.md 后回调刷新。
+func openSkillEditor(level string, s skillEntry, onSaved func()) {
+	theSkillEditor.level = level
 	theSkillEditor.orig = s.Name
 	theSkillEditor.name = s.Name
 	theSkillEditor.mode = s.Mode
@@ -56,9 +58,9 @@ func openSkillEditor(s skillEntry, onSaved func()) {
 				return
 			}
 			if theSkillEditor.orig != "" && theSkillEditor.orig != name { // 改名→删旧
-				_ = deleteSkill(theSkillEditor.orig)
+				_ = deleteSkill(theSkillEditor.level, theSkillEditor.orig)
 			}
-			if err := writeSkill(skillEntry{Name: name, Mode: theSkillEditor.mode, Description: theSkillEditor.desc,
+			if err := writeSkill(theSkillEditor.level, skillEntry{Name: name, Mode: theSkillEditor.mode, Description: theSkillEditor.desc,
 				Globs: theSkillEditor.globs, Tools: theSkillEditor.tools, Content: theSkillEditor.content}); err != nil {
 				widget.MessageError("保存失败：" + err.Error())
 				return

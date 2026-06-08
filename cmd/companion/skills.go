@@ -1,5 +1,5 @@
-// Skills 子系统：每个 skill = .pair/skills/<名>/SKILL.md（带 frontmatter）。
-// 读取/解析/写入/删除，供 Skills 设置 tab 管理。实际激活注入 agent 后续接入。
+// Skills 子系统（三级：系统内置只读 / 用户全局 / 项目 .pair）。
+// 每个 skill = <级目录>/<名>/SKILL.md（带 frontmatter）。读取/解析/写入/删除 + 启用态，供 Skills 设置 tab 管理。
 
 //go:build windows
 
@@ -23,11 +23,29 @@ type skillEntry struct {
 	Content     string
 }
 
-func skillsRoot() string { return filepath.Join(currentRoot(), ".pair", "skills") }
+// Skills 三级复用通用层级常量（system/user/project，定义在 mcp.go）。
+var skillLevels = []struct{ id, name string }{
+	{mcpLevelSystem, "系统级"}, {mcpLevelUser, "用户级"}, {mcpLevelProject, "项目级"},
+}
 
-// readSkills 读 .pair/skills/*/SKILL.md → 按名排序的 skill 列表（无目录→nil）。
-func readSkills() []skillEntry {
-	ents, err := os.ReadDir(skillsRoot())
+// skillsRootFor 某级 skills 目录（系统级内置无目录→""）。
+func skillsRootFor(level string) string {
+	switch level {
+	case mcpLevelUser:
+		return filepath.Join(configDir(), "skills")
+	case mcpLevelProject:
+		return filepath.Join(currentRoot(), ".pair", "skills")
+	}
+	return ""
+}
+
+// readSkillsLevel 读某级的 skills（系统级内置=暂无；用户/项目=各自目录）。
+func readSkillsLevel(level string) []skillEntry {
+	root := skillsRootFor(level)
+	if root == "" {
+		return nil // 系统级内置 skill 暂无（后续接入）
+	}
+	ents, err := os.ReadDir(root)
 	if err != nil {
 		return nil
 	}
@@ -36,7 +54,7 @@ func readSkills() []skillEntry {
 		if !e.IsDir() {
 			continue
 		}
-		md, err := os.ReadFile(filepath.Join(skillsRoot(), e.Name(), "SKILL.md"))
+		md, err := os.ReadFile(filepath.Join(root, e.Name(), "SKILL.md"))
 		if err != nil {
 			continue
 		}
@@ -84,12 +102,16 @@ func parseSkillMD(md string) skillEntry {
 	return s
 }
 
-// writeSkill 写 .pair/skills/<名>/SKILL.md（带 frontmatter）。
-func writeSkill(s skillEntry) error {
+// writeSkill 写某级 <名>/SKILL.md（带 frontmatter）。系统级只读→忽略。
+func writeSkill(level string, s skillEntry) error {
 	if strings.TrimSpace(s.Name) == "" {
 		return fmt.Errorf("名称必填")
 	}
-	dir := filepath.Join(skillsRoot(), s.Name)
+	root := skillsRootFor(level)
+	if root == "" {
+		return nil
+	}
+	dir := filepath.Join(root, s.Name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -113,8 +135,31 @@ func writeSkill(s skillEntry) error {
 	return os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(b.String()), 0o644)
 }
 
-// deleteSkill 删除整个 skill 目录。
-func deleteSkill(name string) error { return os.RemoveAll(filepath.Join(skillsRoot(), name)) }
+// deleteSkill 删除某级的 skill 目录。系统级只读→忽略。
+func deleteSkill(level, name string) error {
+	root := skillsRootFor(level)
+	if root == "" {
+		return nil
+	}
+	return os.RemoveAll(filepath.Join(root, name))
+}
+
+// skillEnabled 某 skill 是否启用：override 优先，默认全开。
+func skillEnabled(level, name string) bool {
+	if v, ok := theSettings.SkillEnabledOverrides[level+"::"+name]; ok {
+		return v
+	}
+	return true
+}
+
+// setSkillEnabled 改 skill 启用态（存 override map）。
+func setSkillEnabled(level, name string, on bool) {
+	if theSettings.SkillEnabledOverrides == nil {
+		theSettings.SkillEnabledOverrides = map[string]bool{}
+	}
+	theSettings.SkillEnabledOverrides[level+"::"+name] = on
+	saveSettings()
+}
 
 // skillModeLabel 激活模式中文名。
 func skillModeLabel(m string) string {
@@ -129,22 +174,29 @@ func skillModeLabel(m string) string {
 	return m
 }
 
-// skillsPrompt 把可用技能拼进 agent 系统提示：always→全文（始终遵循）、auto→名称+描述（按相关性自取）、manual→跳过。
+// skillsPrompt 合并三级（项目>用户>系统同名去重、按启用过滤）拼进 agent 系统提示：
+// always→全文（始终遵循）、auto→名称+描述（按需）、manual→跳过。
 func skillsPrompt() string {
-	skills := readSkills()
 	var body strings.Builder
-	for _, s := range skills {
-		switch s.Mode {
-		case "manual":
-			continue // 手动激活，不自动注入
-		case "always":
-			body.WriteString("\n\n## 技能：" + s.Name + "（始终遵循）\n")
-			if s.Description != "" {
-				body.WriteString(s.Description + "\n")
+	seen := map[string]bool{}
+	for _, lv := range []string{mcpLevelProject, mcpLevelUser, mcpLevelSystem} {
+		for _, s := range readSkillsLevel(lv) {
+			if seen[s.Name] || !skillEnabled(lv, s.Name) {
+				continue
 			}
-			body.WriteString(strings.TrimSpace(s.Content))
-		default: // auto / 空
-			body.WriteString("\n- 「" + s.Name + "」：" + s.Description)
+			seen[s.Name] = true
+			switch s.Mode {
+			case "manual":
+				continue
+			case "always":
+				body.WriteString("\n\n## 技能：" + s.Name + "（始终遵循）\n")
+				if s.Description != "" {
+					body.WriteString(s.Description + "\n")
+				}
+				body.WriteString(strings.TrimSpace(s.Content))
+			default:
+				body.WriteString("\n- 「" + s.Name + "」：" + s.Description)
+			}
 		}
 	}
 	if body.Len() == 0 {

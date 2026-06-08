@@ -34,18 +34,16 @@ func TestPhilosophyPrompt(t *testing.T) {
 func TestSkillsPrompt(t *testing.T) {
 	savedWS := workspaceFolders
 	defer func() { workspaceFolders = savedWS }()
-	workspaceFolders = []string{t.TempDir()} // 隔离工作区根 → skillsRoot 落在 temp/.pair/skills（t.TempDir 自动清理）
+	workspaceFolders = []string{t.TempDir()} // 隔离项目级 → temp/.pair/skills（t.TempDir 自动清理）
+	// 注：用户级(configDir/skills)不可在测试里隔离，故只断言本测试写入的项目级技能的注入逻辑，不断言整体为空。
 
-	if skillsPrompt() != "" {
-		t.Fatal("无技能时应为空")
-	}
-	if err := writeSkill(skillEntry{Name: "always-rule", Mode: "always", Description: "始终规范", Content: "务必遵守 X"}); err != nil {
+	if err := writeSkill(mcpLevelProject, skillEntry{Name: "always-rule", Mode: "always", Description: "始终规范", Content: "务必遵守 X"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeSkill(skillEntry{Name: "auto-helper", Mode: "auto", Description: "按需帮手"}); err != nil {
+	if err := writeSkill(mcpLevelProject, skillEntry{Name: "auto-helper", Mode: "auto", Description: "按需帮手"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeSkill(skillEntry{Name: "manual-only", Mode: "manual", Description: "手动"}); err != nil {
+	if err := writeSkill(mcpLevelProject, skillEntry{Name: "manual-only", Mode: "manual", Description: "手动"}); err != nil {
 		t.Fatal(err)
 	}
 	p := skillsPrompt()

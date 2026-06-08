@@ -790,54 +790,71 @@ func orStr(s, def string) string {
 	return s
 }
 
-// skillsTab Skills 管理（复刻参考核心：列表 + 增删改 + 编辑弹窗）。读 .pair/skills/*/SKILL.md。
+// skillsTab Skills 三级管理（系统内置只读 / 用户全局 / 项目 .pair）。
 func (b *settingsBodyState) skillsTab() widget.Widget {
-	skills := readSkills()
 	kids := []widget.Widget{
-		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"},
-			label("Skills 管理", ghTextMuted, 11),
-			expand(widget.Div(widget.Style{})),
-			label(itoa(len(skills))+" 个", ghTextMuted, 10),
-		),
-		widget.Div(widget.Style{Height: 4}),
-		label("SKILL.md 放入 .pair/skills/<名>/ 即可加载；激活模式 自动/手动/始终。", ghTextMuted, 10),
-		widget.Div(widget.Style{Height: 8}),
+		label("SKILL.md 放入对应层级 skills/<名>/ 即可加载；激活模式 自动/手动/始终。", ghTextMuted, 10),
 	}
-	if len(skills) == 0 {
-		kids = append(kids, label("（暂无 Skill——点下方「添加 Skill」）", ghTextMuted, 11))
-	}
-	for _, s := range skills {
-		kids = append(kids, widget.Div(widget.Style{Height: 6}), b.skillCard(s))
+	for _, lv := range skillLevels {
+		kids = append(kids, b.skillLevelSection(lv.id, lv.name))
 	}
 	kids = append(kids,
-		widget.Div(widget.Style{Height: 12}),
-		&widget.Button{
-			SingleChildWidget: widget.SingleChildWidget{Child: label("+ 添加 Skill", cWhite, 12)},
-			OnClick:           func() { openSkillEditor(skillEntry{}, b.SetState) },
-			Color:             *ghAccentEmph, MinHeight: 30, Padding: types.EdgeInsetsLTRB(12, 0, 12, 0),
-		},
-		widget.Div(widget.Style{Height: 6}),
-		label("注：Skill 实际激活注入 agent 与 系统/用户级管理 后续接入。", ghTextMuted, 10),
+		widget.Div(widget.Style{Height: 8}),
+		label("三级合并注入 agent（项目>用户>系统同名去重，按启用过滤）；系统级内置只读（暂无，后续接入）。", ghTextMuted, 10),
 	)
 	return widget.Div(widget.Style{FlexDirection: "column", AlignItems: "stretch"}, kids)
 }
 
-// skillCard 单个 Skill 卡片：名称 + 激活模式 + 描述 + 编辑/删除。
-func (b *settingsBodyState) skillCard(s skillEntry) widget.Widget {
-	ss := s
-	return widget.Div(
-		widget.Style{FlexDirection: "column", AlignItems: "stretch", BackgroundColor: ghBgPrimary,
-			BorderColor: ghBorder, BorderWidth: 1, BorderRadius: 5, Padding: types.EdgeInsets(8)},
-		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"},
-			expand(label(ss.Name, ghText, 12)),
-			label(skillModeLabel(ss.Mode), ghTextMuted, 10),
+// skillLevelSection 一个层级分区（系统只读 / 用户·项目可增删改）。
+func (b *settingsBodyState) skillLevelSection(level, name string) widget.Widget {
+	skills := readSkillsLevel(level)
+	editable := level != mcpLevelSystem
+	key := "skill:" + level
+	var add widget.Widget
+	if editable {
+		lv := level
+		add = &widget.Button{
+			SingleChildWidget: widget.SingleChildWidget{Child: label("+ 添加", cWhite, 11)},
+			OnClick:           func() { openSkillEditor(lv, skillEntry{}, b.SetState) },
+			Color:             *ghAccentEmph, MinHeight: 22, Padding: types.EdgeInsetsLTRB(8, 0, 8, 0),
+		}
+	}
+	out := []widget.Widget{widget.Div(widget.Style{Height: 8}), b.sectionHead(key, name, len(skills), add)}
+	if !b.secCollapsed[key] {
+		if len(skills) == 0 {
+			out = append(out, widget.Div(widget.Style{Padding: types.EdgeInsetsLTRB(20, 4, 0, 0)}, label("（无）", ghTextMuted, 10)))
+		}
+		for _, s := range skills {
+			out = append(out, widget.Div(widget.Style{Height: 4}), b.skillCard(level, s, editable))
+		}
+	}
+	return widget.Div(widget.Style{FlexDirection: "column", AlignItems: "stretch"}, out)
+}
+
+// skillCard Skill 卡片：启用开关 + 名称 + 激活模式 + 描述 +（可编辑级）编辑/删除。
+func (b *settingsBodyState) skillCard(level string, s skillEntry, editable bool) widget.Widget {
+	ss, lv := s, level
+	on := skillEnabled(level, s.Name)
+	row := []widget.Widget{
+		enablePill(on, func() { setSkillEnabled(lv, ss.Name, !on); b.SetState() }),
+		widget.Div(widget.Style{Width: 8}),
+		expand(label(ss.Name, ghText, 12)),
+		label(skillModeLabel(ss.Mode), ghTextMuted, 10),
+	}
+	if editable {
+		row = append(row,
 			widget.Div(widget.Style{Width: 8}),
 			&widget.Button{SingleChildWidget: widget.SingleChildWidget{Child: label("编辑", ghText, 11)},
-				OnClick: func() { openSkillEditor(ss, b.SetState) }, Color: *ghBgTertiary, MinHeight: 22, Padding: types.EdgeInsetsLTRB(8, 0, 8, 0)},
+				OnClick: func() { openSkillEditor(lv, ss, b.SetState) }, Color: *ghBgTertiary, MinHeight: 22, Padding: types.EdgeInsetsLTRB(8, 0, 8, 0)},
 			widget.Div(widget.Style{Width: 6}),
 			&widget.Button{SingleChildWidget: widget.SingleChildWidget{Child: label("删除", types.ColorFromRGB(240, 120, 110), 11)},
-				OnClick: func() { _ = deleteSkill(ss.Name); b.SetState() }, Color: *ghBgTertiary, MinHeight: 22, Padding: types.EdgeInsetsLTRB(8, 0, 8, 0)},
-		),
+				OnClick: func() { _ = deleteSkill(lv, ss.Name); b.SetState() }, Color: *ghBgTertiary, MinHeight: 22, Padding: types.EdgeInsetsLTRB(8, 0, 8, 0)},
+		)
+	}
+	return widget.Div(
+		widget.Style{FlexDirection: "column", AlignItems: "stretch", BackgroundColor: ghBgPrimary,
+			BorderColor: ghBorder, BorderWidth: 1, BorderRadius: 5, Padding: types.EdgeInsets(8), Margin: types.EdgeInsetsLTRB(16, 0, 0, 0)},
+		widget.Div(widget.Style{FlexDirection: "row", AlignItems: "center"}, row),
 		widget.Div(widget.Style{Height: 4}),
 		label(orStr(ss.Description, "（无描述）"), ghTextMuted, 10),
 	)
