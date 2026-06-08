@@ -296,8 +296,16 @@ func (e *ContainerElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult
 		if c.Height > 0 {
 			h = c.Height // 固定高度生效（之前被忽略，导致 box 矮、文字偏上、水印铺不满）
 		}
+		// 被父强制更高/更宽时（AlignItems:stretch 或定高容器经 MinH/MinW 撑大）按强制尺寸，
+		// 否则容器虽被撑高、却仍按内容算高 → 居中失效、子贴顶下方留空（如编辑器标签内容贴顶）。
+		if h < ctx.Constraints.MinHeight {
+			h = ctx.Constraints.MinHeight
+		}
+		if w < ctx.Constraints.MinWidth {
+			w = ctx.Constraints.MinWidth
+		}
 		e.size = types.Size{Width: w, Height: h}
-		// 子在可用区内垂直居中（固定 Height 大于内容时），水平保持左对齐
+		// 子在可用区内垂直居中（容器高大于内容时），水平保持左对齐
 		cy := c.Padding.Top
 		if availH := h - c.Padding.Top - c.Padding.Bottom; availH > childH {
 			cy = c.Padding.Top + (availH-childH)/2
