@@ -28,22 +28,29 @@ var skillLevels = []struct{ id, name string }{
 	{mcpLevelSystem, "系统级"}, {mcpLevelUser, "用户级"}, {mcpLevelProject, "项目级"},
 }
 
-// skillsRootFor 某级 skills 目录（系统级内置无目录→""）。
+// skillsRootFor 某级 skills 目录：
+// 系统级=安装目录 config/skills（shipped，放此即系统级，UI 只读、文件管理）；
+// 用户级=用户主目录 ~/.pair/skills（跨项目全局）；项目级=工作区 .pair/skills。
 func skillsRootFor(level string) string {
 	switch level {
-	case mcpLevelUser:
+	case mcpLevelSystem:
 		return filepath.Join(configDir(), "skills")
+	case mcpLevelUser:
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, ".pair", "skills")
+		}
+		return ""
 	case mcpLevelProject:
 		return filepath.Join(currentRoot(), ".pair", "skills")
 	}
 	return ""
 }
 
-// readSkillsLevel 读某级的 skills（系统级内置=暂无；用户/项目=各自目录）。
+// readSkillsLevel 读某级 skills 目录（目录缺失→nil）。
 func readSkillsLevel(level string) []skillEntry {
 	root := skillsRootFor(level)
 	if root == "" {
-		return nil // 系统级内置 skill 暂无（后续接入）
+		return nil
 	}
 	ents, err := os.ReadDir(root)
 	if err != nil {
