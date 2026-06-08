@@ -13,7 +13,8 @@ import (
 type TerminalView struct {
 	StatelessWidget
 	OnPaint func(cvs canvas.Canvas, x, y, w, h float64)
-	OnKey   func(ev *event.KeyEvent) // KeyDown 与 KeyChar 都回调；上层据 ev.Type()/Char/Key 区分
+	OnKey   func(ev *event.KeyEvent)  // KeyDown 与 KeyChar 都回调；上层据 ev.Type()/Char/Key 区分
+	OnWheel func(deltaY float64)      // 滚轮：deltaY>0 上滚（看历史），<0 下滚
 }
 
 func (w *TerminalView) CreateElement() Element {
@@ -63,6 +64,11 @@ func (e *terminalViewElement) HandleEvent(ev event.Event) bool {
 	case event.TypeKeyDown, event.TypeKeyChar:
 		if ke, ok := ev.(*event.KeyEvent); ok && e.w.OnKey != nil {
 			e.w.OnKey(ke)
+			return true
+		}
+	case event.TypeMouseWheel:
+		if me, ok := ev.(*event.MouseEvent); ok && e.w.OnWheel != nil {
+			e.w.OnWheel(me.DeltaY)
 			return true
 		}
 	}

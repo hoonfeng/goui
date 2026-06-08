@@ -184,6 +184,7 @@ type terminalState struct {
 	cwd        string                // 初始/cd 目录
 	cols, rows int                   // 当前终端列/行
 	idleFrames int                   // 连续无输出帧数
+	scrollOff  int                   // 回看偏移（0=贴底/实时，>0=向上看历史；仅 UI 线程）
 	pump       *animation.Controller // 帧泵
 }
 
@@ -212,9 +213,10 @@ func (t *terminalState) Build(ctx widget.BuildContext) widget.Widget {
 			}
 			t.ensurePTY(cols, rows)
 			t.resizeTo(cols, rows)
-			paintVTGrid(cvs, x, y, w, h, t.vt, font)
+			paintVTGrid(cvs, x, y, w, h, t.vt, font, t.scrollOff)
 		},
-		OnKey: t.handleKey,
+		OnKey:   t.handleKey,
+		OnWheel: t.handleWheel,
 	}
 	return &widget.ContextArea{ // 右键：终端菜单（复制全部/粘贴/添加到对话/清屏/切 shell）
 		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
@@ -285,7 +287,14 @@ func (t *terminalState) drain() {
 	t.mu.Unlock()
 
 	if len(data) > 0 {
+		before := t.vt.ScrollbackLen()
 		t.vt.Write(data) // UI 线程更新网格
+		if t.scrollOff > 0 { // 用户在看历史：随新增滚回行上移，保持视图内容稳定（不被新输出顶走）
+			t.scrollOff += t.vt.ScrollbackLen() - before
+			if mx := t.vt.ScrollbackLen(); t.scrollOff > mx {
+				t.scrollOff = mx
+			}
+		}
 		if widget.OnNeedsRepaint != nil {
 			widget.OnNeedsRepaint() // 仅重绘（网格尺寸未变，无需 relayout）
 		}
@@ -295,12 +304,30 @@ func (t *terminalState) drain() {
 	}
 }
 
+// handleWheel 滚轮回看：上滚（deltaY>0）看历史、下滚回贴底。每格滚 3 行。
+func (t *terminalState) handleWheel(deltaY float64) {
+	off := t.scrollOff + int(deltaY)*3
+	if mx := t.vt.ScrollbackLen(); off > mx {
+		off = mx
+	}
+	if off < 0 {
+		off = 0
+	}
+	if off != t.scrollOff {
+		t.scrollOff = off
+		if widget.OnNeedsRepaint != nil {
+			widget.OnNeedsRepaint()
+		}
+	}
+}
+
 // handleKey 按键 → VT 字节 → 写 PTY（起泵接住 shell 响应）。
 func (t *terminalState) handleKey(ev *event.KeyEvent) {
 	data := keyToVT(ev)
 	if len(data) == 0 {
 		return
 	}
+	t.scrollOff = 0 // 输入 → 回到贴底/实时
 	t.mu.Lock()
 	sess := t.sess
 	t.mu.Unlock()

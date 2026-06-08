@@ -84,6 +84,25 @@ func Test256Color(t *testing.T) {
 	}
 }
 
+func TestOSCTitleIgnored(t *testing.T) {
+	vt := New(20, 2)
+	vt.Write([]byte("\x1b]0;C:\\cmd.exe\x07PROMPT>")) // OSC 设窗口标题 + 提示符
+	if got := rowText(vt, 0); got != "PROMPT>" {
+		t.Errorf("row0=%q 期望 PROMPT>（OSC 标题该被吃掉、不漏字不占列）", got)
+	}
+	if cx, _ := vt.Cursor(); cx != 7 {
+		t.Errorf("光标 cx=%d 期望 7（OSC 不前进光标）", cx)
+	}
+}
+
+func TestCharsetDesignationIgnored(t *testing.T) {
+	vt := New(20, 2)
+	vt.Write([]byte("\x1b(BHello")) // ESC ( B 选 ASCII 字符集 + Hello
+	if got := rowText(vt, 0); got != "Hello" {
+		t.Errorf("row0=%q 期望 Hello（字符集设计该被吃掉，不漏 B）", got)
+	}
+}
+
 func TestWideChar(t *testing.T) {
 	vt := New(10, 2)
 	vt.Write([]byte("中A")) // 中=全角(2 格)，A=半角(1 格)

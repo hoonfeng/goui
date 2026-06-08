@@ -44,9 +44,12 @@ func blankRow(cols int) []Cell {
 type parserState int
 
 const (
-	stateGround parserState = iota
-	stateEsc
-	stateCSI
+	stateGround    parserState = iota
+	stateEsc                   // 收到 ESC，等后续
+	stateCSI                   // ESC [ … 控制序列
+	stateString                // OSC/DCS/SOS/PM/APC 字符串型（如设标题），吃到 BEL 或 ST
+	stateStringEsc             // 字符串中遇 ESC，等 ST 的 '\'
+	stateEscInter              // ESC 中间字节（字符集设计 ( ) * +），再吃一个最终字符
 )
 
 // Terminal 屏幕模型 + VT 解析状态机。非并发安全（调用方在单线程喂字节、读网格）。
@@ -103,6 +106,24 @@ func (t *Terminal) Cell(row, col int) Cell {
 // Scrollback 返回滚出顶部的历史行（供上层做回看渲染）。
 func (t *Terminal) Scrollback() [][]Cell { return t.scroll }
 
+// ScrollbackLen 滚回历史行数。
+func (t *Terminal) ScrollbackLen() int { return len(t.scroll) }
+
+// RowAt 取「组合缓冲」（滚回历史在前、当前屏在后）的第 i 行（0 起）。越界返回 nil。
+// 用于回看渲染：i ∈ [0, ScrollbackLen()+rows)。
+func (t *Terminal) RowAt(i int) []Cell {
+	if i < 0 {
+		return nil
+	}
+	if i < len(t.scroll) {
+		return t.scroll[i]
+	}
+	if gi := i - len(t.scroll); gi < t.rows {
+		return t.grid[gi]
+	}
+	return nil
+}
+
 // Write 喂 PTY 输出字节，推进解析状态机更新网格。
 func (t *Terminal) Write(p []byte) (int, error) {
 	for _, r := range string(p) { // 按 rune（UTF-8 解码）；控制字节都是 ASCII 单 rune
@@ -116,16 +137,37 @@ func (t *Terminal) feed(r rune) {
 	case stateGround:
 		t.feedGround(r)
 	case stateEsc:
-		if r == '[' {
-			t.state = stateCSI
-			t.params = t.params[:0]
-			t.curParam = 0
-			t.priv = false
-		} else {
-			t.state = stateGround // 其它转义（如 ESC ] OSC、ESC ( 字符集）暂忽略
-		}
+		t.feedEsc(r)
 	case stateCSI:
 		t.feedCSI(r)
+	case stateString: // OSC/DCS 等：吃内容直到 BEL 或 ST（ESC \）
+		switch r {
+		case 0x07:
+			t.state = stateGround
+		case 0x1b:
+			t.state = stateStringEsc
+		}
+	case stateStringEsc:
+		t.state = stateGround // ESC \ = ST，串结束（任何字符都收尾）
+	case stateEscInter:
+		t.state = stateGround // 字符集设计的最终字符，吃掉
+	}
+}
+
+// feedEsc 处理 ESC 之后的字节，分派到 CSI / 字符串(OSC/DCS) / 字符集 / 单字符忽略。
+func (t *Terminal) feedEsc(r rune) {
+	switch r {
+	case '[':
+		t.state = stateCSI
+		t.params = t.params[:0]
+		t.curParam = 0
+		t.priv = false
+	case ']', 'P', 'X', '^', '_': // OSC(设标题等) / DCS / SOS / PM / APC：字符串型
+		t.state = stateString
+	case '(', ')', '*', '+', '-', '.', '/': // 字符集设计：再吃一个最终字符
+		t.state = stateEscInter
+	default:
+		t.state = stateGround // ESC = / > / \ / 7 / 8 / c 等，单字符，忽略
 	}
 }
 

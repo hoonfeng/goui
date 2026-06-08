@@ -96,17 +96,25 @@ func termGridFontNow() canvas.Font {
 }
 
 // paintVTGrid 在画布上画 vterm 网格：等宽逐格 背景块 + 字符（SGR 配色/粗体）+ 块状半透明光标。
-func paintVTGrid(cvs canvas.Canvas, x, y, w, h float64, vt *vterm.Terminal, font canvas.Font) {
+// scrollOff 为回看偏移（0=贴底/实时，>0=向上看历史）：渲染「组合缓冲」(滚回历史+当前屏)的对应窗口。
+func paintVTGrid(cvs canvas.Canvas, x, y, w, h float64, vt *vterm.Terminal, font canvas.Font, scrollOff int) {
 	cw, ch := termCellSize(cvs, font)
 	cols, rows := vt.Size()
-	for r := 0; r < rows; r++ {
-		cy := y + float64(r)*ch
+	start := vt.ScrollbackLen() - scrollOff // 视窗顶行在组合缓冲中的下标
+	for vr := 0; vr < rows; vr++ {
+		cy := y + float64(vr)*ch
 		if cy > y+h {
 			break
 		}
+		row := vt.RowAt(start + vr) // 可能为 nil（越界）→ 该行空
 		for c := 0; c < cols; c++ {
-			cell := vt.Cell(r, c)
 			cx := x + float64(c)*cw
+			var cell vterm.Cell
+			if c < len(row) {
+				cell = row[c]
+			} else {
+				cell = vterm.Cell{Ch: ' ', FG: vterm.DefaultColor(), BG: vterm.DefaultColor()}
+			}
 			if !cell.BG.Default { // 背景块
 				bp := paint.DefaultPaint()
 				bp.Color = vtColor(cell.BG, *cEditor)
@@ -123,15 +131,17 @@ func paintVTGrid(cvs canvas.Canvas, x, y, w, h float64, vt *vterm.Terminal, font
 			}
 		}
 	}
-	ccx, ccy := vt.Cursor() // 块状半透明光标
-	cur := paint.DefaultPaint()
-	cur.Color = types.ColorFromRGBA(cText.R, cText.G, cText.B, 150)
-	cvs.DrawRect(x+float64(ccx)*cw, y+float64(ccy)*ch, cw, ch, cur)
+	if scrollOff == 0 { // 仅贴底/实时时画光标
+		ccx, ccy := vt.Cursor()
+		cur := paint.DefaultPaint()
+		cur.Color = types.ColorFromRGBA(cText.R, cText.G, cText.B, 150)
+		cvs.DrawRect(x+float64(ccx)*cw, y+float64(ccy)*ch, cw, ch, cur)
+	}
 }
 
 // termGridView 把 vterm 网格画成自绘 widget（铺满父约束；只显示不抓输入，预览/无输入场景用）。
 func termGridView(vt *vterm.Terminal) widget.Widget {
 	return &widget.PaintLayer{OnPaint: func(cvs canvas.Canvas, x, y, w, h float64) {
-		paintVTGrid(cvs, x, y, w, h, vt, termGridFontNow())
+		paintVTGrid(cvs, x, y, w, h, vt, termGridFontNow(), 0)
 	}}
 }
