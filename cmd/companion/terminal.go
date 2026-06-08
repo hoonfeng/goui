@@ -1,40 +1,30 @@
-// 终端面板 —— 中列底部：命令运行器（cmd /C 执行 + stdout/stderr 实时流式回显）。
-// 输入命令回车执行；cd / cls 内建；输出强制 UTF-8（chcp 65001）。真 PTY（vim 等交互式
-// 程序的 VT 全解析）待办，对 agent「跑构建/测试看输出」的场景，命令运行器已够用。
-//
-// 线程模型（复刻 CodeEditor LSP 同款，见 AGENTS.md）：exec 读协程把输出写进 pending（加锁），
-// 一个 Repeat 动画控制器作「帧泵」——命令运行期间 animation.HasActive() 为真使主循环 60fps
-// 出帧，每帧在 UI 线程 drain 把 pending 搬进 lines + 滚到底 + 重绘；命令结束且缓冲清空即停泵，
-// 主循环回到 WaitMessage 阻塞省电。animation.Tick 对活跃集合取快照迭代，故 OnUpdate 里 SetState
-// （会增减 Input 光标闪烁控制器）是安全的。
+// 终端面板 —— 真终端：ConPTY 伪终端(pty) + VT/ANSI 屏幕模型(vterm) + 可聚焦渲染/输入(TerminalView)。
+// 多标签：每标签一个持久 PTY 会话喂 vterm；TerminalView 抓原始按键转 VT 写 PTY、自绘 vterm 网格。
+// 线程模型：读协程读 PTY 原始字节进 pending(加锁)；帧泵每帧在 UI 线程把 pending 喂进 vterm(单线程更新网格)
+// + 重绘；久无输出停泵省电。键盘/resize/cd 都在 UI 线程。
 //
 //go:build windows
 
 package main
 
 import (
-	"bufio"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/user/goui/cmd/companion/pty"
+	"github.com/user/goui/cmd/companion/vterm"
 	"github.com/user/goui/internal/animation"
 	"github.com/user/goui/internal/canvas"
+	"github.com/user/goui/internal/event"
 	"github.com/user/goui/internal/types"
 	"github.com/user/goui/internal/widget"
 )
 
-const maxTermLines = 5000 // 输出行上限，超出丢弃最旧（防长跑命令吃内存）
-
-// 终端等宽字体 + 配色（编辑器深色主题内的终端）。
-var (
-	termFont = canvas.Font{Family: "Consolas", Size: 13}
-	cTermErr = types.ColorFromRGB(240, 105, 98) // stderr 红
-)
+const termIdleFrames = 180 // 连续 ~3s 无输出 → 停泵省电；窗口放宽以接住 ping/慢构建等稀疏输出。
+// 注：停泵后纯后台输出（无按键）会延到下次交互才刷——根治需读协程跨线程唤醒 UI 循环(PostMessage)，列为后续。
 
 // 多实例终端：theTermMgr 管多个标签，theTerminal 始终指向「当前活动标签」
 // （外部 openDir/copyAll/clearScreen/shell 等照旧用 theTerminal，自动作用于活动标签）。
@@ -50,7 +40,7 @@ func newTerminalState() *terminalState {
 	if err != nil {
 		cwd = "."
 	}
-	return &terminalState{cwd: cwd, shell: "cmd"}
+	return &terminalState{cwd: cwd, shell: "cmd", vt: vterm.New(80, 24), cols: 80, rows: 24}
 }
 
 // ─── 多标签管理器 ───────────────────────────────────────────────
@@ -88,12 +78,12 @@ func (m *termManager) switchTab(i int) {
 	m.SetState()
 }
 
-// closeTab 关闭第 i 个标签（至少留一个；正在跑的命令其读协程自行收尾）。
+// closeTab 关闭第 i 个标签（至少留一个），杀掉它的 PTY。
 func (m *termManager) closeTab(i int) {
 	if i < 0 || i >= len(m.tabs) || len(m.tabs) == 1 {
-		return // 仅剩一个不关闭
+		return
 	}
-	m.tabs[i].stopPump()
+	m.tabs[i].killPTY()
 	m.tabs = append(m.tabs[:i], m.tabs[i+1:]...)
 	if m.active >= len(m.tabs) {
 		m.active = len(m.tabs) - 1
@@ -128,7 +118,7 @@ func (m *termManager) tabBar() widget.Widget {
 			)},
 			OnClick: func() { m.switchTab(idx) },
 		})
-		if len(m.tabs) > 1 { // 关闭× 作为相邻独立小按钮
+		if len(m.tabs) > 1 {
 			kids = append(kids, &widget.Clickable{
 				SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
 					widget.Style{BackgroundColor: bg, Padding: types.EdgeInsetsLTRB(0, 5, 8, 5)},
@@ -138,7 +128,7 @@ func (m *termManager) tabBar() widget.Widget {
 			})
 		}
 	}
-	kids = append(kids, &widget.Clickable{ // 新建标签
+	kids = append(kids, &widget.Clickable{
 		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
 			widget.Style{Padding: types.EdgeInsetsLTRB(8, 5, 8, 5)},
 			widget.Lucide("plus", widget.IconSize(13), widget.IconColor(*cStatus)),
@@ -152,7 +142,7 @@ func (m *termManager) tabBar() widget.Widget {
 }
 
 // termInstance 把某个终端标签作为子 StatefulWidget 挂载（活动标签才挂载渲染；
-// 切换=挂另一标签；后台标签数据仍在其 *terminalState 里累积，切回即见）。
+// 切换=挂另一标签；后台标签的 vt/读协程仍在其 *terminalState 里活着，切回即见）。
 type termInstance struct {
 	widget.StatefulWidget
 	st *terminalState
@@ -172,41 +162,29 @@ func shellLabel(shell string) string {
 	}
 }
 
-// shellCmd 据 shell 类型构造命令（cmd 强制 UTF-8；powershell -NoProfile；gitbash 走 bash -c）。
-func shellCmd(shell, line, dir string) *exec.Cmd {
-	var c *exec.Cmd
-	switch shell {
-	case "powershell":
-		c = exec.Command("powershell", "-NoProfile", "-Command", line)
-	case "gitbash":
-		c = exec.Command("bash", "-c", line) // 需 git bash 的 bash 在 PATH
-	default:
-		c = exec.Command("cmd", "/C", "chcp 65001 >nul & "+line)
+// ptyShellFor 把内部 shell 码（cmd/powershell/gitbash）映射到探测到的 pty.Shell。
+func ptyShellFor(code string) pty.Shell {
+	name := map[string]string{"cmd": "CMD", "powershell": "PowerShell", "gitbash": "Git Bash"}[code]
+	if name == "" {
+		return pty.DefaultShell()
 	}
-	c.Dir = dir
-	return c
+	return pty.ShellByName(name)
 }
 
-// termRow 一行输出 + 颜色（命令回显蓝 / stdout 常规 / stderr 红 / 提示灰）。
-type termRow struct {
-	text string
-	col  types.Color
-}
-
+// ─── 单个终端标签（PTY + vterm）───────────────────────────────────
 type terminalState struct {
 	widget.BaseState
-	mu        sync.Mutex            // 护 lines / pending / running（跨读协程↔UI 线程）
-	lines     []termRow             // 已显示输出（含命令回显）
-	pending   []termRow             // 读协程写、帧泵 drain 取
-	running   bool                  // 有命令在跑
-	shell     string                // 当前 shell：cmd / powershell / gitbash
-	history   []string              // 命令历史（上下键回溯）
-	histIdx   int                   // 历史游标（== len 表示「当前空输入」）
-	cwd       string                // 当前工作目录（cd 改、仅 UI 线程）
-	draft     string                // 命令输入镜像（防 relayout 丢，仅 UI 线程）
-	inputTok  int                   // Input.ResetToken：执行后清空输入框
-	scrollTok int                   // ScrollView.ScrollEndToken：新输出滚到底
-	pump      *animation.Controller // 帧泵（仅 UI 线程持有/起停）
+	mu         sync.Mutex            // 护 pending / alive / sess / idleFrames / pump
+	vt         *vterm.Terminal       // 屏幕模型（仅 UI 线程读写）
+	sess       pty.PTY               // 伪终端会话
+	pending    []byte                // 读协程写、帧泵取（原始 PTY 字节）
+	alive      bool                  // PTY 在跑
+	failed     bool                  // 启动失败（不再反复重试）
+	shell      string                // cmd / powershell / gitbash
+	cwd        string                // 初始/cd 目录
+	cols, rows int                   // 当前终端列/行
+	idleFrames int                   // 连续无输出帧数
+	pump       *animation.Controller // 帧泵
 }
 
 // TerminalPanel 终端面板组件。
@@ -215,157 +193,177 @@ type TerminalPanel struct{ widget.StatefulWidget }
 func (t *TerminalPanel) CreateState() widget.State { return theTermMgr }
 
 func (t *terminalState) Build(ctx widget.BuildContext) widget.Widget {
-	if theSettings.TermFontSize > 0 { // 外观/终端设置：字号（单终端，直接调共享 termFont）
-		termFont.Size = float64(theSettings.TermFontSize)
+	tv := &widget.TerminalView{
+		OnPaint: func(cvs canvas.Canvas, x, y, w, h float64) {
+			font := termGridFontNow()
+			cw, ch := termCellSize(cvs, font)
+			cols, rows := 1, 1
+			if cw > 0 {
+				cols = int(w / cw)
+			}
+			if ch > 0 {
+				rows = int(h / ch)
+			}
+			if cols < 1 {
+				cols = 1
+			}
+			if rows < 1 {
+				rows = 1
+			}
+			t.ensurePTY(cols, rows)
+			t.resizeTo(cols, rows)
+			paintVTGrid(cvs, x, y, w, h, t.vt, font)
+		},
+		OnKey: t.handleKey,
 	}
-	// ── 输出区：等宽彩色行，撑满，新输出滚到底 ──
-	t.mu.Lock()
-	rows := make([]widget.Widget, 0, len(t.lines)+1)
-	if len(t.lines) == 0 {
-		rows = append(rows, termLine("终端 — 输入命令回车执行（cd / cls 内建）。当前目录："+t.cwd, cTextDim))
-	}
-	for _, r := range t.lines {
-		rows = append(rows, termLine(r.text, r.col))
-	}
-	t.mu.Unlock()
-	out := widget.NewScrollView(widget.Div(
-		widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsetsLTRB(10, 6, 10, 6)},
-		rows,
-	))
-	out.ScrollEndToken = t.scrollTok
-
-	// ── 输入行：提示符（Lucide chevron-right）+ 命令输入（回车执行）──
-	in := widget.NewInput("", nil)
-	in.Text = t.draft // relayout 回填镜像（仅 ResetToken 变化时真正复位为空）
-	in.ResetToken = t.inputTok
-	in.OnTextChanged = func(s string) { t.draft = s }
-	in.OnSubmit = t.submit
-	in.OnArrowUp = t.historyPrev   // ↑ 回溯历史命令
-	in.OnArrowDown = t.historyNext // ↓ 前进历史命令
-	in.Placeholder = "输入命令，回车执行"
-	in.Font = termFont
-	in.Color = cText
-	in.BGColor = *cEditor // 与行底融为一体（无独立输入框边框）
-	in.BorderColor = *cEditor
-	in.FocusBorderColor = *cEditor
-	in.HoverBorderColor = *cEditor
-	in.PlaceholderColor = cTextDim
-	in.CursorColor = cText
-
-	shellBadge := &widget.Clickable{ // 点击循环切换 shell（CMD→PS→Bash）
-		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
-			widget.Style{BackgroundColor: cStatusBar, BorderRadius: 3, Padding: types.EdgeInsetsLTRB(6, 2, 6, 2)},
-			label(shellLabel(t.shell), cTextDim, 10),
-		)},
-		OnClick: t.cycleShell,
-	}
-	inputRow := widget.Div(
-		widget.Style{Height: 30, BackgroundColor: cEditor, Padding: types.EdgeInsetsLTRB(8, 0, 8, 0),
-			FlexDirection: "row", AlignItems: "center", BorderColor: cBorder, BorderWidth: 1},
-		shellBadge,
-		widget.Div(widget.Style{Width: 8}),
-		widget.Lucide("chevron-right", widget.IconSize(14), widget.IconColor(*cStatus)),
-		widget.Div(widget.Style{Width: 6}),
-		expand(in),
-	)
-
-	return &widget.ContextArea{ // 右键：终端菜单（复制全部/粘贴/添加到对话/清屏）
+	return &widget.ContextArea{ // 右键：终端菜单（复制全部/粘贴/添加到对话/清屏/切 shell）
 		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
 			widget.Style{BackgroundColor: cEditor, FlexDirection: "column", AlignItems: "stretch"},
-			expand(out),
-			inputRow,
+			expand(tv),
 		)},
 		OnContextMenu: func(x, y float64) { terminalMenu(x, y) },
 	}
 }
 
-// termLine 一行等宽文本（空行用空格占位以保行高）。
-func termLine(s string, col types.Color) widget.Widget {
-	if s == "" {
-		s = " "
-	}
-	t := widget.NewText(s, col)
-	t.Font = termFont
-	return t
-}
-
-// submit 提交一条命令（Input 回车回调，UI 线程）。
-func (t *terminalState) submit(line string) {
-	t.inputTok++ // 清空输入框
-	t.draft = ""
-	line = strings.TrimSpace(line)
-	if line == "" {
-		t.SetState()
-		return
-	}
-	if n := len(t.history); n == 0 || t.history[n-1] != line { // 入历史（去连续重复）
-		t.history = append(t.history, line)
-	}
-	t.histIdx = len(t.history) // 游标重置到「当前空输入」
-	t.appendLine(t.cwd+"> "+line, *cStatus) // 回显命令（含目录上下文，蓝）
-
-	// 内建命令：cls/clear 清屏、cd 改目录（exec 子进程的 cwd 不持久，必须在此处理）。
-	switch {
-	case line == "cls" || line == "clear":
-		t.mu.Lock()
-		t.lines = nil
+// ensurePTY 懒启动伪终端（首帧拿到真实尺寸时）。
+func (t *terminalState) ensurePTY(cols, rows int) {
+	t.mu.Lock()
+	if t.alive || t.failed {
 		t.mu.Unlock()
-		t.scrollTok++
-		t.SetState()
-		return
-	case line == "cd" || strings.HasPrefix(line, "cd "):
-		t.changeDir(strings.TrimSpace(strings.TrimPrefix(line, "cd")))
-		t.scrollTok++
-		t.SetState()
 		return
 	}
-
-	t.mu.Lock()
-	busy := t.running
 	t.mu.Unlock()
-	if busy {
-		t.appendLine("[上一条命令仍在运行，请稍候]", cTextDim)
-		t.scrollTok++
-		t.SetState()
+	sess, err := pty.Start(ptyShellFor(t.shell), t.cwd, cols, rows)
+	if err != nil {
+		t.mu.Lock()
+		t.failed = true
+		t.mu.Unlock()
+		t.vt = vterm.New(cols, rows)
+		t.vt.Write([]byte("[终端启动失败: " + err.Error() + "]\r\n"))
+		widget.OnNeedsRepaint()
 		return
 	}
+	t.vt = vterm.New(cols, rows)
 	t.mu.Lock()
-	t.running = true
+	t.sess, t.alive, t.cols, t.rows = sess, true, cols, rows
 	t.mu.Unlock()
-	t.scrollTok++
-	go t.run(line)
+	go t.reader(sess)
 	t.startPump()
-	t.SetState()
 }
 
-// historyPrev ↑：回溯到更早的历史命令（Input.OnArrowUp 回调）。
-func (t *terminalState) historyPrev() (string, bool) {
-	if len(t.history) == 0 {
-		return "", false
+// reader 持续读 PTY 原始字节进 pending（读协程，会话存活期间常驻）。
+func (t *terminalState) reader(sess pty.PTY) {
+	buf := make([]byte, 4096)
+	for {
+		n, err := sess.Read(buf)
+		if n > 0 {
+			t.mu.Lock()
+			t.pending = append(t.pending, buf[:n]...)
+			t.mu.Unlock()
+		}
+		if err != nil {
+			t.mu.Lock()
+			t.alive = false
+			t.mu.Unlock()
+			return
+		}
 	}
-	if t.histIdx > 0 {
-		t.histIdx--
-	}
-	t.draft = t.history[t.histIdx]
-	return t.draft, true
 }
 
-// historyNext ↓：前进到更新的历史命令；越过最后一条→清空（Input.OnArrowDown 回调）。
-func (t *terminalState) historyNext() (string, bool) {
-	if len(t.history) == 0 {
-		return "", false
+// drain 每帧把 pending 喂进 vterm（UI 线程）+ 重绘；久无输出停泵。
+func (t *terminalState) drain() {
+	t.mu.Lock()
+	var data []byte
+	if len(t.pending) > 0 {
+		data = t.pending
+		t.pending = nil
+		t.idleFrames = 0
+	} else {
+		t.idleFrames++
 	}
-	if t.histIdx < len(t.history)-1 {
-		t.histIdx++
-		t.draft = t.history[t.histIdx]
-		return t.draft, true
+	idle := t.idleFrames > termIdleFrames
+	t.mu.Unlock()
+
+	if len(data) > 0 {
+		t.vt.Write(data) // UI 线程更新网格
+		if widget.OnNeedsRepaint != nil {
+			widget.OnNeedsRepaint() // 仅重绘（网格尺寸未变，无需 relayout）
+		}
 	}
-	t.histIdx = len(t.history)
-	t.draft = ""
-	return "", true // 到底→清空输入
+	if idle {
+		t.stopPump()
+	}
 }
 
-// cycleShell 循环切换 shell：cmd → powershell → gitbash → cmd。
+// handleKey 按键 → VT 字节 → 写 PTY（起泵接住 shell 响应）。
+func (t *terminalState) handleKey(ev *event.KeyEvent) {
+	data := keyToVT(ev)
+	if len(data) == 0 {
+		return
+	}
+	t.mu.Lock()
+	sess := t.sess
+	t.mu.Unlock()
+	if sess != nil {
+		sess.Write(data)
+		t.startPump()
+	}
+}
+
+// resizeTo 面板尺寸变 → 同步 vterm + PTY（伪控制台据此重排）。
+func (t *terminalState) resizeTo(cols, rows int) {
+	t.mu.Lock()
+	if !t.alive || (cols == t.cols && rows == t.rows) {
+		t.mu.Unlock()
+		return
+	}
+	t.cols, t.rows = cols, rows
+	sess := t.sess
+	t.mu.Unlock()
+	t.vt.Resize(cols, rows)
+	if sess != nil {
+		sess.Resize(cols, rows)
+	}
+}
+
+func (t *terminalState) startPump() {
+	t.mu.Lock()
+	t.idleFrames = 0
+	if t.pump != nil {
+		t.mu.Unlock()
+		return
+	}
+	p := animation.NewController(time.Second, animation.Linear)
+	p.Repeat = true
+	p.OnUpdate = func(float64) { t.drain() }
+	t.pump = p
+	t.mu.Unlock()
+	p.Start()
+}
+
+func (t *terminalState) stopPump() {
+	t.mu.Lock()
+	p := t.pump
+	t.pump = nil
+	t.mu.Unlock()
+	if p != nil {
+		p.Stop()
+	}
+}
+
+// killPTY 杀掉本标签的 PTY 会话（关闭标签 / 切 shell 时）。
+func (t *terminalState) killPTY() {
+	t.mu.Lock()
+	sess := t.sess
+	t.sess, t.alive, t.failed = nil, false, false
+	t.mu.Unlock()
+	if sess != nil {
+		sess.Close()
+	}
+	t.stopPump()
+}
+
+// cycleShell 循环切 shell：cmd → powershell → gitbash → cmd。杀旧 PTY，下帧起新 shell。
 func (t *terminalState) cycleShell() {
 	switch t.shell {
 	case "cmd":
@@ -375,171 +373,72 @@ func (t *terminalState) cycleShell() {
 	default:
 		t.shell = "cmd"
 	}
+	t.killPTY()
 	t.SetState()
-}
-
-// changeDir 处理 cd：改 t.cwd（仅 UI 线程）。
-func (t *terminalState) changeDir(arg string) {
-	if arg == "" || arg == "~" {
-		if h, err := os.UserHomeDir(); err == nil {
-			t.cwd = h
-		}
-		return
-	}
-	target := strings.Trim(arg, `"`)
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(t.cwd, target)
-	}
-	if fi, err := os.Stat(target); err == nil && fi.IsDir() {
-		if abs, err := filepath.Abs(target); err == nil {
-			t.cwd = abs
-		}
-	} else {
-		t.appendLine("cd: 系统找不到指定的路径: "+arg, cTermErr)
-	}
-}
-
-// run 执行命令（读协程）：cmd /C 起子进程，chcp 65001 统一 UTF-8 输出，
-// stdout/stderr 各起一读协程把行写进 pending；全部读完 + 进程退出 → running=false。
-func (t *terminalState) run(line string) {
-	// 据所选 shell 构造命令（cmd 强制 UTF-8 防中文乱码；powershell/gitbash 见 shellCmd）。
-	c := shellCmd(t.shell, line, t.cwd)
-	stdout, err1 := c.StdoutPipe()
-	stderr, err2 := c.StderrPipe()
-	if err1 != nil || err2 != nil {
-		t.finish("[管道创建失败]")
-		return
-	}
-	if err := c.Start(); err != nil {
-		t.finish("[启动失败: " + err.Error() + "]")
-		return
-	}
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go t.pipe(&wg, stdout, cText)
-	go t.pipe(&wg, stderr, cTermErr)
-	wg.Wait()
-	if err := c.Wait(); err != nil {
-		t.push("[进程退出: "+err.Error()+"]", cTextDim)
-	}
-	t.mu.Lock()
-	t.running = false
-	t.mu.Unlock()
-}
-
-// pipe 把一路输出按行写进 pending（读协程）。
-func (t *terminalState) pipe(wg *sync.WaitGroup, r io.Reader, col types.Color) {
-	defer wg.Done()
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024) // 容长行（默认 64KB 上限不够）
-	for sc.Scan() {
-		t.push(sc.Text(), col)
-	}
-}
-
-func (t *terminalState) push(s string, col types.Color) {
-	t.mu.Lock()
-	t.pending = append(t.pending, termRow{s, col})
-	t.mu.Unlock()
-}
-
-func (t *terminalState) appendLine(s string, col types.Color) {
-	t.mu.Lock()
-	t.lines = append(t.lines, termRow{s, col})
-	t.mu.Unlock()
-}
-
-func (t *terminalState) finish(msg string) {
-	t.push(msg, cTermErr)
-	t.mu.Lock()
-	t.running = false
-	t.mu.Unlock()
-}
-
-// startPump 启动帧泵（Repeat 控制器，UI 线程）。命令运行期间使主循环持续出帧。
-func (t *terminalState) startPump() {
-	if t.pump != nil {
-		return
-	}
-	p := animation.NewController(time.Second, animation.Linear)
-	p.Repeat = true // 不为插值，只为「保持 HasActive 为真」让主循环持续出帧
-	p.OnUpdate = func(float64) { t.drain() }
-	t.pump = p
-	p.Start()
-}
-
-// drain 每帧把 pending 搬进 lines（UI 线程，animation.Tick 调）。命令结束且缓冲清空则停泵。
-func (t *terminalState) drain() {
-	t.mu.Lock()
-	had := len(t.pending) > 0
-	if had {
-		t.lines = append(t.lines, t.pending...)
-		t.pending = t.pending[:0]
-		if len(t.lines) > maxTermLines {
-			t.lines = append([]termRow(nil), t.lines[len(t.lines)-maxTermLines:]...)
-		}
-	}
-	done := !t.running
-	t.mu.Unlock()
-
-	if had {
-		t.scrollTok++
-		t.SetState()
-	}
-	if done { // 进程已退出且本帧已把残余 drain 干净 → 停泵，主循环回阻塞
-		t.stopPump()
-		if !had {
-			t.SetState() // 收尾重绘一次，确保最终态呈现
-		}
-	}
-}
-
-func (t *terminalState) stopPump() {
-	if t.pump != nil {
-		t.pump.Stop()
-		t.pump = nil
-	}
 }
 
 // ─── 右键菜单动作（UI 线程）────────────────────────────────
 
-// openDir 把终端切到某目录（文件树「在终端打开」）。
+// openDir 把终端切到某目录（文件树「在终端打开」）：cd 当前 shell；未起则记为初始目录。
 func (t *terminalState) openDir(dir string) {
 	t.cwd = dir
-	t.appendLine("[切换目录] "+dir, cTextDim)
-	t.scrollTok++
+	t.mu.Lock()
+	sess := t.sess
+	t.mu.Unlock()
+	if sess != nil {
+		sess.Write([]byte("cd /d \"" + dir + "\"\r")) // cmd 用 cd /d；其它 shell 多余的 /d 会忽略或报小错
+		t.startPump()
+	}
 	t.SetState()
 }
 
-// copyAll 取全部输出文本（含命令回显，按行）。
+// copyAll 取屏幕全部文本（按行，去尾空白）。
 func (t *terminalState) copyAll() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	cols, rows := t.vt.Size()
 	var b strings.Builder
-	for _, r := range t.lines {
-		b.WriteString(r.text)
+	for r := 0; r < rows; r++ {
+		line := make([]rune, 0, cols)
+		for c := 0; c < cols; c++ {
+			line = append(line, t.vt.Cell(r, c).Ch)
+		}
+		b.WriteString(strings.TrimRight(string(line), " "))
 		b.WriteByte('\n')
 	}
 	return b.String()
 }
 
-// pasteToInput 把剪贴板内容追加到命令输入框。
+// pasteToInput 粘贴：把剪贴板内容写进 PTY（真终端=直接送给 shell）。
 func (t *terminalState) pasteToInput() {
 	if widget.ClipboardRead == nil {
 		return
 	}
-	t.draft += widget.ClipboardRead()
-	t.inputTok++ // 受控刷新输入框（Input.Text=t.draft）
-	t.SetState()
+	t.mu.Lock()
+	sess := t.sess
+	t.mu.Unlock()
+	if sess != nil {
+		sess.Write([]byte(widget.ClipboardRead()))
+		t.startPump()
+	}
 }
 
-// clearScreen 清屏（等价 cls）。
+// clearScreen 清屏：发 shell 的清屏命令（cmd→cls / 其它→clear）。
 func (t *terminalState) clearScreen() {
 	t.mu.Lock()
-	t.lines = nil
+	sess := t.sess
 	t.mu.Unlock()
-	t.scrollTok++
-	t.SetState()
+	cmd := "clear\r"
+	if t.shell == "cmd" {
+		cmd = "cls\r"
+	}
+	if sess != nil {
+		sess.Write([]byte(cmd))
+		t.startPump()
+	} else {
+		t.vt = vterm.New(t.cols, t.rows)
+		if widget.OnNeedsRepaint != nil {
+			widget.OnNeedsRepaint()
+		}
+	}
 }
 
 // terminalArea 终端面板入口（panelBody 调用）。

@@ -95,40 +95,43 @@ func termGridFontNow() canvas.Font {
 	return f
 }
 
-// termGridView 把 vterm 网格画成自绘 widget（铺满父约束）。
-func termGridView(vt *vterm.Terminal) widget.Widget {
-	return &widget.PaintLayer{OnPaint: func(cvs canvas.Canvas, x, y, w, h float64) {
-		font := termGridFontNow()
-		cw, ch := termCellSize(cvs, font)
-		cols, rows := vt.Size()
-		for r := 0; r < rows; r++ {
-			cy := y + float64(r)*ch
-			if cy > y+h {
-				break
+// paintVTGrid 在画布上画 vterm 网格：等宽逐格 背景块 + 字符（SGR 配色/粗体）+ 块状半透明光标。
+func paintVTGrid(cvs canvas.Canvas, x, y, w, h float64, vt *vterm.Terminal, font canvas.Font) {
+	cw, ch := termCellSize(cvs, font)
+	cols, rows := vt.Size()
+	for r := 0; r < rows; r++ {
+		cy := y + float64(r)*ch
+		if cy > y+h {
+			break
+		}
+		for c := 0; c < cols; c++ {
+			cell := vt.Cell(r, c)
+			cx := x + float64(c)*cw
+			if !cell.BG.Default { // 背景块
+				bp := paint.DefaultPaint()
+				bp.Color = vtColor(cell.BG, *cEditor)
+				cvs.DrawRect(cx, cy, cw+0.5, ch, bp)
 			}
-			for c := 0; c < cols; c++ {
-				cell := vt.Cell(r, c)
-				cx := x + float64(c)*cw
-				if !cell.BG.Default { // 背景块
-					bp := paint.DefaultPaint()
-					bp.Color = vtColor(cell.BG, *cEditor)
-					cvs.DrawRect(cx, cy, cw+0.5, ch, bp)
+			if cell.Ch != ' ' && cell.Ch != 0 { // 字符
+				tp := paint.DefaultPaint()
+				tp.Color = vtColor(cell.FG, cText)
+				f := font
+				if cell.Bold {
+					f.Weight = canvas.FontWeightBold
 				}
-				if cell.Ch != ' ' && cell.Ch != 0 { // 字符
-					tp := paint.DefaultPaint()
-					tp.Color = vtColor(cell.FG, cText)
-					f := font
-					if cell.Bold {
-						f.Weight = canvas.FontWeightBold
-					}
-					cvs.DrawText(string(cell.Ch), cx, canvas.BaselineFor(cy, ch, f.Size, canvas.VAlignMiddle), f, tp)
-				}
+				cvs.DrawText(string(cell.Ch), cx, canvas.BaselineFor(cy, ch, f.Size, canvas.VAlignMiddle), f, tp)
 			}
 		}
-		// 块状半透明光标
-		ccx, ccy := vt.Cursor()
-		cur := paint.DefaultPaint()
-		cur.Color = types.ColorFromRGBA(cText.R, cText.G, cText.B, 150)
-		cvs.DrawRect(x+float64(ccx)*cw, y+float64(ccy)*ch, cw, ch, cur)
+	}
+	ccx, ccy := vt.Cursor() // 块状半透明光标
+	cur := paint.DefaultPaint()
+	cur.Color = types.ColorFromRGBA(cText.R, cText.G, cText.B, 150)
+	cvs.DrawRect(x+float64(ccx)*cw, y+float64(ccy)*ch, cw, ch, cur)
+}
+
+// termGridView 把 vterm 网格画成自绘 widget（铺满父约束；只显示不抓输入，预览/无输入场景用）。
+func termGridView(vt *vterm.Terminal) widget.Widget {
+	return &widget.PaintLayer{OnPaint: func(cvs canvas.Canvas, x, y, w, h float64) {
+		paintVTGrid(cvs, x, y, w, h, vt, termGridFontNow())
 	}}
 }

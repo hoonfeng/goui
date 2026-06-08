@@ -77,7 +77,7 @@ func TestEditorTabMenuItems(t *testing.T) {
 // 终端菜单：复制全部含全部输出 + 清屏清空。
 func TestTerminalMenuItems(t *testing.T) {
 	theTerminal = newTerminalState()
-	theTerminal.lines = []termRow{{text: "hello"}, {text: "world"}}
+	theTerminal.vt.Write([]byte("hello\r\nworld"))
 	var got string
 	widget.ClipboardWrite = func(s string) { got = s }
 	defer func() { widget.ClipboardWrite = nil }()
@@ -91,8 +91,8 @@ func TestTerminalMenuItems(t *testing.T) {
 	if !strings.Contains(got, "hello") || !strings.Contains(got, "world") {
 		t.Errorf("复制全部=%q", got)
 	}
-	findItem(items, "清屏").OnClick()
-	if len(theTerminal.lines) != 0 {
-		t.Errorf("清屏后应无行，得 %d", len(theTerminal.lines))
+	findItem(items, "清屏").OnClick() // 无 PTY → 直接重置 vt
+	if c := theTerminal.copyAll(); strings.Contains(c, "hello") || strings.Contains(c, "world") {
+		t.Errorf("清屏后应无内容，得 %q", c)
 	}
 }
