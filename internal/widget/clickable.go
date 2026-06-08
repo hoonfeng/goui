@@ -70,8 +70,15 @@ func (e *ClickableElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult
 		if maxW < float64(1<<30) {
 			maxW -= padW // 给子留 padding，使其按行铺满可用宽
 		}
+		// 把父的高度下限(AlignItems:stretch 会把它顶到容器高)传给子，使子填满被拉伸的高度。
+		// 否则子按内容高、贴顶留空，且子上的边框/底色只有文字大小（如标签栏里的标签）。
+		// MaxHeight 仍给无界，保留「不锁死内容高」语义（多行文本/列表可自然长高）。
+		minH := ctx.Constraints.MinHeight - padH
+		if minH < 0 {
+			minH = 0
+		}
 		res := e.child.Layout(&layout.LayoutContext{Constraints: layout.BoxConstraints{
-			MaxWidth: maxW, MaxHeight: float64(1 << 30),
+			MaxWidth: maxW, MinHeight: minH, MaxHeight: float64(1 << 30),
 		}})
 		childSize = res.Size
 	}
@@ -80,7 +87,7 @@ func (e *ClickableElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult
 		Height: childSize.Height + padH,
 	})
 	if e.child != nil {
-		// 被父拉伸/约束到比内容更高时，子垂直居中——否则贴顶、下方留空白（如标签栏里的标签）。
+		// 子若仍比自身矮(未填满)，垂直居中兜底——否则贴顶下方留空。
 		childY := c.Padding.Top
 		if extra := e.size.Height - padH - childSize.Height; extra > 0 {
 			childY += extra / 2
