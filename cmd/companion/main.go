@@ -336,11 +336,7 @@ func (s *shellState) titleMenus() []widget.Widget {
 			{Label: "切换 Minimap", Disabled: true},
 			{Label: "导出当前对话", Command: "view.export"},
 		}, s.onViewMenu),
-		menuBarBtn("终端", []widget.DropdownItem{
-			{Label: "新建 CMD", Command: "term.cmd"},
-			{Label: "新建 PowerShell", Disabled: true},
-			{Label: "新建 Git Bash", Disabled: true},
-		}, s.onTerminalMenu),
+		menuBarBtn("终端", termMenuItems(), s.onTerminalMenu),
 		menuBarBtn("Agent", []widget.DropdownItem{
 			{Label: "Agent 监控面板", Shortcut: "Ctrl+Shift+M", Disabled: true},
 			{Label: "性能监控", Disabled: true, Divided: true},
@@ -422,11 +418,31 @@ func (s *shellState) onViewMenu(cmd string) {
 	}
 }
 
-func (s *shellState) onTerminalMenu(cmd string) {
-	if cmd == "term.cmd" && !s.panels.Bottom { // 显示终端面板（companion 单终端）
-		s.panels.Toggle(state.ZoneBottom)
-		s.SetState()
+// termMenuItems 菜单栏「终端」下拉：列出 CMD/PowerShell/Git Bash，本机没探测到的灰显（Disabled）。
+func termMenuItems() []widget.DropdownItem {
+	detected := map[string]bool{}
+	for _, sh := range availableShells() {
+		detected[sh.code] = true
 	}
+	return []widget.DropdownItem{
+		{Label: "新建 CMD", Command: "term.cmd", Disabled: !detected["cmd"]},
+		{Label: "新建 PowerShell", Command: "term.powershell", Disabled: !detected["powershell"]},
+		{Label: "新建 Git Bash", Command: "term.gitbash", Disabled: !detected["gitbash"]},
+	}
+}
+
+func (s *shellState) onTerminalMenu(cmd string) {
+	code := map[string]string{"term.cmd": "cmd", "term.powershell": "powershell", "term.gitbash": "gitbash"}[cmd]
+	if code == "" {
+		return
+	}
+	if !s.panels.Bottom { // 终端面板原来没显示：显示它，并把默认标签设成所选 shell（不凭空多一个 cmd 标签）
+		s.panels.Toggle(state.ZoneBottom)
+		theTermMgr.setActiveShell(code)
+	} else { // 面板已开：新开一个该 shell 的标签
+		theTermMgr.newTabWithShell(code)
+	}
+	s.SetState()
 }
 
 func (s *shellState) onHelpMenu(cmd string) {

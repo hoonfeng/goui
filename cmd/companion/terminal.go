@@ -151,15 +151,23 @@ func (m *termManager) tabBar() widget.Widget {
 			})
 		}
 	}
-	kids = append(kids, &widget.Clickable{
-		SingleChildWidget: widget.SingleChildWidget{Child: widget.Div(
-			widget.Style{Padding: types.EdgeInsetsLTRB(8, 5, 8, 5)},
-			widget.Lucide("plus", widget.IconSize(13), widget.IconColor(*cStatus)),
-		)},
-		OnClick: func() { m.newTab() },
-	})
+	// 「+」改成下拉：列出本机探测到的 shell，选哪个就用哪个 shell 新建标签（之前只能 cmd、不能选）。
+	plusItems := make([]widget.DropdownItem, 0, 3)
+	for _, sh := range availableShells() {
+		plusItems = append(plusItems, widget.DropdownItem{Label: "新建 " + sh.label, Command: sh.code})
+	}
+	plusTrigger := &widget.Button{
+		SingleChildWidget: widget.SingleChildWidget{Child: widget.Lucide("plus", widget.IconSize(13), widget.IconColor(*cStatus))},
+		Color:             *cStatusBar,
+		Padding:           types.EdgeInsetsLTRB(8, 5, 8, 5),
+	}
+	kids = append(kids, widget.NewDropdown(plusTrigger, plusItems...).
+		WithOnCommand(func(code string) { m.newTabWithShell(code) }).
+		WithPlacement(widget.PlacementBottomStart))
+	// AlignItems:stretch —— 让每个标签与它的关闭× 都填满标签栏高(28)，两者等高（之前 center 下
+	// 标签名 Div 24px、× Div 21px 高度不一致）。
 	return widget.Div(
-		widget.Style{FlexDirection: "row", AlignItems: "center", BackgroundColor: cStatusBar, Height: 28},
+		widget.Style{FlexDirection: "row", AlignItems: "stretch", BackgroundColor: cStatusBar, Height: 28},
 		kids,
 	)
 }
