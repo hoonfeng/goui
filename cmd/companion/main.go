@@ -52,8 +52,9 @@ func main() {
 		renderShot()
 		return
 	}
-	loadSettings()     // 读安装目录 config/ 的全局设置（LLM 服务商/Key/模型 + 上次项目），供 buildProvider 用
-	loadLastProject()  // 恢复上次打开的项目根（文件树/终端/agent 统一用它）
+	loadSettings()          // 读安装目录 config/ 的全局设置（LLM 服务商/Key/模型 + 上次项目），供 buildProvider 用
+	loadLastProject()       // 恢复上次打开的项目根（文件树/终端/agent 统一用它）
+	theEditor.restoreSession() // 恢复上次工作区里打开的文件标签（首帧即带上，读各文件磁盘当前内容）
 
 	application = app.NewApplication()
 	application.SetRootWidget(&Shell{})

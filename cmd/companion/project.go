@@ -59,6 +59,8 @@ func setProject(p string) {
 	}
 	workspaceFolders = []string{p}
 	syncWorkspace(true)
+	theEditor.restoreSession() // 切到新工作区→恢复该工作区上次打开的文件标签（无则清空）
+	theEditor.SetState()
 }
 
 // addFolder 添加文件夹到工作区（VS Code「Add Folder to Workspace」），已在则忽略。

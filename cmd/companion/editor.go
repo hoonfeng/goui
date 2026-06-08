@@ -46,10 +46,13 @@ func (e *editorState) activeTab() *editorTab {
 	return nil
 }
 
-// open 打开文件：已打开→切到该标签；否则新建标签读内容。
+// open 打开文件：已打开→切到该标签（无未保存改动时刷新为磁盘最新内容）；否则新建标签读内容。
 func (e *editorState) open(path string) {
 	for i, t := range e.tabs {
 		if t.path == path {
+			if !t.dirty {
+				loadTabContent(t) // 重新打开已开文件→刷新为磁盘当前内容（无未保存改动时）
+			}
 			e.switchTo(i)
 			return
 		}
@@ -59,6 +62,7 @@ func (e *editorState) open(path string) {
 	e.tabs = append(e.tabs, t)
 	e.active = len(e.tabs) - 1
 	e.reload++
+	e.persistSession()
 	e.SetState()
 }
 
@@ -92,6 +96,7 @@ func (e *editorState) switchTo(i int) {
 	}
 	e.active = i
 	e.reload++
+	e.persistSession()
 	e.SetState()
 }
 
@@ -104,6 +109,7 @@ func (e *editorState) close(i int) {
 		e.active = len(e.tabs) - 1
 	}
 	e.reload++
+	e.persistSession()
 	e.SetState()
 }
 
@@ -115,6 +121,7 @@ func (e *editorState) closeOthers(i int) {
 	e.tabs = []*editorTab{e.tabs[i]}
 	e.active = 0
 	e.reload++
+	e.persistSession()
 	e.SetState()
 }
 
@@ -123,6 +130,7 @@ func (e *editorState) closeAll() {
 	e.tabs = nil
 	e.active = 0
 	e.reload++
+	e.persistSession()
 	e.SetState()
 }
 
