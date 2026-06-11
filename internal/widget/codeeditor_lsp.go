@@ -114,6 +114,8 @@ func (e *CodeEditorElement) drainLSPCompletion() {
 	e.pendingSyms = nil
 	hov := e.pendingHover
 	e.pendingHover = nil
+	fmts := e.pendingFormats
+	e.pendingFormats = nil
 	e.lspMu.Unlock()
 	if hov != nil { // 悬停结果 → 设浮层内容（paintHover 据 hoverCursor 显示/关闭）
 		e.hoverText = hov.text
@@ -134,6 +136,9 @@ func (e *CodeEditorElement) drainLSPCompletion() {
 	}
 	if syms != nil && e.ed != nil && e.ed.OnDocumentSymbols != nil { // 文档符号：回调宿主展示
 		e.ed.OnDocumentSymbols(syms)
+	}
+	if fmts != nil { // 格式化结果：应用编辑到缓冲区
+		e.applyTextEdits(fmts)
 	}
 }
 
@@ -272,6 +277,130 @@ func (e *CodeEditorElement) requestHover() {
 	}()
 }
 
+// formatDocument 请求 LSP 格式化整个文档并应用编辑（异步：goroutine 请求 → pendingEdits → UI 线程消费）。
+func (e *CodeEditorElement) formatDocument() {
+	if !e.lspReady || e.lspClient == nil {
+		return
+	}
+	cl := e.lspClient
+	uri := e.lspURI
+	tabSize := 4
+	insertSpaces := true
+	go func() {
+		edits, err := cl.Formatting(uri, tabSize, insertSpaces)
+		if err != nil || len(edits) == 0 {
+			return
+		}
+		e.lspMu.Lock()
+		e.pendingFormats = edits
+		e.lspMu.Unlock()
+		repaint()
+	}()
+}
+
+// applyTextEdits 应用 LSP TextEdit 列表到编辑器缓冲区（按行号倒序→不倒序，保证编辑稳定性）。
+func (e *CodeEditorElement) applyTextEdits(edits []lsp.TextEdit) {
+	if len(edits) == 0 {
+		return
+	}
+	// 记录撤销状态（格式化前快照）
+	e.recordUndo("format")
+	// 先排序：按起始行号降序（从后往前应用，避免行号偏移）
+	for i := 0; i < len(edits); i++ {
+		for j := i + 1; j < len(edits); j++ {
+			ei, ej := edits[i].Range.Start, edits[j].Range.Start
+			if ei.Line < ej.Line || (ei.Line == ej.Line && ei.Character < ej.Character) {
+				edits[i], edits[j] = edits[j], edits[i]
+			}
+		}
+	}
+	for _, edit := range edits {
+		e.applyOneTextEdit(edit)
+	}
+	e.afterEdit()
+}
+
+// applyOneTextEdit 应用单个 TextEdit。
+func (e *CodeEditorElement) applyOneTextEdit(edit lsp.TextEdit) {
+	start := edit.Range.Start
+	end := edit.Range.End
+	// 内嵌体编辑器：完整文档坐标 → 本地坐标
+	startLine := start.Line - e.lspLineOff
+	endLine := end.Line - e.lspLineOff
+	startCol := start.Character - e.lspColOff
+	endCol := end.Character - e.lspColOff
+	// 越界保护
+	if startLine < 0 {
+		startLine = 0
+		startCol = 0
+	}
+	if startLine >= len(e.lines) {
+		return
+	}
+	if endLine < 0 {
+		return
+	}
+	if endLine >= len(e.lines) {
+		endLine = len(e.lines) - 1
+		endCol = len([]rune(e.lines[endLine]))
+	}
+	// 计算新文本的行
+	newText := edit.NewText
+	newLines := strings.Split(newText, "\n")
+	if len(newLines) == 0 {
+		newLines = []string{""}
+	}
+	// 计算替换前的文本
+	startRunes := []rune(e.lines[startLine])
+	endRunes := []rune(e.lines[endLine])
+	if startCol > len(startRunes) {
+		startCol = len(startRunes)
+	}
+	if endCol > len(endRunes) {
+		endCol = len(endRunes)
+	}
+	// 构造新行
+	if startLine == endLine {
+		// 单行替换
+		prefix := string(startRunes[:startCol])
+		suffix := string(startRunes[endCol:])
+		// newText 可能含换行
+		firstNewLine := newLines[0]
+		if len(newLines) == 1 {
+			e.lines[startLine] = prefix + firstNewLine + suffix
+		} else {
+			// 多行：第一行替换后半段，中间行插入，最后行前缀
+			lastNewLine := newLines[len(newLines)-1]
+			e.lines[startLine] = prefix + firstNewLine
+			// 插入中间行（在 startLine+1 位置插入 newLines[1..len-1]）
+			var after []string
+			after = append(after, e.lines[:startLine+1]...)
+			for i := 1; i < len(newLines)-1; i++ {
+				after = append(after, newLines[i])
+			}
+			after = append(after, lastNewLine+suffix)
+			after = append(after, e.lines[startLine+1:]...)
+			e.lines = after
+		}
+	} else {
+		// 多行替换
+		prefix := string(startRunes[:startCol])
+		suffix := string(endRunes[endCol:])
+		firstNewLine := newLines[0]
+		lastNewLine := newLines[len(newLines)-1]
+		// 构造：前缀 + 新文本 + 后缀
+		var result []string
+		result = append(result, e.lines[:startLine]...)
+		result = append(result, prefix+firstNewLine)
+		for i := 1; i < len(newLines)-1; i++ {
+			result = append(result, newLines[i])
+		}
+		result = append(result, lastNewLine+suffix)
+		result = append(result, e.lines[endLine+1:]...)
+		e.lines = result
+	}
+}
+
 // cleanHoverMarkdown 去 ``` 代码围栏、折叠多余空行，得可直接逐行画的纯文本。
 func cleanHoverMarkdown(md string) string {
 	md = strings.ReplaceAll(md, "\r\n", "\n")
@@ -391,6 +520,126 @@ func (e *CodeEditorElement) drawSquiggle(cvs canvas.Canvas, x0, x1, y float64, c
 		cvs.DrawLine(prevX, prevY, x, ny, p)
 		prevX, prevY = x, ny
 		up = !up
+	}
+}
+
+// paintGutterDiagnostics 在行号栏画诊断标记（红/橙圆点）。
+func (e *CodeEditorElement) paintGutterDiagnostics(cvs canvas.Canvas, top float64) {
+	e.lspMu.Lock()
+	ds := e.diagnostics
+	e.lspMu.Unlock()
+	if len(ds) == 0 {
+		return
+	}
+	// 建一个行→最高严重度映射（每行只画一个标记：优先错误，其次警告/信息）
+	lineSeverity := make(map[int]int)
+	for _, d := range ds {
+		ln := d.Range.Start.Line - e.lspLineOff
+		if ln < 0 || ln >= len(e.lines) {
+			continue
+		}
+		existing, ok := lineSeverity[ln]
+		if !ok || d.Severity < existing {
+			lineSeverity[ln] = d.Severity
+		}
+	}
+	pos := e.Offset()
+	// 遍历可见行，画标记
+	for vi := 0; vi < len(e.wrapSegs); vi++ {
+		sg := e.wrapSegs[vi]
+		if sg.start != 0 { // 只在逻辑行首段画
+			continue
+		}
+		ln := sg.line
+		sev, ok := lineSeverity[ln]
+		if !ok {
+			continue
+		}
+		ly := top + float64(vi)*ceLineH
+		cy := ly + ceLineH/2
+		cx := pos.X + 8
+		col := types.ColorFromRGB(0xE5, 0x1C, 0x23) // 红=error
+		if sev >= lsp.SeverityWarning {
+			col = types.ColorFromRGB(0xE6, 0xA2, 0x3C) // 橙=warning/info/hint
+		}
+		dp := paint.DefaultPaint()
+		dp.Color = col
+		cvs.DrawCircle(cx, cy, 3.5, dp)
+	}
+}
+
+// diagnosticAtPos 返回 (行,列) 处第一个诊断消息；无诊断时返回 ""。
+func (e *CodeEditorElement) diagnosticAtPos(line, col int) string {
+	e.lspMu.Lock()
+	ds := e.diagnostics
+	e.lspMu.Unlock()
+	for _, d := range ds {
+		ln := d.Range.Start.Line - e.lspLineOff
+		if ln != line {
+			continue
+		}
+		startCol := d.Range.Start.Character - e.lspColOff
+		endCol := d.Range.End.Character - e.lspColOff
+		if d.Range.End.Line != d.Range.Start.Line {
+			endCol = len(e.lineRunes(ln))
+		}
+		if col >= startCol && col < endCol {
+			return d.Message
+		}
+	}
+	return ""
+}
+
+// paintDiagHover 画诊断悬停提示浮层（鼠标悬停在诊断波浪线上时显示错误/警告消息）。
+func (e *CodeEditorElement) paintDiagHover(cvs canvas.Canvas) {
+	if e.diagHoverMsg == "" {
+		return
+	}
+	pos := e.Offset()
+	// 计算提示框尺寸
+	lines := strings.Split(e.diagHoverMsg, "\n")
+	if len(lines) > 10 {
+		lines = append(lines[:10], "…")
+	}
+	maxW := 80.0
+	for _, ln := range lines {
+		if w := e.measure(ln) + 18; w > maxW {
+			maxW = w
+		}
+	}
+	if maxW > 480 {
+		maxW = 480
+	}
+	boxH := float64(len(lines))*ceLineH + 10
+	// 定位在悬停行上方
+	x := e.posX(e.diagHoverLine, e.diagHoverCol, pos.X+e.gutterW+ceTextPad-e.scrollX)
+	yTop := e.posTopY(e.diagHoverLine, e.diagHoverCol, pos.Y+4-e.scrollY) - boxH - 4
+	if yTop < pos.Y+2 {
+		yTop = e.posTopY(e.diagHoverLine, e.diagHoverCol, pos.Y+4-e.scrollY) + ceLineH + 2
+	}
+	if x+maxW > pos.X+e.size.Width-2 {
+		x = pos.X + e.size.Width - 2 - maxW
+	}
+	if x < pos.X+2 {
+		x = pos.X + 2
+	}
+	// 画阴影
+	sh := paint.DefaultPaint()
+	sh.Color = types.ColorFromRGBA(0, 0, 0, 30)
+	cvs.DrawRoundedRect(x, yTop+2, maxW, boxH, 5, sh)
+	// 画背景
+	bg := paint.DefaultPaint()
+	bg.Color = elSurface()
+	cvs.DrawRoundedRect(x, yTop, maxW, boxH, 5, bg)
+	// 画边框
+	bd := paint.DefaultStrokePaint()
+	bd.Color = elBorder()
+	cvs.DrawRoundedRect(x+0.5, yTop+0.5, maxW-1, boxH-1, 5, bd)
+	// 画消息文本
+	for i, ln := range lines {
+		canvas.DrawTextAligned(cvs, ln,
+			types.Rect{X: x + 8, Y: yTop + 5 + float64(i)*ceLineH, Width: maxW - 14, Height: ceLineH},
+			e.font, elTextPrimary(), canvas.HAlignLeft, canvas.VAlignMiddle)
 	}
 }
 

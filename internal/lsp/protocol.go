@@ -113,6 +113,12 @@ const (
 	SymStruct      = 23
 )
 
+// TextEdit 一个文本编辑（格式化/代码动作结果）。
+type TextEdit struct {
+	Range   Range  `json:"range"`
+	NewText string `json:"newText"`
+}
+
 // Hover 悬停信息。
 type Hover struct {
 	Contents MarkupContent `json:"contents"`

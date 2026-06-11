@@ -182,6 +182,9 @@ func (c *Client) Initialize(rootURI string) error {
 				"definition":         map[string]interface{}{},
 				"references":         map[string]interface{}{},
 				"documentSymbol":     map[string]interface{}{},
+				"formatting": map[string]interface{}{
+					"dynamicRegistration": false,
+				},
 			},
 		},
 	})
@@ -309,6 +312,28 @@ func (c *Client) DocumentSymbol(uri string) ([]DocumentSymbol, error) {
 		return out, nil
 	}
 	return nil, nil
+}
+
+// Formatting 请求格式化整个文档，返回 TextEdit 列表（按行号升序）。tabSize 默认 4，insertSpaces 默认 true。
+func (c *Client) Formatting(uri string, tabSize int, insertSpaces bool) ([]TextEdit, error) {
+	if tabSize <= 0 {
+		tabSize = 4
+	}
+	edits, err := c.call("textDocument/formatting", map[string]interface{}{
+		"textDocument": map[string]interface{}{"uri": uri},
+		"options":      map[string]interface{}{"tabSize": tabSize, "insertSpaces": insertSpaces},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(edits) == 0 || string(edits) == "null" {
+		return nil, nil
+	}
+	var tes []TextEdit
+	if json.Unmarshal(edits, &tes) != nil {
+		return nil, nil
+	}
+	return tes, nil
 }
 
 // HoverAt 悬停信息（line/char 0 基）。

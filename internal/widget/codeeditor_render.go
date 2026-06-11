@@ -491,6 +491,8 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 			e.paintFoldArrow(cvs, pos.X+e.gutterW-ceFoldW, ly, e.folded[i])
 		}
 	}
+	// 行号栏诊断标记（红/橙圆点）
+	e.paintGutterDiagnostics(cvs, top)
 	cvs.Restore()
 
 	// 行号栏右分隔线
@@ -511,6 +513,7 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		e.paintCompletion(cvs, left, top)
 	}
 	e.paintHover(cvs, left, top) // 悬停信息浮层（showHover 触发）
+	e.paintDiagHover(cvs)        // 诊断悬停提示浮层
 
 	// 查找栏（最上层，右上角）
 	if e.findActive {
@@ -664,6 +667,9 @@ func (e *CodeEditorElement) moveCursor(dLine, dCol int, extend bool) {
 	e.breakUndo()
 	e.cursorMoved = true
 	e.resetBlink()
+	if e.ed.OnCursorMove != nil {
+		e.ed.OnCursorMove(e.cursor.line, e.cursor.col)
+	}
 	repaint()
 }
 
@@ -743,6 +749,7 @@ func (e *CodeEditorElement) HandleEvent(ev event.Event) bool {
 		return true
 	case event.TypeMouseLeave:
 		e.hovered = false
+		e.diagHoverMsg = "" // 离开编辑器区域 → 关闭诊断悬停
 		return true
 
 	case event.TypeMouseDown:
@@ -803,6 +810,9 @@ func (e *CodeEditorElement) HandleEvent(ev event.Event) bool {
 		e.breakUndo()
 		e.cursorMoved = true
 		e.resetBlink()
+		if e.ed.OnCursorMove != nil {
+			e.ed.OnCursorMove(e.cursor.line, e.cursor.col)
+		}
 		repaint()
 		return true
 
@@ -831,8 +841,23 @@ func (e *CodeEditorElement) HandleEvent(ev event.Event) bool {
 		if e.selecting {
 			e.cursor = e.posFromXY(me.X, me.Y)
 			e.cursorMoved = true
+			if e.ed.OnCursorMove != nil {
+				e.ed.OnCursorMove(e.cursor.line, e.cursor.col)
+			}
 			repaint()
 			return true
+		}
+		// 诊断悬停检测：鼠标不在拖拽/选择时，检查是否悬停在诊断波浪线上
+		if e.ed != nil {
+			p := e.posFromXY(me.X, me.Y)
+			msg := e.diagnosticAtPos(p.line, p.col)
+			if msg != "" {
+				e.diagHoverMsg = msg
+				e.diagHoverLine = p.line
+				e.diagHoverCol = p.col
+			} else {
+				e.diagHoverMsg = ""
+			}
 		}
 		return false
 
@@ -925,6 +950,10 @@ func (e *CodeEditorElement) handleKeyDown(k *event.KeyEvent) bool {
 		case "Space", " ": // Ctrl+Space 手动触发补全
 			e.triggerCompletion()
 		}
+		return true
+	}
+	if k.Mods&event.ModAlt != 0 && k.Mods&event.ModShift != 0 && k.Key == "F" {
+		e.formatDocument()
 		return true
 	}
 	if e.completing { // 补全弹窗激活：拦截导航/接受/取消键
@@ -1064,7 +1093,14 @@ func (e *CodeEditorElement) selectWord() {
 func (e *CodeEditorElement) contextItems() []MenuItem {
 	hasSel := e.hasSel()
 	return []MenuItem{
-		{Label: "剪切", Enabled: hasSel && ClipboardWrite != nil, OnClick: func() {
+		{Label: "撤销", Enabled: e.canUndo(), Shortcut: "Ctrl+Z", OnClick: func() {
+			e.undo()
+		}},
+		{Label: "重做", Enabled: e.canRedo(), Shortcut: "Ctrl+Shift+Z", OnClick: func() {
+			e.redo()
+		}},
+		{Separator: true},
+		{Label: "剪切", Enabled: hasSel && ClipboardWrite != nil, Shortcut: "Ctrl+X", OnClick: func() {
 			if e.hasSel() && ClipboardWrite != nil {
 				ClipboardWrite(e.selText())
 				e.recordUndo("cut")
@@ -1072,22 +1108,27 @@ func (e *CodeEditorElement) contextItems() []MenuItem {
 				e.afterEdit()
 			}
 		}},
-		{Label: "复制", Enabled: hasSel && ClipboardWrite != nil, OnClick: func() {
+		{Label: "复制", Enabled: hasSel && ClipboardWrite != nil, Shortcut: "Ctrl+C", OnClick: func() {
 			if e.hasSel() && ClipboardWrite != nil {
 				ClipboardWrite(e.selText())
 			}
 		}},
-		{Label: "粘贴", Enabled: ClipboardRead != nil, OnClick: func() {
+		{Label: "粘贴", Enabled: ClipboardRead != nil, Shortcut: "Ctrl+V", OnClick: func() {
 			if ClipboardRead != nil {
 				e.recordUndo("paste")
 				e.insertStr(ClipboardRead())
 			}
 		}},
-		{Label: "全选", Enabled: true, OnClick: func() {
+		{Separator: true},
+		{Label: "全选", Enabled: true, Shortcut: "Ctrl+A", OnClick: func() {
 			e.anchor = cePos{0, 0}
 			last := len(e.lines) - 1
 			e.cursor = cePos{last, len(e.lineRunes(last))}
 			repaint()
+		}},
+		{Separator: true},
+		{Label: "格式化文档", Enabled: e.lspReady, Shortcut: "Alt+Shift+F", OnClick: func() {
+			e.formatDocument()
 		}},
 	}
 }

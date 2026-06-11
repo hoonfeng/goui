@@ -54,6 +54,7 @@ type CodeEditor struct {
 	initial     string
 	OnChange    func(string)
 	OnEnter     func()             // 按回车换行后触发（StructEditor 用作「回车自动声明变量」时机）
+	OnCursorMove func(line, col int) // 光标位置变化回调（行/列均 0 基，状态栏 Ln/Col 显示用）
 	ExtraIdents func() []CECompletion // 外部补全源（StructEditor 注入：已声明变量/子程序/命令库）
 	Minimap     bool               // 是否显示右侧缩略图（默认开）
 	WordWrap    bool               // 软自动换行：长行按编辑区宽折成多视觉行（默认关，可 toggleWrap 切换）
@@ -330,6 +331,13 @@ type CodeEditorElement struct {
 	hoverText    string       // 悬停内容（showHover 命令触发画浮层；空=不显示）
 	hoverCursor  cePos        // 悬停时光标位置（光标移开则关闭浮层）
 	pendingHover *hoverResult // 悬停结果，待 UI 线程显示
+
+	pendingFormats []lsp.TextEdit // 格式化结果，待 UI 线程应用编辑
+
+	// 诊断悬停提示
+	diagHoverMsg  string // 鼠标悬停在诊断波浪线上时的诊断消息；空=不显示
+	diagHoverLine int    // 悬停的诊断所在行
+	diagHoverCol  int    // 悬停的诊断所在列
 }
 
 // hoverResult 异步悬停结果（内容 + 请求时的光标位置）。
@@ -757,6 +765,9 @@ func (e *CodeEditorElement) recordUndo(kind string) {
 
 // breakUndo 断开合并（光标移动/点击后，下次输入另起撤销单元）。
 func (e *CodeEditorElement) breakUndo() { e.lastEdit = "" }
+
+func (e *CodeEditorElement) canUndo() bool { return len(e.undoStack) > 0 }
+func (e *CodeEditorElement) canRedo() bool { return len(e.redoStack) > 0 }
 
 func (e *CodeEditorElement) undo() {
 	if len(e.undoStack) == 0 {
