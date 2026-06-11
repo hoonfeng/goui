@@ -7,6 +7,7 @@
 package editorpanel
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -112,6 +113,14 @@ func (e *editorState) Close(i int) {
 	if i < 0 || i >= len(e.tabs) {
 		return
 	}
+	if t := e.tabs[i]; t.dirty {
+		e.confirmCloseSingle(i, t)
+		return
+	}
+	e.doClose(i)
+}
+
+func (e *editorState) doClose(i int) {
 	e.tabs = append(e.tabs[:i], e.tabs[i+1:]...)
 	if e.active >= len(e.tabs) {
 		e.active = len(e.tabs) - 1
@@ -126,6 +135,16 @@ func (e *editorState) CloseOthers(i int) {
 	if i < 0 || i >= len(e.tabs) {
 		return
 	}
+	dirtyCount := 0
+	for j, t := range e.tabs {
+		if j != i && t.dirty {
+			dirtyCount++
+		}
+	}
+	if dirtyCount > 0 {
+		e.confirmCloseOthers(i, dirtyCount)
+		return
+	}
 	e.tabs = []*editorTab{e.tabs[i]}
 	e.active = 0
 	e.reload++
@@ -135,11 +154,164 @@ func (e *editorState) CloseOthers(i int) {
 
 // closeAll 关闭所有标签。
 func (e *editorState) CloseAll() {
+	if e.HasDirty() {
+		e.confirmCloseAll()
+		return
+	}
+	e.doCloseAll()
+}
+
+func (e *editorState) doCloseAll() {
 	e.tabs = nil
 	e.active = 0
 	e.reload++
 	e.persistSession()
 	e.SetState()
+}
+
+// HasDirty 是否有未保存的标签。
+func (e *editorState) HasDirty() bool {
+	for _, t := range e.tabs {
+		if t.dirty {
+			return true
+		}
+	}
+	return false
+}
+
+// ConfirmCloseAll 关闭所有标签（带未保存提示），用户确认后回调 onConfirmed。
+func (e *editorState) ConfirmCloseAll(onConfirmed func()) {
+	if !e.HasDirty() {
+		e.doCloseAll()
+		if onConfirmed != nil {
+			onConfirmed()
+		}
+		return
+	}
+	dirtyCount := 0
+	var names []string
+	for _, t := range e.tabs {
+		if t.dirty {
+			dirtyCount++
+			if len(names) < 3 {
+				names = append(names, filepath.Base(t.path))
+			}
+		}
+	}
+	label := fmt.Sprintf("有 %d 个文件未保存", dirtyCount)
+	detail := strings.Join(names, "、")
+	if dirtyCount > len(names) {
+		detail += fmt.Sprintf(" 等 %d 个", dirtyCount)
+	}
+	body := widget.Div(widget.Style{Padding: types.EdgeInsets(4)},
+		ui.TextLine(fmt.Sprintf("%s：%s\n\n是否保存后再关闭？", label, detail), *ui.Fg, 12),
+	)
+	var id int
+	dlg := widget.NewDialog("未保存的更改", body).WithWidth(400).WithFooter(
+		ui.Btn("不保存", func() {
+			widget.HideOverlay(id)
+			e.doCloseAll()
+			if onConfirmed != nil {
+				onConfirmed()
+			}
+		}),
+		ui.Btn("取消", func() {
+			widget.HideOverlay(id)
+		}),
+		ui.PrimaryBtn("全部保存", func() {
+			widget.HideOverlay(id)
+			e.saveAllDirty()
+			e.doCloseAll()
+			if onConfirmed != nil {
+				onConfirmed()
+			}
+		}),
+	)
+	id = widget.ShowDialog(dlg)
+}
+
+// ─── 私有的未保存确认 ───
+
+// confirmCloseSingle 关闭单个未保存标签的确认对话框。
+func (e *editorState) confirmCloseSingle(i int, t *editorTab) {
+	name := filepath.Base(t.path)
+	body := widget.Div(widget.Style{Padding: types.EdgeInsets(4)},
+		ui.TextLine(fmt.Sprintf("「%s」有未保存的更改。\n是否保存后再关闭？", name), *ui.Fg, 12),
+	)
+	var id int
+	dlg := widget.NewDialog("未保存的更改", body).WithWidth(380).WithFooter(
+		ui.Btn("不保存", func() {
+			widget.HideOverlay(id)
+			e.doClose(i)
+		}),
+		ui.Btn("取消", func() {
+			widget.HideOverlay(id)
+		}),
+		ui.PrimaryBtn("保存", func() {
+			widget.HideOverlay(id)
+			e.saveTab(t)
+			e.doClose(i)
+		}),
+	)
+	id = widget.ShowDialog(dlg)
+}
+
+// confirmCloseOthers 关闭其他标签（含未保存）的确认对话框。
+func (e *editorState) confirmCloseOthers(keep int, dirtyCount int) {
+	label := fmt.Sprintf("有 %d 个其他标签未保存", dirtyCount)
+	body := widget.Div(widget.Style{Padding: types.EdgeInsets(4)},
+		ui.TextLine(fmt.Sprintf("%s。\n是否保存后再关闭？", label), *ui.Fg, 12),
+	)
+	var id int
+	dlg := widget.NewDialog("未保存的更改", body).WithWidth(380).WithFooter(
+		ui.Btn("不保存", func() {
+			widget.HideOverlay(id)
+			e.tabs = []*editorTab{e.tabs[keep]}
+			e.active = 0
+			e.reload++
+			e.persistSession()
+			e.SetState()
+		}),
+		ui.Btn("取消", func() {
+			widget.HideOverlay(id)
+		}),
+		ui.PrimaryBtn("全部保存", func() {
+			widget.HideOverlay(id)
+			for j, t := range e.tabs {
+				if j != keep && t.dirty {
+					e.saveTab(t)
+				}
+			}
+			e.tabs = []*editorTab{e.tabs[keep]}
+			e.active = 0
+			e.reload++
+			e.persistSession()
+			e.SetState()
+		}),
+	)
+	id = widget.ShowDialog(dlg)
+}
+
+// confirmCloseAll （无回调版）关闭所有标签的确认对话框——用于标签栏 × 等不需要后续处理动作的场景。
+func (e *editorState) confirmCloseAll() {
+	e.ConfirmCloseAll(nil)
+}
+
+// saveTab 保存单个标签到磁盘。
+func (e *editorState) saveTab(t *editorTab) {
+	if t == nil || !t.dirty {
+		return
+	}
+	if err := os.WriteFile(t.path, []byte(t.content), 0o644); err == nil {
+		t.dirty = false
+	}
+}
+
+// saveAllDirty 保存所有未保存标签到磁盘。
+func (e *editorState) saveAllDirty() {
+	for _, t := range e.tabs {
+		e.saveTab(t)
+	}
 }
 
 // tabAt 取第 i 个标签（越界 nil）。

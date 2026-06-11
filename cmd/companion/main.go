@@ -37,6 +37,7 @@ import (
 )
 
 var application *app.Application
+var shellStateRef *shellState // 全局 shell 状态引用，供 workspace 关闭后 SetState 重建
 
 // VS Code Dark+ 风格配色（IDE 深色）。
 var (
@@ -93,6 +94,26 @@ func main() {
 	application.ShortcutManager.Register(0x46, event.ModCtrl, func() { chatpanel.TheState.ToggleSearch() }, "Ctrl+F 搜索对话") // VK_F
 	application.ShortcutManager.Register(0xBC, event.ModCtrl, func() { settingspanel.OpenDialog() }, "Ctrl+, 打开设置")               // VK_OEM_COMMA
 
+	// ── 工作区关闭回调：未保存提示 → 清除编辑器标签 + 隐藏面板 + 重建 shell → IDE 欢迎页 ──
+	core.OnCloseProject = func() {
+		editorpanel.Editor.ConfirmCloseAll(func() {
+			editorpanel.MarkWorkspaceClosed()
+			if shellStateRef != nil {
+				shellStateRef.panels = state.IdeWelcomePanels()
+				shellStateRef.SetState()
+			}
+		})
+	}
+	core.OnClearWorkspace = func() {
+		editorpanel.Editor.ConfirmCloseAll(func() {
+			editorpanel.MarkWorkspaceClosed()
+			if shellStateRef != nil {
+				shellStateRef.panels = state.IdeWelcomePanels()
+				shellStateRef.SetState()
+			}
+		})
+	}
+
 	application.Ready = func() {
 		// 标题栏命中区：顶部 titleBarH 高、右侧 6 个按钮（3 面板开关 + 3 窗口）宽除外 → 系统接管拖动/双击最大化。
 		application.SetTitleBar(titleBarH, 3*toggleW+3*winBtnW)
@@ -137,9 +158,15 @@ type Shell struct {
 func (sh *Shell) CreateState() widget.State {
 	p := sh.initial
 	if p == nil {
-		p = state.DefaultPanels()
+		if len(core.Folders) > 0 {
+			p = state.DefaultPanels() // 已有工作区：显示所有面板
+		} else {
+			p = state.IdeWelcomePanels() // 无工作区：隐藏面板，仅中列展示 IDE 欢迎页
+		}
 	}
-	return &shellState{panels: p}
+	s := &shellState{panels: p}
+	shellStateRef = s
+	return s
 }
 
 type shellState struct {
@@ -347,20 +374,20 @@ func (s *shellState) titleMenus() []widget.Widget {
 			{Label: "Git", Command: "view.git", Checked: p.Left && s.leftView == "git"},
 			{Label: "对话", Shortcut: "Ctrl+Shift+C", Command: "view.chat", Checked: p.Right},
 			{Label: "终端", Shortcut: "Ctrl+J", Command: "view.terminal", Checked: p.Bottom},
-			{Label: "放大", Shortcut: "Ctrl+=", Disabled: true, Divided: true},
-			{Label: "缩小", Shortcut: "Ctrl+-", Disabled: true},
-			{Label: "切换 Minimap", Disabled: true},
+			{Label: "放大", Shortcut: "Ctrl+=", Command: "view.zoomIn", Divided: true},
+			{Label: "缩小", Shortcut: "Ctrl+-", Command: "view.zoomOut"},
+			{Label: "切换 Minimap", Command: "view.toggleMinimap"},
 			{Label: "导出当前对话", Command: "view.export"},
 		}, s.onViewMenu),
 		menuBarBtn("终端", termMenuItems(), s.onTerminalMenu),
 		menuBarBtn("Agent", []widget.DropdownItem{
-			{Label: "Agent 监控面板", Shortcut: "Ctrl+Shift+M", Disabled: true},
-			{Label: "性能监控", Disabled: true, Divided: true},
+			{Label: "Agent 监控面板", Shortcut: "Ctrl+Shift+M", Command: "agent.monitor"},
+			{Label: "性能监控", Command: "agent.perf", Divided: true},
 			{Label: "进化图（EvoMap）", Disabled: true},
-			{Label: "探索项目知识库", Disabled: true, Divided: true},
-		}, func(string) {}),
+			{Label: "探索项目知识库", Command: "agent.explore", Divided: true},
+		}, s.onAgentMenu),
 		menuBarBtn("帮助", []widget.DropdownItem{
-			{Label: "扩展市场", Disabled: true},
+			{Label: "扩展市场", Command: "help.marketplace"},
 			{Label: "打开设置", Shortcut: "Ctrl+,", Command: "help.settings"},
 			{Label: "更新日志", Command: "help.changelog", Divided: true},
 			{Label: "关于", Command: "help.about", Divided: true},
@@ -431,6 +458,14 @@ func (s *shellState) onViewMenu(cmd string) {
 		s.SetState()
 	case "view.export":
 		chatpanel.TheState.ExportActive()
+	case "view.zoomIn":
+		menuactions.SetEditorFontSize(menuactions.EditorFontSize() + 1)
+	case "view.zoomOut":
+		menuactions.SetEditorFontSize(menuactions.EditorFontSize() - 1)
+	case "view.toggleMinimap":
+		core.Settings.HideMinimap = !core.Settings.HideMinimap
+		core.Save()
+		menuactions.Relayout()
 	}
 }
 
@@ -461,6 +496,17 @@ func (s *shellState) onTerminalMenu(cmd string) {
 	s.SetState()
 }
 
+func (s *shellState) onAgentMenu(cmd string) {
+	switch cmd {
+	case "agent.monitor":
+		menuactions.ShowAgentMonitor()
+	case "agent.perf":
+		menuactions.ShowPerfMonitor()
+	case "agent.explore":
+		chatpanel.TheState.ExploreKnowledgeBase()
+	}
+}
+
 func (s *shellState) onHelpMenu(cmd string) {
 	switch cmd {
 	case "help.settings":
@@ -470,6 +516,8 @@ func (s *shellState) onHelpMenu(cmd string) {
 	case "help.changelog":
 		menuactions.ShowContentDialog("更新日志", 580,
 			widget.NewScrollView(ui.TextC(menuactions.ChangelogText, *ui.Fg, 12)))
+	case "help.marketplace":
+		menuactions.ShowMarketplace()
 	}
 }
 

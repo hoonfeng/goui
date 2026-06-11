@@ -23,6 +23,10 @@ var (
 	OnOpenFolder    func() // 注入 ctxmenupanel.OpenFolderViaDialog
 	OnAddFolder     func() // 注入 ctxmenupanel.AddFolderViaDialog
 	OnOpenProject   func(p string)
+	// OnCloseProject  关闭当前项目后回调（清除编辑器标签 + 刷新界面）
+	OnCloseProject func()
+	// OnClearWorkspace 清空工作区后回调（清除编辑器标签 + 刷新界面 → IDE 欢迎页）
+	OnClearWorkspace func()
 )
 
 // LoadLastProject 启动恢复工作区。
@@ -149,13 +153,18 @@ func CloseProjectMenu() {
 	if len(Folders) == 0 { widget.MessageInfo("当前没有打开的项目"); return }
 	CloseProject()
 	widget.MessageInfo("已关闭项目")
+	if OnCloseProject != nil { OnCloseProject() }
 }
 
 // CloseWorkspaceMenu 关闭整个工作区。
 func CloseWorkspaceMenu() {
 	if len(Folders) == 0 { widget.MessageInfo("工作区已是空的"); return }
 	widget.ShowConfirm("关闭工作区", "确定关闭整个工作区？", widget.MsgWarning,
-		func() { ClearWorkspace(); widget.MessageInfo("已关闭工作区") }, nil)
+		func() {
+			ClearWorkspace()
+			widget.MessageInfo("已关闭工作区")
+			if OnClearWorkspace != nil { OnClearWorkspace() }
+		}, nil)
 }
 
 // ─── 管理工作区对话框 ──

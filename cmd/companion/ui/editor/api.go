@@ -32,9 +32,19 @@ var (
 	OnSymbols    func(syms []widget.CodeSym) // 文档大纲结果回调(main 注入 editorSymbols)
 )
 
+// workspaceClosed 标记：关闭项目/工作区后，强制切 IDE 欢迎页（防止重建时序问题）。
+var workspaceClosed bool
+
+// MarkWorkspaceClosed 标记工作区已关闭，下一次 MidContent() 强制返回 IDE 欢迎页。
+func MarkWorkspaceClosed() { workspaceClosed = true }
+
 // MidContent 中列内容分发：未打开工作区 → IDE 欢迎页；已打开 → 编辑器面板。
 // 供 main.go 的 midColumn() 调用。
 func MidContent() widget.Widget {
+	if workspaceClosed {
+		workspaceClosed = false
+		return buildIdeWelcome()
+	}
 	if len(core.Folders) == 0 {
 		return buildIdeWelcome()
 	}

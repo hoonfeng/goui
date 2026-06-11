@@ -11,6 +11,7 @@ import (
 	"github.com/user/goui/cmd/companion/ui/filetree"
 	"github.com/user/goui/cmd/companion/ui/git"
 	"github.com/user/goui/cmd/companion/ui/logo"
+	"github.com/user/goui/cmd/companion/ui/state"
 	"github.com/user/goui/cmd/companion/ui/terminal"
 	"github.com/user/goui/internal/widget"
 	"github.com/user/goui/cmd/companion/core"
@@ -83,6 +84,15 @@ func init() {
 		core.Settings.LastProject = core.Root()
 		core.Loaded = true
 		core.Save()
+		// 工作区变更后触发 shell 重建：打开项目 → 显示面板 + 切编辑器；关闭项目 → 显示 IDE 欢迎页
+		if shellStateRef != nil {
+			if len(core.Folders) > 0 {
+				shellStateRef.panels = state.DefaultPanels()
+			} else {
+				shellStateRef.panels = state.IdeWelcomePanels()
+			}
+			shellStateRef.SetState()
+		}
 	}
 	settingspanel.RegisterSettingsUI()
 		// Inject bridge.ApplyIgnoreDirs callback

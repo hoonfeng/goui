@@ -20,6 +20,16 @@ func DefaultPanels() *Panels {
 	}
 }
 
+// IdeWelcomePanels IDE 欢迎页面板布局：所有停靠区隐藏，仅中列展示欢迎页。
+// 在未打开工作区/项目时使用，让窗口干净地呈现欢迎入口。
+func IdeWelcomePanels() *Panels {
+	return &Panels{
+		Left: false, Right: false, Bottom: false,
+		LeftW: 260, RightW: 400, BottomH: 200,
+		LeftPanel: "files", RightPanel: "chat", BotPanel: "terminal",
+	}
+}
+
 // PanelIn 返回某区当前所放的面板组 id。
 func (p *Panels) PanelIn(z Zone) string {
 	switch z {
