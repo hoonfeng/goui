@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/user/goui/internal/event"
-	"github.com/user/goui/internal/window"
+	"github.com/hoonfeng/goui/pkg/event"
+	"github.com/hoonfeng/goui/pkg/window"
 )
 
 // Win32 API DLLs

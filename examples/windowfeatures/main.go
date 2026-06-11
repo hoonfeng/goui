@@ -15,12 +15,12 @@ package main
 import (
 	"fmt"
 
-	"github.com/user/goui/internal/app"
-	"github.com/user/goui/internal/types"
-	"github.com/user/goui/internal/widget"
-	"github.com/user/goui/internal/window"
+	"github.com/hoonfeng/goui/pkg/app"
+	"github.com/hoonfeng/goui/pkg/types"
+	"github.com/hoonfeng/goui/pkg/widget"
+	"github.com/hoonfeng/goui/pkg/window"
 
-	_ "github.com/user/goui/internal/platform"
+	_ "github.com/hoonfeng/goui/pkg/platform"
 )
 
 var (

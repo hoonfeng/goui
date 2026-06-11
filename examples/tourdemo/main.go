@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/user/goui/internal/canvas"
-	"github.com/user/goui/internal/render"
-	"github.com/user/goui/internal/widget"
+	"github.com/hoonfeng/goui/pkg/canvas"
+	"github.com/hoonfeng/goui/pkg/render"
+	"github.com/hoonfeng/goui/pkg/widget"
 )
 
 const (

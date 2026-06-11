@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/user/goui/internal/lsp"
+	"github.com/hoonfeng/goui/internal/lsp"
 )
 
 const goSrc = `package main

@@ -20,8 +20,8 @@ import (
 	"math"
 	"strings"
 
-	"github.com/user/goui/internal/layout"
-	"github.com/user/goui/internal/widget"
+	"github.com/hoonfeng/goui/internal/layout"
+	"github.com/hoonfeng/goui/pkg/widget"
 )
 
 // ─────────────────────────────────────────────────────────────

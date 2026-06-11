@@ -5,8 +5,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/user/goui/internal/layout"
-	"github.com/user/goui/internal/types"
+	"github.com/hoonfeng/goui/internal/layout"
+	"github.com/hoonfeng/goui/pkg/types"
 )
 
 // ─────────────────────────────────────────────────────────────

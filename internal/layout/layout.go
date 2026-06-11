@@ -6,7 +6,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/user/goui/internal/types"
+	"github.com/hoonfeng/goui/pkg/types"
 )
 
 func init() {

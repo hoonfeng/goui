@@ -18,11 +18,11 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/user/goui/internal/app"
-	"github.com/user/goui/internal/canvas"
-	"github.com/user/goui/internal/render"
-	"github.com/user/goui/internal/types"
-	"github.com/user/goui/internal/widget"
+	"github.com/hoonfeng/goui/pkg/app"
+	"github.com/hoonfeng/goui/pkg/canvas"
+	"github.com/hoonfeng/goui/pkg/render"
+	"github.com/hoonfeng/goui/pkg/types"
+	"github.com/hoonfeng/goui/pkg/widget"
 )
 
 const (

@@ -18,9 +18,9 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/user/goui/internal/app"
-	"github.com/user/goui/internal/types"
-	"github.com/user/goui/internal/widget"
+	"github.com/hoonfeng/goui/pkg/app"
+	"github.com/hoonfeng/goui/pkg/types"
+	"github.com/hoonfeng/goui/pkg/widget"
 )
 
 func gap(w float64) widget.Widget { return widget.Div(widget.Style{Width: w}) }

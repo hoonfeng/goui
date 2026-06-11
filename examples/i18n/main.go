@@ -10,11 +10,11 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/user/goui/internal/app"
-	"github.com/user/goui/internal/i18n"
-	"github.com/user/goui/internal/types"
-	"github.com/user/goui/internal/widget"
-	_ "github.com/user/goui/internal/window/win32"
+	"github.com/hoonfeng/goui/pkg/app"
+	"github.com/hoonfeng/goui/internal/i18n"
+	"github.com/hoonfeng/goui/pkg/types"
+	"github.com/hoonfeng/goui/pkg/widget"
+	_ "github.com/hoonfeng/goui/internal/window/win32"
 )
 
 func init() {

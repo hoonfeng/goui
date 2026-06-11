@@ -1,9 +1,9 @@
-module github.com/user/goui
+module github.com/hoonfeng/goui
 
 go 1.24.2
 
 require (
-	github.com/hoonfeng/goskia v0.0.0-20260601173004-92e3d53ae4b5
+	github.com/hoonfeng/goskia v0.0.0-20260611235919-bdf27a3
 	golang.org/x/image v0.21.0
 )
 

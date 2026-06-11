@@ -201,8 +201,8 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/user/goui/internal/event"
-	"github.com/user/goui/internal/window"
+	"github.com/hoonfeng/goui/pkg/event"
+	"github.com/hoonfeng/goui/pkg/window"
 )
 
 // CocoaWindow 实现 window.Window 接口

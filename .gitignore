@@ -18,6 +18,9 @@ libSkiaSharp.dll
 # 运行日志
 *.log
 
+# Agent 日志
+/logs/
+
 # 临时目录
 /.cache/
 

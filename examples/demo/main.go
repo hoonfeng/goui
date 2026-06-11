@@ -16,9 +16,9 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/user/goui/internal/app"
-	"github.com/user/goui/internal/types"
-	"github.com/user/goui/internal/widget"
+	"github.com/hoonfeng/goui/pkg/app"
+	"github.com/hoonfeng/goui/pkg/types"
+	"github.com/hoonfeng/goui/pkg/widget"
 )
 
 func init() {

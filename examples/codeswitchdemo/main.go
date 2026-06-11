@@ -6,8 +6,8 @@ import (
 	"log"
 	"runtime"
 
-	"github.com/user/goui/internal/app"
-	"github.com/user/goui/internal/widget"
+	"github.com/hoonfeng/goui/pkg/app"
+	"github.com/hoonfeng/goui/pkg/widget"
 )
 
 const goSrc = `package main

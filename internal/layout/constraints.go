@@ -1,7 +1,7 @@
 // Package layout 定义了布局引擎的核心类型。
 package layout
 
-import "github.com/user/goui/internal/types"
+import "github.com/hoonfeng/goui/pkg/types"
 
 // BoxConstraints 是父控件对子控件的尺寸约束。
 // 类似于 Flutter 的 BoxConstraints。

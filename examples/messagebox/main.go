@@ -9,11 +9,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/user/goui/internal/animation"
-	"github.com/user/goui/internal/canvas"
-	"github.com/user/goui/internal/render"
-	"github.com/user/goui/internal/types"
-	"github.com/user/goui/internal/widget"
+	"github.com/hoonfeng/goui/pkg/animation"
+	"github.com/hoonfeng/goui/pkg/canvas"
+	"github.com/hoonfeng/goui/pkg/render"
+	"github.com/hoonfeng/goui/pkg/types"
+	"github.com/hoonfeng/goui/pkg/widget"
 )
 
 // settleOverlayAnim 把浮层进场动画推进到终态(headless 单帧无主循环驱动)。

@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/user/goui/internal/window"
+	"github.com/hoonfeng/goui/pkg/window"
 )
 
 var (

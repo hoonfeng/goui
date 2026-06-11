@@ -5,9 +5,9 @@ package main
 import (
 	"fmt"
 
-	"github.com/user/goui/internal/canvas"
-	"github.com/user/goui/internal/paint"
-	"github.com/user/goui/internal/types"
+	"github.com/hoonfeng/goui/pkg/canvas"
+	"github.com/hoonfeng/goui/pkg/paint"
+	"github.com/hoonfeng/goui/pkg/types"
 )
 
 func main() {
