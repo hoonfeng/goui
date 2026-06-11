@@ -49,21 +49,21 @@ type CodeEditor struct {
 	ReloadToken int
 	// 跳转到行：RevealToken 改变（配合 SetState）→ 把光标移到 RevealLine(1 基)并滚动到可见。
 	// 供搜索/Git 等点击结果跳转用。RevealLine<=0 不跳。
-	RevealLine  int
-	RevealToken int
-	initial     string
-	OnChange    func(string)
-	OnEnter     func()             // 按回车换行后触发（StructEditor 用作「回车自动声明变量」时机）
-	OnCursorMove func(line, col int) // 光标位置变化回调（行/列均 0 基，状态栏 Ln/Col 显示用）
-	ExtraIdents func() []CECompletion // 外部补全源（StructEditor 注入：已声明变量/子程序/命令库）
-	Minimap     bool               // 是否显示右侧缩略图（默认开）
-	WordWrap    bool               // 软自动换行：长行按编辑区宽折成多视觉行（默认关，可 toggleWrap 切换）
-	FontSize    float64            // 等宽字号（<=0 用默认 14）
-	FontFamily  string             // 等宽字体族（空=Consolas）
-	FontBold      bool             // 整体加粗
-	FontItalic    bool             // 整体斜体
-	FontUnderline bool             // 整体下划线
-	Embedded bool // 嵌入模式：去掉独立白卡圆角/聚焦蓝框，无缝融入父容器（StructEditor 用）
+	RevealLine    int
+	RevealToken   int
+	initial       string
+	OnChange      func(string)
+	OnEnter       func()                // 按回车换行后触发（StructEditor 用作「回车自动声明变量」时机）
+	OnCursorMove  func(line, col int)   // 光标位置变化回调（行/列均 0 基，状态栏 Ln/Col 显示用）
+	ExtraIdents   func() []CECompletion // 外部补全源（StructEditor 注入：已声明变量/子程序/命令库）
+	Minimap       bool                  // 是否显示右侧缩略图（默认开）
+	WordWrap      bool                  // 软自动换行：长行按编辑区宽折成多视觉行（默认关，可 toggleWrap 切换）
+	FontSize      float64               // 等宽字号（<=0 用默认 14）
+	FontFamily    string                // 等宽字体族（空=Consolas）
+	FontBold      bool                  // 整体加粗
+	FontItalic    bool                  // 整体斜体
+	FontUnderline bool                  // 整体下划线
+	Embedded      bool                  // 嵌入模式：去掉独立白卡圆角/聚焦蓝框，无缝融入父容器（StructEditor 用）
 
 	LineNumberOffset int            // 行号起始偏移：显示行号 = 实际行 + 此值（StructEditor 全局连续行号用）
 	IndentGuides     bool           // 缩进连线：按缩进画淡竖线，块结构(首…尾)连成一条
@@ -210,9 +210,9 @@ func (c *CodeEditor) CreateElement() Element {
 }
 
 const (
-	ceLineH    = 21.0 // 行高（font 14 → 21）
+	ceLineH     = 21.0 // 行高（font 14 → 21）
 	ceGutterPad = 10.0
-	ceTextPad  = 8.0
+	ceTextPad   = 8.0
 )
 
 type CodeEditorElement struct {
@@ -230,12 +230,12 @@ type CodeEditorElement struct {
 
 	// enclosingBracket 缓存：bracketRev 每次 rehighlight(内容变) 自增；命中条件 = rev 与光标行均未变，
 	// 避免大文件每帧全文扫描括号（活动缩进折线每帧要它）。
-	bracketRev    int
-	brkCacheRev   int
-	brkCacheLine  int
-	brkCacheValid bool
+	bracketRev                 int
+	brkCacheRev                int
+	brkCacheLine               int
+	brkCacheValid              bool
 	brkOL, brkOC, brkCL, brkCC int
-	brkOK         bool
+	brkOK                      bool
 
 	scrollX, scrollY float64
 	focused          bool
@@ -266,18 +266,18 @@ type CodeEditorElement struct {
 	measFont  canvas.Font
 
 	// 查找替换
-	findActive   bool         // 查找栏是否打开
-	replaceShown bool         // 是否显示替换行
-	findQuery    string       // 查找串
-	findCol      int          // 查找框内光标
-	replaceQuery string       // 替换串
-	replaceCol   int          // 替换框内光标
-	findField    int          // 当前焦点字段：0=查找框 1=替换框
-	findCase     bool         // 区分大小写
-	matches      []ceMatch    // 所有匹配（文档顺序）
-	curMatch     int          // 当前匹配下标
-	findOrigin   cePos        // 打开查找时的光标位置（定位首个匹配，避免输入时漂移）
-	findBtns     []ceFindBtn  // 查找栏按钮命中区（Paint 算）
+	findActive   bool        // 查找栏是否打开
+	replaceShown bool        // 是否显示替换行
+	findQuery    string      // 查找串
+	findCol      int         // 查找框内光标
+	replaceQuery string      // 替换串
+	replaceCol   int         // 替换框内光标
+	findField    int         // 当前焦点字段：0=查找框 1=替换框
+	findCase     bool        // 区分大小写
+	matches      []ceMatch   // 所有匹配（文档顺序）
+	curMatch     int         // 当前匹配下标
+	findOrigin   cePos       // 打开查找时的光标位置（定位首个匹配，避免输入时漂移）
+	findBtns     []ceFindBtn // 查找栏按钮命中区（Paint 算）
 
 	// 代码折叠
 	foldRanges  []foldRange  // 可折叠区域（{ 到匹配 }，跨行）
@@ -317,20 +317,26 @@ type CodeEditorElement struct {
 	lspStarting bool // 嵌入体编辑器聚焦后正在启动 gopls（防重复启动）
 	// 虚拟文档包装（内嵌函数体编辑器用）：把本地文本/坐标映射到完整 Go 文档喂 gopls。
 	// lspWrap(本地文本) → (完整文档, 行偏移, 列偏移)；nil 表不包装（独立整文件编辑）。
-	lspWrap            func(string) (string, int, int)
+	lspWrap               func(string) (string, int, int)
 	lspLineOff, lspColOff int
-	lspMu       sync.Mutex       // 保护 lspPending/diagnostics/pendingDef（读协程 vs UI 线程）
-	lspPending  []compItem       // LSP 补全结果，待 UI 线程消费
-	lspPendGen  int              // 待消费结果对应的补全代
-	lspGen      int              // 当前补全请求代（防过期）
-	diagnostics []lsp.Diagnostic // 当前诊断
-	pendingDef  *pendingJump     // 转到定义结果，待 UI 线程回调宿主（跨线程：定义请求在协程）
-	pendingRefs []CodeLoc        // 查找引用结果，待 UI 线程回调宿主
-	pendingSyms []CodeSym        // 文档符号结果，待 UI 线程回调宿主
+	lspMu                 sync.Mutex       // 保护 lspPending/diagnostics/pendingDef（读协程 vs UI 线程）
+	lspPending            []compItem       // LSP 补全结果，待 UI 线程消费
+	lspPendGen            int              // 待消费结果对应的补全代
+	lspGen                int              // 当前补全请求代（防过期）
+	diagnostics           []lsp.Diagnostic // 当前诊断
+	pendingDef            *pendingJump     // 转到定义结果，待 UI 线程回调宿主（跨线程：定义请求在协程）
+	pendingRefs           []CodeLoc        // 查找引用结果，待 UI 线程回调宿主
+	pendingSyms           []CodeSym        // 文档符号结果，待 UI 线程回调宿主
 
-	hoverText    string       // 悬停内容（showHover 命令触发画浮层；空=不显示）
-	hoverCursor  cePos        // 悬停时光标位置（光标移开则关闭浮层）
-	pendingHover *hoverResult // 悬停结果，待 UI 线程显示
+	hoverText        string       // 悬停内容（showHover 命令/鼠标悬停触发画浮层；空=不显示）
+	hoverCursor      cePos        // 悬停时光标位置（光标移开则关闭浮层）
+	pendingHover     *hoverResult // 悬停结果，待 UI 线程显示
+	hoverByMouse     bool         // true=本次悬停由鼠标触发（关闭条件判断鼠标位置而非光标）
+	mouseHoverPos    cePos        // 鼠标悬停时的最新文本位置（用于 200ms 延迟触发判断）
+	hoverMouseX      float64      // 鼠标悬停触发时的像素 X（paintHover 据此判断鼠标是否移开，带 4px 容差）
+	hoverMouseY      float64      // 鼠标悬停触发时的像素 Y（同上，带 4px 容差）
+	hoverAnchor      cePos        // 悬停触发时的锚点位置（paintHover 据此判断是否移开，不受后续 mouseHoverPos 更新影响）
+	hoverTimerCancel func()       // 取消待执行的鼠标悬停延迟触发
 
 	pendingFormats []lsp.TextEdit // 格式化结果，待 UI 线程应用编辑
 
@@ -338,6 +344,8 @@ type CodeEditorElement struct {
 	diagHoverMsg  string // 鼠标悬停在诊断波浪线上时的诊断消息；空=不显示
 	diagHoverLine int    // 悬停的诊断所在行
 	diagHoverCol  int    // 悬停的诊断所在列
+
+	mouseX, mouseY float64 // 最近一次鼠标位置（CursorProvider 判断用）
 }
 
 // hoverResult 异步悬停结果（内容 + 请求时的光标位置）。
@@ -712,6 +720,51 @@ func (e *CodeEditorElement) advancePos(p cePos, dir int) cePos {
 	return cePos{-1, 0}
 }
 
+// wrapHoverLine 将单行文本按 maxWidth 像素宽折成多行，优先在空白处断开。
+// 用于悬浮提示框（paintHover / paintDiagHover）的长行自动换行。
+func (e *CodeEditorElement) wrapHoverLine(s string, maxWidth float64) []string {
+	if e.measure(s) <= maxWidth {
+		return []string{s}
+	}
+	runes := []rune(s)
+	var result []string
+	start := 0
+	n := len(runes)
+	for start < n {
+		end := start
+		w := 0.0
+		for end < n {
+			rw := e.measure(string(runes[end : end+1]))
+			if w+rw > maxWidth && end > start {
+				break
+			}
+			w += rw
+			end++
+		}
+		if end <= start {
+			end = start + 1
+		}
+		if end < n {
+			brk := -1
+			for k := end; k > start; k-- {
+				if runes[k-1] == ' ' || runes[k-1] == '\t' {
+					brk = k
+					break
+				}
+			}
+			if brk > start {
+				end = brk
+			}
+		}
+		result = append(result, string(runes[start:end]))
+		start = end
+		for start < n && runes[start] == ' ' {
+			start++
+		}
+	}
+	return result
+}
+
 func (e *CodeEditorElement) afterEdit() {
 	e.cursor = e.clampPos(e.cursor)
 	e.anchor = e.clampPos(e.anchor)
@@ -826,6 +879,30 @@ func (e *CodeEditorElement) Blur() {
 	repaint()
 }
 func (e *CodeEditorElement) IsFocused() bool { return e.focused }
+
+// Cursor 实现 CursorProvider 接口：鼠标悬浮于编辑区文本区域时显示 I 形光标（文本选择），
+// 在行号栏/滚动条/缩略图等非编辑区域显示默认箭头。
+func (e *CodeEditorElement) Cursor() int {
+	if !e.hovered {
+		return CursorDefault
+	}
+	pos := e.Offset()
+	mx := e.mouseX
+	// 行号栏区域 → 默认
+	if mx > pos.X && mx < pos.X+e.gutterW {
+		return CursorDefault
+	}
+	// 缩略图区域 → 默认
+	if e.showMinimap && mx > pos.X+e.size.Width-e.miniRect.Width-1 {
+		return CursorDefault
+	}
+	// 垂直滚动条区域 → 默认
+	if e.vbarThumb.Width > 0 && mx > e.vbarThumb.X {
+		return CursorDefault
+	}
+	// 编辑区文本区域 → I 形光标
+	return CursorText
+}
 
 // focusedCodeEditor 当前聚焦的代码编辑器；lastFocusedCodeEditor 最近聚焦的（失焦后仍保留）。
 var (

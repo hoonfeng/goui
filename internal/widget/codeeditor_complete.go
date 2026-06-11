@@ -15,9 +15,9 @@ import (
 type compKind uint8
 
 const (
-	ckIdent compKind = iota // 文件标识符
-	ckKeyword               // 关键字
-	ckType                  // 类型/内置
+	ckIdent   compKind = iota // 文件标识符
+	ckKeyword                 // 关键字
+	ckType                    // 类型/内置
 )
 
 type compItem struct {
@@ -301,37 +301,63 @@ func (e *CodeEditorElement) paintCompletion(cvs canvas.Canvas, left, top float64
 	}
 }
 
-// paintHover 画悬停信息浮层（showHover 命令触发）：符号上方（放不下→下方）一个含类型签名/文档的框。
-// 光标移开（cursor != hoverCursor）即关闭。
+// paintHover 画悬停信息浮层（showHover 命令/鼠标悬停触发）：符号上方（放不下→下方）一个含类型签名/文档的框。
+// 命令触发：光标移开（cursor != hoverCursor）即关闭。
+// 鼠标触发：鼠标移开锚点（mouseHoverPos != hoverAnchor）即关闭；e.cursor（编辑光标）不影响。
 func (e *CodeEditorElement) paintHover(cvs canvas.Canvas, left, top float64) {
 	if e.hoverText == "" {
 		return
 	}
-	if !cePosEq(e.cursor, e.hoverCursor) { // 光标移开 → 关闭
-		e.hoverText = ""
-		return
+
+	if e.hoverByMouse {
+		// 鼠标触发：用像素距离判断，>8px 视为移开。
+		// mouseX/mouseY 由 TypeMouseMove 每帧刷新；hoverMouseX/Y 在触发时写入。
+		dx := e.mouseX - e.hoverMouseX
+		dy := e.mouseY - e.hoverMouseY
+		if dx*dx+dy*dy > 64 { // 8px 阈值
+			e.hoverText = ""
+			e.hoverByMouse = false
+			return
+		}
+	} else {
+		if !cePosEq(e.cursor, e.hoverCursor) {
+			e.hoverText = ""
+			return
+		}
 	}
-	lines := strings.Split(e.hoverText, "\n")
-	if len(lines) > 16 {
-		lines = append(lines[:16], "…")
+
+	// 按 \n 拆分基础行，并做自动换行（长行折到 maxBoxW 内）
+	const maxBoxW = 480.0
+	const pad = 18.0
+	wrapW := maxBoxW - pad // 文本实际可用宽
+	rawLines := strings.Split(e.hoverText, "\n")
+	var lines []string
+	for _, ln := range rawLines {
+		wrapped := e.wrapHoverLine(ln, wrapW)
+		lines = append(lines, wrapped...)
+		if len(lines) > 32 {
+			lines = append(lines[:32], "…")
+			break
+		}
 	}
+	// 根据折行后的行重新算 maxW（以最宽行为准）
 	maxW := 80.0
 	for _, ln := range lines {
-		if w := e.measure(ln) + 18; w > maxW {
+		if w := e.measure(ln) + pad; w > maxW {
 			maxW = w
 		}
 	}
-	if maxW > 480 {
-		maxW = 480
+	if maxW > maxBoxW {
+		maxW = maxBoxW
 	}
 	boxH := float64(len(lines))*ceLineH + 10
 	x := e.posX(e.hoverCursor.line, e.hoverCursor.col, left)
-	yTop := e.posTopY(e.hoverCursor.line, e.hoverCursor.col, top) - boxH - 4 // 符号上方
+	yTop := e.posTopY(e.hoverCursor.line, e.hoverCursor.col, top) - boxH - 4
 	pos := e.Offset()
-	if yTop < pos.Y+2 { // 上方放不下 → 下方
+	if yTop < pos.Y+2 {
 		yTop = e.posTopY(e.hoverCursor.line, e.hoverCursor.col, top) + ceLineH + 2
 	}
-	if x+maxW > pos.X+e.size.Width-2 { // 右溢 → 左移
+	if x+maxW > pos.X+e.size.Width-2 {
 		x = pos.X + e.size.Width - 2 - maxW
 	}
 	if x < pos.X+2 {

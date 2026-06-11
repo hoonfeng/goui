@@ -1,6 +1,7 @@
 package widget
 
 import (
+	"log"
 	"strings"
 
 	"github.com/user/goui/internal/canvas"
@@ -17,6 +18,10 @@ func (e *CodeEditorElement) startLSP(server, workspace string) {
 	e.lspServer = server
 	c, err := lsp.Acquire(server, e.ed.LSPArgs, workspace) // 共享池：复用现有或首次起（非单例，多语言并存）
 	if err != nil || c == nil {
+		if err != nil {
+			log.Printf("❌ LSP 启动失败 %s: %v", server, err)
+		}
+		MessageError("语言服务器 " + server + " 启动失败，部分智能功能不可用（补全/诊断/悬停）")
 		return
 	}
 	e.bindDiagnostics(c) // 活动编辑器认领该 client 的诊断推送（共享 client，后设的赢）
@@ -257,12 +262,17 @@ func (e *CodeEditorElement) requestDocumentSymbol() {
 
 // requestHover 光标处请求悬停信息（异步），结果经 pendingHover 转 UI 线程画浮层。
 func (e *CodeEditorElement) requestHover() {
+	e.requestHoverAt(e.cursor)
+}
+
+// requestHoverAt 在指定位置请求悬停信息（异步），结果经 pendingHover 转 UI 线程画浮层。
+// 供鼠标悬停（200ms 延迟）和命令触发两种入口使用。
+func (e *CodeEditorElement) requestHoverAt(at cePos) {
 	if !e.lspReady {
 		return
 	}
 	cl := e.lspClient
 	uri := e.lspURI
-	at := e.cursor
 	line := at.line + e.lspLineOff
 	char := at.col + e.lspColOff
 	go func() {
@@ -404,6 +414,8 @@ func (e *CodeEditorElement) applyOneTextEdit(edit lsp.TextEdit) {
 // cleanHoverMarkdown 去 ``` 代码围栏、折叠多余空行，得可直接逐行画的纯文本。
 func cleanHoverMarkdown(md string) string {
 	md = strings.ReplaceAll(md, "\r\n", "\n")
+	// 展开制表符（gopls 返回的结构体字段前有 \t，字体无 tab 字形会渲染成豆腐块）
+	md = expandTabs(md)
 	var out []string
 	blank := false
 	for _, ln := range strings.Split(md, "\n") {
@@ -596,22 +608,30 @@ func (e *CodeEditorElement) paintDiagHover(cvs canvas.Canvas) {
 		return
 	}
 	pos := e.Offset()
-	// 计算提示框尺寸
-	lines := strings.Split(e.diagHoverMsg, "\n")
-	if len(lines) > 10 {
-		lines = append(lines[:10], "…")
+	// 按 \n 拆分基础行，并做自动换行
+	const maxBoxW = 480.0
+	const pad = 18.0
+	wrapW := maxBoxW - pad
+	rawLines := strings.Split(e.diagHoverMsg, "\n")
+	var lines []string
+	for _, ln := range rawLines {
+		wrapped := e.wrapHoverLine(ln, wrapW)
+		lines = append(lines, wrapped...)
+		if len(lines) > 20 {
+			lines = append(lines[:20], "…")
+			break
+		}
 	}
 	maxW := 80.0
 	for _, ln := range lines {
-		if w := e.measure(ln) + 18; w > maxW {
+		if w := e.measure(ln) + pad; w > maxW {
 			maxW = w
 		}
 	}
-	if maxW > 480 {
-		maxW = 480
+	if maxW > maxBoxW {
+		maxW = maxBoxW
 	}
 	boxH := float64(len(lines))*ceLineH + 10
-	// 定位在悬停行上方
 	x := e.posX(e.diagHoverLine, e.diagHoverCol, pos.X+e.gutterW+ceTextPad-e.scrollX)
 	yTop := e.posTopY(e.diagHoverLine, e.diagHoverCol, pos.Y+4-e.scrollY) - boxH - 4
 	if yTop < pos.Y+2 {
@@ -623,19 +643,15 @@ func (e *CodeEditorElement) paintDiagHover(cvs canvas.Canvas) {
 	if x < pos.X+2 {
 		x = pos.X + 2
 	}
-	// 画阴影
 	sh := paint.DefaultPaint()
 	sh.Color = types.ColorFromRGBA(0, 0, 0, 30)
 	cvs.DrawRoundedRect(x, yTop+2, maxW, boxH, 5, sh)
-	// 画背景
 	bg := paint.DefaultPaint()
 	bg.Color = elSurface()
 	cvs.DrawRoundedRect(x, yTop, maxW, boxH, 5, bg)
-	// 画边框
 	bd := paint.DefaultStrokePaint()
 	bd.Color = elBorder()
 	cvs.DrawRoundedRect(x+0.5, yTop+0.5, maxW-1, boxH-1, 5, bd)
-	// 画消息文本
 	for i, ln := range lines {
 		canvas.DrawTextAligned(cvs, ln,
 			types.Rect{X: x + 8, Y: yTop + 5 + float64(i)*ceLineH, Width: maxW - 14, Height: ceLineH},

@@ -2,6 +2,7 @@ package widget
 
 import (
 	"strings"
+	"time"
 
 	"github.com/user/goui/internal/canvas"
 	"github.com/user/goui/internal/event"
@@ -172,8 +173,8 @@ func (e *CodeEditorElement) posFromXY(sx, sy float64) cePos {
 func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	pos := e.Offset()
 	w, h := e.size.Width, e.size.Height
-	e.lastCanvas = cvs       // 缓存画布，供点击定位/IME 候选用与渲染一致的 Skia 测量
-	e.drainLSPCompletion()   // 消费异步到达的 LSP 补全结果
+	e.lastCanvas = cvs     // 缓存画布，供点击定位/IME 候选用与渲染一致的 Skia 测量
+	e.drainLSPCompletion() // 消费异步到达的 LSP 补全结果
 
 	if e.ed == nil || !e.ed.Embedded {
 		// 独立模式：白底圆角 + 边框（聚焦主色）。嵌入模式(StructEditor)完全无边框，无缝融入整份文档。
@@ -441,14 +442,14 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	}
 	if e.focused && (e.isCursorVisible() || e.composition != "") {
 		cp := paint.DefaultStrokePaint()
-		cp.Color = types.ColorFromRGB(0x24, 0x29, 0x2E)
-		cp.StrokeWidth = 1.6
-		cvs.DrawLine(caretX, cBase-e.font.Size*0.82, caretX, cBase+e.font.Size*0.22, cp)
+		cp.Color = CurrentTheme().CodeEditor.Text
+		cp.StrokeWidth = 2.0
+		cvs.DrawLine(caretX, cyTop+1, caretX, cyTop+ceLineH-1, cp)
 	}
 	// 缓存光标客户区位置（供 IME 候选窗口定位）。Y 用光标【顶部】——与 InputElement
 	// 一致：多数输入法把候选放到锚点下方，用顶部锚点候选恰好紧贴文字下方；用底部会偏下一行。
 	e.cursorClientX = caretX
-	e.cursorClientY = cBase - e.font.Size*0.82
+	e.cursorClientY = cyTop
 	if e.ed.CursorRef != nil { // 同步光标/滚动，供切换视图后恢复
 		e.ed.CursorRef.Line, e.ed.CursorRef.Col = e.cursor.line, e.cursor.col
 		e.ed.CursorRef.ScrollX, e.ed.CursorRef.ScrollY = e.scrollX, e.scrollY
@@ -458,11 +459,11 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	if e.focused && e.isCursorVisible() {
 		for _, c := range e.extraCarets {
 			ecx := e.posX(c.cursor.line, c.cursor.col, left)
-			ecBase := canvas.BaselineFor(e.posTopY(c.cursor.line, c.cursor.col, top), ceLineH, e.font.Size, canvas.VAlignMiddle)
+			ecTopY := e.posTopY(c.cursor.line, c.cursor.col, top)
 			cp := paint.DefaultStrokePaint()
-			cp.Color = types.ColorFromRGB(0x24, 0x29, 0x2E)
-			cp.StrokeWidth = 1.6
-			cvs.DrawLine(ecx, ecBase-e.font.Size*0.82, ecx, ecBase+e.font.Size*0.22, cp)
+			cp.Color = CurrentTheme().CodeEditor.Text
+			cp.StrokeWidth = 2.0
+			cvs.DrawLine(ecx, ecTopY+1, ecx, ecTopY+ceLineH-1, cp)
 		}
 	}
 	cvs.Restore()
@@ -750,6 +751,11 @@ func (e *CodeEditorElement) HandleEvent(ev event.Event) bool {
 	case event.TypeMouseLeave:
 		e.hovered = false
 		e.diagHoverMsg = "" // 离开编辑器区域 → 关闭诊断悬停
+		e.hoverText = ""    // 离开编辑器区域 → 关闭 LSP 悬停
+		if e.hoverTimerCancel != nil {
+			e.hoverTimerCancel()
+			e.hoverTimerCancel = nil
+		}
 		return true
 
 	case event.TypeMouseDown:
@@ -821,6 +827,7 @@ func (e *CodeEditorElement) HandleEvent(ev event.Event) bool {
 		if !ok {
 			break
 		}
+		e.mouseX, e.mouseY = me.X, me.Y
 		if e.draggingVBar {
 			e.scrollY = clamp(e.dragStartScroll+(me.Y-e.dragStartMouse)*e.vbarFactor, 0, 1e9)
 			ev.StopPropagation()
@@ -847,9 +854,10 @@ func (e *CodeEditorElement) HandleEvent(ev event.Event) bool {
 			repaint()
 			return true
 		}
-		// 诊断悬停检测：鼠标不在拖拽/选择时，检查是否悬停在诊断波浪线上
+		// 诊断悬停检测 + LSP 悬停检测：鼠标不在拖拽/选择时
 		if e.ed != nil {
 			p := e.posFromXY(me.X, me.Y)
+			// 诊断悬停（波浪线）
 			msg := e.diagnosticAtPos(p.line, p.col)
 			if msg != "" {
 				e.diagHoverMsg = msg
@@ -857,6 +865,52 @@ func (e *CodeEditorElement) HandleEvent(ev event.Event) bool {
 				e.diagHoverCol = p.col
 			} else {
 				e.diagHoverMsg = ""
+			}
+			// LSP 语义悬停：鼠标 200ms 不动 → 触发请求
+			if e.lspReady && !e.selecting && !e.draggingVBar && !e.draggingHBar && !e.miniDragging {
+				// 判断：位置变了（字符级）或鼠标像素移动超过 4px？
+				// 任一条件为真 → 视为「移开」，取消旧悬停/旧定时器，重新计时。
+				// 像素阈值可避免同字符内微动反复关闭/重触发。
+				dx := me.X - e.hoverMouseX
+				dy := me.Y - e.hoverMouseY
+				moved := dx*dx+dy*dy > 16 // 4px（平方比较避免 sqrt）
+				posChanged := !cePosEq(p, e.mouseHoverPos)
+				if moved || posChanged {
+					e.mouseHoverPos = p
+					// 已有悬停且鼠标移开 → 关闭
+					if e.hoverText != "" && e.hoverByMouse {
+						e.hoverText = ""
+					}
+					// 取消旧定时器
+					if e.hoverTimerCancel != nil {
+						e.hoverTimerCancel()
+					}
+					// 启动新 200ms 延迟
+					ctx := make(chan struct{}, 1)
+					e.hoverTimerCancel = func() {
+						select {
+						case ctx <- struct{}{}:
+						default:
+						}
+					}
+					go func(pos cePos, mx, my float64, cancel <-chan struct{}) {
+						select {
+						case <-time.After(200 * time.Millisecond):
+							e.lspMu.Lock()
+							if cePosEq(e.mouseHoverPos, pos) && e.lspReady {
+								e.hoverByMouse = true
+								e.hoverAnchor = pos
+								e.hoverMouseX = mx
+								e.hoverMouseY = my
+							}
+							e.lspMu.Unlock()
+							if e.lspReady {
+								e.requestHoverAt(pos)
+							}
+						case <-cancel:
+						}
+					}(p, me.X, me.Y, ctx)
+				}
 			}
 		}
 		return false
@@ -980,6 +1034,7 @@ func (e *CodeEditorElement) handleKeyDown(k *event.KeyEvent) bool {
 		switch k.Key {
 		case "Escape":
 			e.clearExtraCarets()
+			e.hoverText = "" // Esc 也关闭 LSP 悬停
 			return true
 		case "Backspace":
 			e.editEachCaret("delete", e.backspace)
@@ -1010,6 +1065,7 @@ func (e *CodeEditorElement) handleKeyDown(k *event.KeyEvent) bool {
 	switch k.Key {
 	case "Escape":
 		e.clearExtraCarets()
+		e.hoverText = "" // Esc 也关闭 LSP 悬停
 	case "Backspace":
 		e.recordUndo("delete")
 		e.backspace()

@@ -125,6 +125,7 @@ const (
 	CS_OWNDC            = 0x0020
 	CS_HREDRAW          = 0x0001
 	CS_VREDRAW          = 0x0002
+	CS_DBLCLKS          = 0x0008
 	SW_SHOWNORMAL       = 1
 	SW_HIDE             = 0
 	PFD_TYPE_RGBA       = 0
@@ -348,7 +349,7 @@ func NewWindow(config window.WindowConfig) (window.Window, error) {
 	// 注册窗口类（CS_OWNDC 确保每个窗口拥有专用 DC，避免 OpenGL 像素格式被覆盖）
 	wc := WNDCLASSEXW{
 		Size:      uint32(unsafe.Sizeof(WNDCLASSEXW{})),
-		Style:     CS_OWNDC | CS_HREDRAW | CS_VREDRAW,
+		Style:     CS_OWNDC | CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
 		WndProc:   syscall.NewCallback(windowProc),
 		Instance:  instance,
 		ClassName: className,
