@@ -6,8 +6,6 @@
 package main
 
 import (
-	_ "embed"
-
 	"github.com/user/goui/cmd/companion/ui/config"
 	"github.com/user/goui/cmd/companion/ui/editor"
 	"github.com/user/goui/cmd/companion/ui/filetree"
@@ -22,9 +20,6 @@ import (
 	"github.com/user/goui/cmd/companion/ui/menu"
 	"github.com/user/goui/cmd/companion/ui/settings"
 )
-
-//go:embed config/welcome.json
-var welcomeJSON []byte
 
 func init() {
 	// ── 面板注册为配置可引用的组件(内部仍 Go 有状态，配置树里是一个节点 {"type":"ChatPanel"}) ──
@@ -62,10 +57,14 @@ func init() {
 	// ── 事件 handler(配置里 events 按名引用；代码只在此挂事件) ──
 	config.OnClick("openFile", ctxmenupanel.OpenFileViaDialog)
 
-	// ── 解析欢迎页配置一次，注入 editorpanel(欢迎页 embed 在 main，注入给面板用) ──
-	if s, err := config.ParseSpec(welcomeJSON); err == nil {
-		editorpanel.WelcomeSpec = s
-	}
+	// ── 欢迎页按钮回调注入 ──
+	// 代码欢迎页（已打开工作区但无文件标签时）：打开文件、新建文件
+	editorpanel.OnOpenFile = ctxmenupanel.OpenFileViaDialog
+	editorpanel.OnNewFile = func() { ctxmenupanel.NewEntryIn(core.Root(), false) }
+	// IDE 欢迎页（未打开工作区时）：打开文件夹作为工作区、新建项目、打开最近项目
+	editorpanel.OnOpenFolder = ctxmenupanel.OpenFolderViaDialog
+	editorpanel.OnNewProject = core.NewProjectViaDialog
+	editorpanel.OnOpenRecent = core.OpenProject
 
 	// Agent bridge callback injected for lazy bridge creation
 	chatpanel.NewBridge = func(cs *chatpanel.ChatState) chatpanel.AgentBridge {

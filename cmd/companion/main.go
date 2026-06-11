@@ -542,7 +542,7 @@ func (s *shellState) body() widget.Widget {
 // midColumn 中间列：编辑区（撑满，恒居中）+ 底部区面板（按状态）。
 func (s *shellState) midColumn() widget.Widget {
 	p := s.panels
-	rows := []widget.Widget{expand(&editorpanel.EditorPanel{})}
+	rows := []widget.Widget{expand(editorpanel.MidContent())}
 	if p.Bottom {
 		rows = append(rows,
 			hDivide(func(d float64) {

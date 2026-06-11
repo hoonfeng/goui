@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/user/goui/cmd/companion/ui/config"
 	"github.com/user/goui/cmd/companion/core"
 	"github.com/user/goui/cmd/companion/langsrv"
 	"github.com/user/goui/cmd/companion/ui"
@@ -206,9 +205,9 @@ func isBinaryExt(ext string) bool {
 
 func (e *editorState) Build(ctx widget.BuildContext) widget.Widget {
 	if len(e.tabs) == 0 {
-		// 欢迎页（空状态）改由配置声明：UI 写在 config/welcome.json（设计器可改），代码只挂 openFile 事件。
-		// 这是「配置声明 UI + 代码只挂事件」的样板（见 components.go 的 init 注册与解析）。
-		return config.Build(WelcomeSpec)
+		// 欢迎页（空状态）由 Go 代码直接构建，不依赖 JSON 配置 / embed 硬编码。
+		// 直接读取 ui 包主题指针，跟随主题切换。
+		return buildWelcome()
 	}
 	editorBg := widget.Style{BackgroundColor: ui.ShellEditor, FlexDirection: "column", AlignItems: "stretch"}
 	if e.split && len(e.tabs) >= 2 { // 分栏对比：左 active + 右 rightTab，各自独立编辑
