@@ -510,6 +510,7 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	if e.completing {
 		e.paintCompletion(cvs, left, top)
 	}
+	e.paintHover(cvs, left, top) // 悬停信息浮层（showHover 触发）
 
 	// 查找栏（最上层，右上角）
 	if e.findActive {
@@ -1109,6 +1110,17 @@ func (e *CodeEditorElement) Update(newWidget Widget) {
 			e.scrollX, e.scrollY = 0, 0
 			e.rehighlight()
 			e.computeVisible()
+			// 标签编辑器复用单 Element 跨文件：① 语言服务器变了（切到别的语言）→ 重启 LSP；
+			// ② 同服务器换文件 → 关旧开新（未就绪则仅更新目标，待 startLSP 打开当前文件）。
+			if nc.LSPServer != e.lspServer {
+				e.restartLSP(nc)
+			} else if nc.LSPFile != "" && nc.LSPFile != e.lspURI {
+				if e.lspReady {
+					e.switchLSPFile(nc.LSPFile)
+				} else {
+					e.lspURI = nc.LSPFile
+				}
+			}
 		}
 		// 跳转到行：RevealToken 变了 → 移光标到 RevealLine 并滚动到可见（在重载之后，行已就绪）。
 		if nc.RevealToken != e.lastReveal {

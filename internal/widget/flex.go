@@ -193,6 +193,9 @@ func (e *FlexElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult {
 		if totalFlex > 0 {
 			mainSize = remaining * float64(flexOf[i]) / float64(totalFlex)
 		}
+		if mm := childMinMain(child); mm > mainSize { // 尊重弹性子的主轴最小尺寸，不挤到不可读（宁可溢出）
+			mainSize = mm
+		}
 		cc := layout.BoxConstraints{}
 		if isRow {
 			cc.MinWidth, cc.MaxWidth = mainSize, mainSize
@@ -240,16 +243,22 @@ func (e *FlexElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult {
 	for i, child := range e.children {
 		childSize := child.Size()
 		if stretch {
-			cc := layout.BoxConstraints{}
-			if isRow {
-				cc.MinWidth, cc.MaxWidth = childSize.Width, childSize.Width
-				cc.MinHeight, cc.MaxHeight = maxCross, maxCross
-			} else {
-				cc.MinHeight, cc.MaxHeight = childSize.Height, childSize.Height
-				cc.MinWidth, cc.MaxWidth = maxCross, maxCross
+			childCross := childSize.Height // 该子当前的交叉轴尺寸
+			if !isRow {
+				childCross = childSize.Width
 			}
-			child.Layout(&layout.LayoutContext{Constraints: cc})
-			childSize = child.Size()
+			if childCross < maxCross-0.5 { // 仅未达 maxCross 的子才需拉伸重排；已达的跳过这遍 layout 递归
+				cc := layout.BoxConstraints{}
+				if isRow {
+					cc.MinWidth, cc.MaxWidth = childSize.Width, childSize.Width
+					cc.MinHeight, cc.MaxHeight = maxCross, maxCross
+				} else {
+					cc.MinHeight, cc.MaxHeight = childSize.Height, childSize.Height
+					cc.MinWidth, cc.MaxWidth = maxCross, maxCross
+				}
+				child.Layout(&layout.LayoutContext{Constraints: cc})
+				childSize = child.Size()
+			}
 		}
 		childCross := childSize.Height
 		if !isRow {
@@ -338,6 +347,14 @@ func childFlex(child Element) int {
 			return 1
 		}
 		return w.Flex
+	}
+	return 0
+}
+
+// childMinMain 弹性子声明的主轴最小尺寸（Expanded.MinMain）；flex 分配不足时据此兜底，不挤子。
+func childMinMain(child Element) float64 {
+	if w, ok := child.Widget().(*Expanded); ok {
+		return w.MinMain
 	}
 	return 0
 }
@@ -467,6 +484,9 @@ func HBox(children ...Widget) *Row {
 type Expanded struct {
 	SingleChildWidget
 	Flex int
+	// MinMain 弹性子的主轴最小尺寸（行=宽、列=高）。flex 按比例分得的空间不足此值时，
+	// 至少分配 MinMain（宁可整体溢出也不把子挤到不可读）。0=不限制。
+	MinMain float64
 }
 
 // CreateElement 创建 ExpandedElement。

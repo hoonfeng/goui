@@ -283,6 +283,17 @@ func (e *ContainerElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult
 	childConstraints.MaxHeight = maxHeight - c.Padding.Top - c.Padding.Bottom
 	childConstraints.MinWidth = 0
 	childConstraints.MinHeight = 0
+	// 子是 Flex（列/行布局，自带 justify-content 主轴对齐）→ 把父强制的高/宽下传，让 Flex 自己撑满并按
+	// 其对齐摆放（默认顶/左），不要在容器层把整个 Flex 当「单一内容」垂直/水平居中——否则定高容器(如 Tabs
+	// 强制 MinHeight 撑满面板)里的列布局会被整体居中/挤偏。非 Flex 子(文字/水印等)仍按原居中逻辑。
+	if _, ok := e.child.(*FlexElement); ok {
+		if m := ctx.Constraints.MinHeight - c.Padding.Top - c.Padding.Bottom; m > childConstraints.MinHeight {
+			childConstraints.MinHeight = m
+		}
+		if m := ctx.Constraints.MinWidth - c.Padding.Left - c.Padding.Right; m > childConstraints.MinWidth {
+			childConstraints.MinWidth = m
+		}
+	}
 
 	if e.child != nil {
 		result := e.child.Layout(&layout.LayoutContext{Constraints: childConstraints})
@@ -499,6 +510,23 @@ type TextElement struct {
 	BaseElement
 	text  *Text
 	lines []string // 换行后的文本行缓存
+
+	// 测量缓存：文本/字体不变则复用换行与宽度，免每帧 layout+paint 反复做 O(N) 次 Skia CGO
+	// 测量（自绘 UI 拖动/动画时 layout 反复跑，这是卡顿的真正根因）。多 maxWidth 槽：Flex 一帧
+	// 会以不同约束多次 Layout（measure/final），单槽会互相抖动失效。
+	cvText    string
+	cvFont    canvas.Font
+	cvEntries []tmEntry
+	cvWidth   float64 // 最近一次 visibleLines 的整段文本宽度（Layout 定宽用）
+	lyMaxW    float64 // Layout 用的换行宽度，Paint 复用它→命中同槽
+}
+
+// tmEntry 一个换行宽度下的测量缓存槽。
+type tmEntry struct {
+	maxW  float64
+	maxLn int
+	lines []string
+	width float64
 }
 
 // CreateElement 创建 TextElement
@@ -581,15 +609,32 @@ func (e *TextElement) splitLines(maxWidth float64) []string {
 // visibleLines 在 splitLines 基础上应用 MaxLines：超出则截到 MaxLines 行、末行加省略号。
 // MaxLines<=0 表示不限制。Layout 与 Paint 都用它，保证测高与渲染一致。
 func (e *TextElement) visibleLines(maxWidth float64) []string {
+	// 文本/字体变了 → 整组槽失效。
+	if e.cvText != e.text.Text || e.cvFont != e.text.Font {
+		e.cvText, e.cvFont = e.text.Text, e.text.Font
+		e.cvEntries = e.cvEntries[:0]
+	}
+	// 命中某宽度槽 → 直接复用，跳过 splitLines 的 O(N) Skia 测量。
+	for i := range e.cvEntries {
+		if e.cvEntries[i].maxW == maxWidth && e.cvEntries[i].maxLn == e.text.MaxLines {
+			e.cvWidth = e.cvEntries[i].width
+			return e.cvEntries[i].lines
+		}
+	}
 	lines := e.splitLines(maxWidth)
 	ml := e.text.MaxLines
-	if ml <= 0 || len(lines) <= ml {
-		return lines
+	if ml > 0 && len(lines) > ml {
+		out := make([]string, ml)
+		copy(out, lines[:ml])
+		out[ml-1] = ellipsizeToWidth(out[ml-1], e.text.Font, maxWidth) // 末行省略号
+		lines = out
 	}
-	out := make([]string, ml)
-	copy(out, lines[:ml])
-	out[ml-1] = ellipsizeToWidth(out[ml-1], e.text.Font, maxWidth) // 末行省略号
-	return out
+	e.cvWidth = canvas.MeasureTextGlobal(e.text.Text, e.text.Font).Width
+	if len(e.cvEntries) >= 6 { // 上限 6 槽（measure/final + 几个尺寸），超了丢最旧
+		e.cvEntries = e.cvEntries[1:]
+	}
+	e.cvEntries = append(e.cvEntries, tmEntry{maxWidth, e.text.MaxLines, lines, e.cvWidth})
+	return lines
 }
 
 // ellipsizeToWidth 给单行末尾加省略号，必要时削减字符以容纳 … 不超过 maxWidth。
@@ -636,17 +681,14 @@ func (e *TextElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult {
 		maxWidth = 800
 	}
 
-	// 使用 canvas.MeasureTextGlobal 精确测量文本
-	// 此函数不依赖 Canvas 实例，可在 Layout 阶段调用
-	metrics := canvas.MeasureTextGlobal(t.Text, t.Font)
 	lineHeight := canvas.GetFaceLineHeight(fontSize)
 	if t.LineHeight > 0 {
 		lineHeight = t.LineHeight
 	}
 
-	// 计算实际行数：用与 Paint 完全相同的换行算法（splitLines），保证测高与渲染行数一致。
-	// 否则两套算法（Layout 按字符二分、Paint 按空格单词换行）对中英混排会算出不同行数，高度
-	// 算少就把多出来的行裁掉。
+	// 换行 + 测量（带缓存）：visibleLines 同时填充整段宽度缓存 cvWidth，Paint 复用 lyMaxW 命中同缓存。
+	// 与 Paint 用完全相同的换行算法，保证测高与渲染行数一致。
+	e.lyMaxW = maxWidth
 	totalLines := len(e.visibleLines(maxWidth)) // 受 MaxLines 限制后的行数（测高与渲染一致）
 	if totalLines < 1 {
 		totalLines = 1
@@ -655,7 +697,7 @@ func (e *TextElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult {
 	// 总高度 = 行数 * 行高
 	height := float64(totalLines) * lineHeight
 	// 宽度 = 最小可用宽度，但不超过测量宽度
-	width := metrics.Width
+	width := e.cvWidth
 	if width > maxWidth {
 		width = maxWidth
 	}
@@ -685,10 +727,13 @@ func (e *TextElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		lineHeight = t.LineHeight
 	}
 
-	// 可用宽度
-	maxWidth := e.size.Width
+	// 用 Layout 时的换行宽度（lyMaxW）→ 与 Layout 同 key、命中测量缓存，免 Paint 再做 O(N) 测量。
+	maxWidth := e.lyMaxW
 	if maxWidth <= 0 || maxWidth >= float64(1<<30) {
-		maxWidth = 800
+		maxWidth = e.size.Width
+		if maxWidth <= 0 || maxWidth >= float64(1<<30) {
+			maxWidth = 800
+		}
 	}
 
 	// 计算换行（受 MaxLines 限制，末行省略号）

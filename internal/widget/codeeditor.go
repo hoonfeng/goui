@@ -58,6 +58,10 @@ type CodeEditor struct {
 	Minimap     bool               // 是否显示右侧缩略图（默认开）
 	WordWrap    bool               // 软自动换行：长行按编辑区宽折成多视觉行（默认关，可 toggleWrap 切换）
 	FontSize    float64            // 等宽字号（<=0 用默认 14）
+	FontFamily  string             // 等宽字体族（空=Consolas）
+	FontBold      bool             // 整体加粗
+	FontItalic    bool             // 整体斜体
+	FontUnderline bool             // 整体下划线
 	Embedded bool // 嵌入模式：去掉独立白卡圆角/聚焦蓝框，无缝融入父容器（StructEditor 用）
 
 	LineNumberOffset int            // 行号起始偏移：显示行号 = 实际行 + 此值（StructEditor 全局连续行号用）
@@ -65,9 +69,34 @@ type CodeEditor struct {
 	GutterOverride   float64        // >0 时强制行号栏宽度（StructEditor 用，与变量表行号列等宽对齐成一条）
 	CursorRef        *CECursorState // 跨重建保持光标/滚动（CodeWorkbench 切换视图用）
 
-	LSPServer    string // 语言服务器可执行路径（如 gopls）；空=纯词法补全
-	LSPWorkspace string // 工作区根 file:// URI
-	LSPFile      string // 文档 file:// URI
+	LSPServer    string   // 语言服务器可执行路径（如 gopls / typescript-language-server）；空=纯词法补全
+	LSPArgs      []string // 语言服务器启动参数（如 --stdio）
+	LSPWorkspace string   // 工作区根 file:// URI
+	LSPFile      string   // 文档 file:// URI
+	LSPLangID    string   // LSP languageId（如 "typescript"；空=用 Language）
+
+	// OnGoToDefinition 转到定义：runCommand("gotoDefinition") 触发，编辑器经 LSP 解析光标处定义，
+	// 拿到目标 → 回调宿主打开该文件并跳到行(1 基)。无 LSP 或无定义则不触发。
+	OnGoToDefinition func(file string, line, col int)
+	// OnReferences 查找引用：runCommand("findReferences") → 回调宿主列出所有引用位置（供面板/对话框展示+跳转）。
+	OnReferences func(refs []CodeLoc)
+	// OnDocumentSymbols 文档符号大纲：runCommand("documentSymbol") → 回调宿主列出当前文件符号（供大纲/转到符号）。
+	OnDocumentSymbols func(syms []CodeSym)
+}
+
+// CodeLoc 一个代码位置（文件 + 行/列，行 1 基）。查找引用结果用。
+type CodeLoc struct {
+	File string
+	Line int
+	Col  int
+}
+
+// CodeSym 一个文档符号（名 + 种类 + 行 1 基 + 嵌套深度）。大纲/转到符号用。
+type CodeSym struct {
+	Name  string
+	Kind  int
+	Line  int
+	Depth int
 }
 
 // WithLSP 接入语言服务器（gopls 等）做语义补全 + 诊断。
@@ -85,6 +114,13 @@ func (c *CodeEditor) WithSize(w, h float64) *CodeEditor     { c.Width, c.Height 
 func (c *CodeEditor) OnChanged(fn func(string)) *CodeEditor { c.OnChange = fn; return c }
 func (c *CodeEditor) WithMinimap(on bool) *CodeEditor       { c.Minimap = on; return c }
 func (c *CodeEditor) WithFontSize(s float64) *CodeEditor    { c.FontSize = s; return c }
+func (c *CodeEditor) WithFontFamily(f string) *CodeEditor   { c.FontFamily = f; return c }
+
+// WithFontStyle 设置整体加粗/斜体/下划线（编辑器全文统一样式，外观字体控件用）。
+func (c *CodeEditor) WithFontStyle(bold, italic, underline bool) *CodeEditor {
+	c.FontBold, c.FontItalic, c.FontUnderline = bold, italic, underline
+	return c
+}
 
 // expandTabs 把制表符展开为 4 空格（字体无 tab 字形会渲染成豆腐块，统一在数据层换成空格）。
 func expandTabs(s string) string { return strings.ReplaceAll(s, "\t", "    ") }
@@ -127,6 +163,18 @@ func (c *CodeEditor) CreateElement() Element {
 	if fsz <= 0 {
 		fsz = 14
 	}
+	fam := c.FontFamily
+	if fam == "" {
+		fam = "Consolas"
+	}
+	fw := canvas.FontWeightNormal
+	if c.FontBold {
+		fw = canvas.FontWeightBold
+	}
+	fst := canvas.FontStyleNormal
+	if c.FontItalic {
+		fst = canvas.FontStyleItalic
+	}
 	e := &CodeEditorElement{
 		BaseElement: BaseElement{widget: c},
 		ed:          c,
@@ -134,7 +182,7 @@ func (c *CodeEditor) CreateElement() Element {
 		lastReveal:  c.RevealToken,
 		lines:       lines,
 		lang:        ceLangFor(c.Language),
-		font:        canvas.Font{Family: "Consolas", Size: fsz},
+		font:        canvas.Font{Family: fam, Size: fsz, Weight: fw, Style: fst, Underline: c.FontUnderline},
 		folded:      map[int]bool{},
 		showMinimap: c.Minimap,
 		wrap:        c.WordWrap,
@@ -152,6 +200,7 @@ func (c *CodeEditor) CreateElement() Element {
 	}
 	if c.LSPServer != "" {
 		e.lspURI = c.LSPFile
+		e.lspServer = c.LSPServer
 		if !c.Embedded { // 独立编辑器立即启动；嵌入体编辑器聚焦时再启动（避免 N 子程序 = N 个 gopls）
 			go e.startLSP(c.LSPServer, c.LSPWorkspace) // 异步启动（initialize 耗时，勿卡 UI）
 		}
@@ -212,6 +261,9 @@ type CodeEditorElement struct {
 	cursorClientY     float64       // Paint 缓存：光标顶部客户区 Y
 	lastCanvas        canvas.Canvas // Paint 缓存：用与渲染一致的 Skia 测量（避免 MeasureTextGlobal 中文漂移）
 
+	measCache map[string]float64 // 文本→测量宽度缓存（同字体），免每帧逐行重测；measFont 变则清
+	measFont  canvas.Font
+
 	// 查找替换
 	findActive   bool         // 查找栏是否打开
 	replaceShown bool         // 是否显示替换行
@@ -255,9 +307,10 @@ type CodeEditorElement struct {
 	compScroll int        // 弹窗滚动
 	compStart  cePos      // 补全替换的起始位置（词前缀起点）
 
-	// LSP（语言服务器，可选；接 gopls 等做语义补全 + 诊断）
+	// LSP（语言服务器，可选；接 gopls/tsserver 等做语义补全 + 诊断 + 跳转/引用/大纲/悬停）
 	lspClient   *lsp.Client
 	lspURI      string
+	lspServer   string // 当前客户端启动用的服务器（切到需别的服务器的语言→重启，见 Update）
 	lspVer      int
 	lspReady    bool
 	lspStarting bool // 嵌入体编辑器聚焦后正在启动 gopls（防重复启动）
@@ -265,11 +318,31 @@ type CodeEditorElement struct {
 	// lspWrap(本地文本) → (完整文档, 行偏移, 列偏移)；nil 表不包装（独立整文件编辑）。
 	lspWrap            func(string) (string, int, int)
 	lspLineOff, lspColOff int
-	lspMu       sync.Mutex       // 保护 lspPending/diagnostics（读协程 vs UI 线程）
+	lspMu       sync.Mutex       // 保护 lspPending/diagnostics/pendingDef（读协程 vs UI 线程）
 	lspPending  []compItem       // LSP 补全结果，待 UI 线程消费
 	lspPendGen  int              // 待消费结果对应的补全代
 	lspGen      int              // 当前补全请求代（防过期）
 	diagnostics []lsp.Diagnostic // 当前诊断
+	pendingDef  *pendingJump     // 转到定义结果，待 UI 线程回调宿主（跨线程：定义请求在协程）
+	pendingRefs []CodeLoc        // 查找引用结果，待 UI 线程回调宿主
+	pendingSyms []CodeSym        // 文档符号结果，待 UI 线程回调宿主
+
+	hoverText    string       // 悬停内容（showHover 命令触发画浮层；空=不显示）
+	hoverCursor  cePos        // 悬停时光标位置（光标移开则关闭浮层）
+	pendingHover *hoverResult // 悬停结果，待 UI 线程显示
+}
+
+// hoverResult 异步悬停结果（内容 + 请求时的光标位置）。
+type hoverResult struct {
+	text string
+	at   cePos
+}
+
+// pendingJump 转到定义的目标（文件 + 行/列，1 基行）。
+type pendingJump struct {
+	file string
+	line int
+	col  int
 }
 
 // caretSel 一个光标 + 其选区。
@@ -318,10 +391,25 @@ func (e *CodeEditorElement) measure(s string) float64 {
 	if s == "" {
 		return 0
 	}
-	if e.lastCanvas != nil {
-		return e.lastCanvas.MeasureText(s, e.font).Width
+	// 测量缓存（同字体下 文本→宽度）：免每帧 maxLineWidth 等对整文件逐行重做 Skia CGO 测量。
+	if e.measFont != e.font { // 字体变了（缩放等）→ 整体失效
+		e.measCache = nil
+		e.measFont = e.font
 	}
-	return canvas.MeasureTextGlobal(s, e.font).Width
+	if w, ok := e.measCache[s]; ok {
+		return w
+	}
+	var w float64
+	if e.lastCanvas != nil {
+		w = e.lastCanvas.MeasureText(s, e.font).Width
+	} else {
+		w = canvas.MeasureTextGlobal(s, e.font).Width
+	}
+	if e.measCache == nil || len(e.measCache) >= 20000 { // 上限防无界增长（光标子串多变）
+		e.measCache = make(map[string]float64, 512)
+	}
+	e.measCache[s] = w
+	return w
 }
 
 func (e *CodeEditorElement) clampPos(p cePos) cePos {
@@ -766,6 +854,14 @@ func EditorWrapEnabled() bool { return globalWordWrap }
 // runCommand 执行一条编辑命令（与右键菜单 contextItems 同源逻辑）。
 func (e *CodeEditorElement) runCommand(cmd string) {
 	switch cmd {
+	case "gotoDefinition":
+		e.requestDefinition() // 转到定义（LSP 解析光标处 → 回调宿主打开目标）
+	case "findReferences":
+		e.requestReferences() // 查找引用（→ 回调宿主列出所有引用）
+	case "documentSymbol":
+		e.requestDocumentSymbol() // 文档符号大纲（→ 回调宿主列出符号）
+	case "showHover":
+		e.requestHover() // 悬停信息（→ 编辑器内画浮层）
 	case "undo":
 		e.undo()
 	case "redo":

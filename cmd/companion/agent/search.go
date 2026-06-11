@@ -21,11 +21,40 @@ const (
 	searchSniffBytes  = 8000     // 二进制嗅探：读前 N 字节查空字节
 )
 
-// skipDirs 搜索时跳过的目录名（与文件树/grep 惯例一致）。
-var skipDirs = map[string]bool{
-	".git": true, "node_modules": true, "vendor": true,
-	".idea": true, ".vscode": true, ".cache": true,
+// defaultSkipDirs 内置基线：搜索/探索时跳过的依赖库/模块库/构建产物/缓存/VCS 目录（跨生态，全包共用）。
+// 仍可显式把 path 指进某个被跳目录来搜它（跳过只作用于自动递归下降，不挡显式起点）。
+// 用户可经 SetExtraSkipDirs 追加（全局设置 + 项目级，companion 注入）。
+var defaultSkipDirs = map[string]bool{
+	// VCS / 编辑器
+	".git": true, ".svn": true, ".hg": true, ".idea": true, ".vscode": true,
+	// 依赖库 / 模块库
+	"node_modules": true, "bower_components": true, "jspm_packages": true, "vendor": true, "Pods": true,
+	"venv": true, ".venv": true, "__pycache__": true, ".pytest_cache": true, ".mypy_cache": true, ".tox": true,
+	// 构建产物
+	"dist": true, "build": true, "out": true, "target": true,
+	".next": true, ".nuxt": true, ".svelte-kit": true, ".output": true,
+	// 缓存 / 覆盖率 / 基建
+	".gradle": true, ".cache": true, ".turbo": true, "coverage": true, ".nyc_output": true, ".terraform": true,
+	// 本项目自身数据 / 备份
+	".pair": true, "源码备份": true,
 }
+
+// extraSkipDirs 用户配置的额外忽略目录（全局设置 + 项目级 .pair/ignore，由 companion 合并后注入）。
+var extraSkipDirs = map[string]bool{}
+
+// SetExtraSkipDirs 设置额外忽略目录名（覆盖上次）。companion 合并 全局+项目 配置后调用。
+func SetExtraSkipDirs(dirs []string) {
+	m := make(map[string]bool, len(dirs))
+	for _, d := range dirs {
+		if d = strings.TrimSpace(d); d != "" {
+			m[d] = true
+		}
+	}
+	extraSkipDirs = m
+}
+
+// isSkipDir 该目录名是否跳过（内置基线 ∪ 用户额外）。
+func isSkipDir(name string) bool { return defaultSkipDirs[name] || extraSkipDirs[name] }
 
 func registerSearchTools(r *Registry, root string) {
 	r.Register(&Tool{
@@ -91,7 +120,7 @@ func searchContentHandler(root string) ToolHandler {
 				return err
 			}
 			if d.IsDir() {
-				if p != base && skipDirs[d.Name()] {
+				if p != base && isSkipDir(d.Name()) {
 					return fs.SkipDir
 				}
 				return nil
@@ -156,7 +185,7 @@ func searchFilesHandler(root string) ToolHandler {
 				return err
 			}
 			if d.IsDir() {
-				if p != base && skipDirs[d.Name()] {
+				if p != base && isSkipDir(d.Name()) {
 					return fs.SkipDir
 				}
 				return nil

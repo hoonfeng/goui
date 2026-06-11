@@ -343,7 +343,7 @@ func TestStateSlider(t *testing.T) {
 		}
 	})
 
-	t.Run("HandleEvent MouseLeave clears hovered and dragging", func(t *testing.T) {
+	t.Run("HandleEvent MouseLeave clears hovered but keeps dragging", func(t *testing.T) {
 		s := DefaultSlider()
 		el := s.CreateElement().(*SliderElement)
 		el.hovered = true
@@ -353,8 +353,9 @@ func TestStateSlider(t *testing.T) {
 		if el.hovered {
 			t.Error("hovered should be false after MouseLeave")
 		}
-		if el.dragging {
-			t.Error("dragging should be false after MouseLeave")
+		// 拖拽中鼠标移出滑块不应停拖（有鼠标捕获，按住不放仍连续跟手）；由 MouseUp/DragEnd 才停。
+		if !el.dragging {
+			t.Error("dragging should stay true after MouseLeave (continuous drag)")
 		}
 	})
 

@@ -10,9 +10,27 @@ type CodeWorkbench struct {
 	StatefulWidget
 	Width, Height float64
 	initialGo     string
-	lang          string // 语言（默认 "go"）；决定 LanguageProvider(解析/生成) 与代码区高亮
-	ReloadToken   int           // 递增时强制重新初始化（切换文件用）
-	OnChange      func(string)  // 内容变化回调（用户编辑或视图切换）
+	lang          string       // 语言（默认 "go"）；决定 LanguageProvider(解析/生成) 与代码区高亮
+	fontFamily    string       // 代码视图等宽字体族（空=Consolas）
+	fontSize      float64      // 代码视图字号（<=0 用默认 14）
+	fontBold      bool         // 代码视图加粗
+	fontItalic    bool         // 代码视图斜体
+	fontUnderline bool         // 代码视图下划线
+	ReloadToken   int          // 递增时强制重新初始化（切换文件用）
+	OnChange      func(string) // 内容变化回调（用户编辑或视图切换）
+
+	// LSP（接 gopls / tsserver 等）：代码视图的整文件编辑器据此做语义补全/诊断/转到定义/查找引用/大纲/悬停。空=纯词法。
+	LSPServer, LSPWorkspace, LSPFile, LSPLangID string
+	LSPArgs                                     []string
+	OnGoToDefinition                            func(file string, line, col int)
+	OnReferences                                func(refs []CodeLoc)
+	OnDocumentSymbols                           func(syms []CodeSym)
+}
+
+// WithLSP 给代码视图接入语言服务器（gopls 等）。companion 标签编辑器对 Go 文件用。
+func (w *CodeWorkbench) WithLSP(server, workspaceURI, fileURI string) *CodeWorkbench {
+	w.LSPServer, w.LSPWorkspace, w.LSPFile = server, workspaceURI, fileURI
+	return w
 }
 
 // NewCodeWorkbench 以一段源码初始化（默认 Go、进表格视图）。其他语言用 WithLang 切换。
@@ -23,6 +41,18 @@ func (w *CodeWorkbench) WithSize(wd, h float64) *CodeWorkbench { w.Width, w.Heig
 
 // WithLang 设置语言（需已注册对应 LanguageProvider，如 "go"/"ey"）。
 func (w *CodeWorkbench) WithLang(l string) *CodeWorkbench { w.lang = l; return w }
+
+// WithFontFamily 设置代码视图的等宽字体族（空=Consolas）。
+func (w *CodeWorkbench) WithFontFamily(f string) *CodeWorkbench { w.fontFamily = f; return w }
+
+// WithFontSize 设置代码视图字号（<=0 用默认 14）。
+func (w *CodeWorkbench) WithFontSize(s float64) *CodeWorkbench { w.fontSize = s; return w }
+
+// WithFontStyle 设置代码视图加粗/斜体/下划线。
+func (w *CodeWorkbench) WithFontStyle(bold, italic, underline bool) *CodeWorkbench {
+	w.fontBold, w.fontItalic, w.fontUnderline = bold, italic, underline
+	return w
+}
 
 // theCwState 代码工作台的包级单例状态——避免宿主（编辑器面板）因 dirty 重建时嵌套 StatefulWidget
 // 状态丢失（否则切换视图后宿主重建→工作台被重置回表格视图，表现为「切换代码视图点击失败」）。
@@ -114,9 +144,16 @@ func (s *cwState) Build(ctx BuildContext) Widget {
 		se.ScrollRef = s.tableScroll // 切回表格恢复滚动位置
 		content = se
 	} else {
-		ed := NewCodeEditor(c.lang, s.codeText).WithSize(c.Width, c.Height)
+		ed := NewCodeEditor(c.lang, s.codeText).WithSize(c.Width, c.Height).WithFontFamily(c.fontFamily).WithFontSize(c.fontSize).WithFontStyle(c.fontBold, c.fontItalic, c.fontUnderline)
 		ed.IndentGuides = true
-		ed.CursorRef = s.codeCur // 切回代码恢复光标/滚动
+		ed.CursorRef = s.codeCur   // 切回代码恢复光标/滚动
+		ed.ReloadToken = c.ReloadToken // 跟随工作台重载令牌：切文件时重置内容 + 切 LSP 文档
+		if c.LSPServer != "" {     // 代码视图整文件直接喂语言服务器（无需函数体坐标映射）
+			ed.LSPServer, ed.LSPArgs, ed.LSPWorkspace, ed.LSPFile, ed.LSPLangID = c.LSPServer, c.LSPArgs, c.LSPWorkspace, c.LSPFile, c.LSPLangID
+			ed.OnGoToDefinition = c.OnGoToDefinition
+			ed.OnReferences = c.OnReferences
+			ed.OnDocumentSymbols = c.OnDocumentSymbols
+		}
 		ed.OnChange = func(t string) {
 			s.codeText = t
 			if c.OnChange != nil {

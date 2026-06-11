@@ -7,9 +7,11 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
+	"path/filepath"
 
-	"github.com/user/goui/cmd/companion/state"
+	"github.com/user/goui/cmd/companion/ui/state"
 	"github.com/user/goui/internal/app"
 	"github.com/user/goui/internal/canvas"
 	"github.com/user/goui/internal/event"
@@ -19,6 +21,19 @@ import (
 	"github.com/user/goui/internal/widget"
 
 	_ "github.com/user/goui/internal/platform"
+	"github.com/user/goui/cmd/companion/ui"
+	core "github.com/user/goui/cmd/companion/core"
+	chatpanel "github.com/user/goui/cmd/companion/ui/chat"
+	editorpanel "github.com/user/goui/cmd/companion/ui/editor"
+	filetreepanel "github.com/user/goui/cmd/companion/ui/filetree"
+	gitpanel "github.com/user/goui/cmd/companion/ui/git"
+	searchpanel "github.com/user/goui/cmd/companion/ui/search"
+	termpanel "github.com/user/goui/cmd/companion/ui/terminal"
+	settingspanel "github.com/user/goui/cmd/companion/ui/settings"
+	ctxmenupanel "github.com/user/goui/cmd/companion/ui/ctxmenu"
+	logo "github.com/user/goui/cmd/companion/ui/logo"
+	menuactions "github.com/user/goui/cmd/companion/ui/menu"
+
 )
 
 var application *app.Application
@@ -48,23 +63,24 @@ const (
 )
 
 func main() {
+	
 	if os.Getenv("COMPANION_SHOT") != "" {
 		renderShot()
 		return
 	}
-	loadSettings()          // 读安装目录 config/ 的全局设置（LLM 服务商/Key/模型 + 上次项目），供 buildProvider 用
-	loadLastProject()       // 恢复上次打开的项目根（文件树/终端/agent 统一用它）
-	theEditor.restoreSession() // 恢复上次工作区里打开的文件标签（首帧即带上，读各文件磁盘当前内容）
+	settingspanel.Load()          // 读安装目录 config/ 的全局设置（LLM 服务商/Key/模型 + 上次项目），供 buildProvider 用
+	core.LoadLastProject()       // 恢复上次打开的项目根（文件树/终端/agent 统一用它）
+	editorpanel.Editor.RestoreSession() // 恢复上次工作区里打开的文件标签（首帧即带上，读各文件磁盘当前内容）
 
 	application = app.NewApplication()
 	application.SetRootWidget(&Shell{})
 
 	// 统一所有菜单（右键上下文菜单 / 编辑器右键 / 标题栏下拉）为 GitHub 深色，匹配应用主题。
-	widget.SetMenuTheme(*ghBgTertiary, ghText, *ghAccentEmph, *ghBorder, ghTextMuted)
+	widget.SetMenuTheme(*ui.Bg, *ui.Fg, *ui.Accent, *ui.Border, *ui.FgMuted)
 	// 对话框/抽屉也统一深色（设置面板、新建/重命名输入框、确认框等），否则白底面板与深色内容冲突。
-	widget.SetDialogTheme(*ghBgSecondary, ghText, ghTextMuted)
+	widget.SetDialogTheme(*ui.BgSubtle, *ui.Fg, *ui.FgMuted)
 	// 下拉选择器（设置里的 服务商/模型 选择框）统一深色，否则 el 浅色白底与深色对话框冲突。
-	widget.SetSelectTheme(*ghBgPrimary, ghText, *ghBorder, *ghBgTertiary, ghTextMuted)
+	widget.SetSelectTheme(*ui.Bg, *ui.Fg, *ui.Border, *ui.Bg, *ui.FgMuted)
 
 	// CodeEditor 切暗色主题（VS Code Dark+），与窗口布局（cEditor=#1e1e1e 等）统一。
 	widget.SetTheme(widget.DarkTheme())
@@ -73,9 +89,9 @@ func main() {
 	widget.SuppressEditorContextMenu = true
 
 	// Ctrl+S 保存当前编辑器标签（全局快捷键，优先于焦点 Widget）。VK_S=0x53。
-	application.ShortcutManager.Register(0x53, event.ModCtrl, func() { theEditor.save() }, "Ctrl+S 保存")
-	application.ShortcutManager.Register(0x46, event.ModCtrl, func() { theChatState.toggleSearch() }, "Ctrl+F 搜索对话") // VK_F
-	application.ShortcutManager.Register(0xBC, event.ModCtrl, func() { openSettings() }, "Ctrl+, 打开设置")               // VK_OEM_COMMA
+	application.ShortcutManager.Register(0x53, event.ModCtrl, func() { editorpanel.Editor.Save() }, "Ctrl+S 保存")
+	application.ShortcutManager.Register(0x46, event.ModCtrl, func() { chatpanel.TheState.ToggleSearch() }, "Ctrl+F 搜索对话") // VK_F
+	application.ShortcutManager.Register(0xBC, event.ModCtrl, func() { settingspanel.OpenDialog() }, "Ctrl+, 打开设置")               // VK_OEM_COMMA
 
 	application.Ready = func() {
 		// 标题栏命中区：顶部 titleBarH 高、右侧 6 个按钮（3 面板开关 + 3 窗口）宽除外 → 系统接管拖动/双击最大化。
@@ -201,7 +217,7 @@ func (s *shellState) paintDragOverlay(cvs canvas.Canvas, ox, oy, w, h float64) {
 			cvs.DrawRect(ox+zx, oy+zy, zw, zh, sp)
 			f := canvas.DefaultFont()
 			f.Size = 13
-			canvas.DrawTextAligned(cvs, "停靠到此", types.Rect{X: ox + zx, Y: oy + zy, Width: zw, Height: zh}, f, cWhite, canvas.HAlignCenter, canvas.VAlignMiddle)
+			canvas.DrawTextAligned(cvs, "停靠到此", types.Rect{X: ox + zx, Y: oy + zy, Width: zw, Height: zh}, f, *ui.White, canvas.HAlignCenter, canvas.VAlignMiddle)
 		}
 	}
 	// 跟随光标的半透明面板影（居中于光标）
@@ -211,12 +227,12 @@ func (s *shellState) paintDragOverlay(cvs canvas.Canvas, ox, oy, w, h float64) {
 	fp.Color = types.Color{R: 88, G: 166, B: 255, A: 70}
 	cvs.DrawRoundedRect(gx, gy, gw, gh, 8, fp)
 	sp := paint.DefaultStrokePaint()
-	sp.Color, sp.StrokeWidth = *ghAccentEmph, 2
+	sp.Color, sp.StrokeWidth = *ui.Accent, 2
 	cvs.DrawRoundedRect(gx, gy, gw, gh, 8, sp)
-	widget.PaintLucide(cvs, "move", gx+gw/2-13, gy+gh/2-22, 26, 2, cWhite)
+	widget.PaintLucide(cvs, "move", gx+gw/2-13, gy+gh/2-22, 26, 2, *ui.White)
 	f := canvas.DefaultFont()
 	f.Size = 13
-	canvas.DrawTextAligned(cvs, "移动 "+dragPanelName(s.dragPanel), types.Rect{X: gx, Y: gy + gh/2 + 8, Width: gw, Height: 20}, f, cWhite, canvas.HAlignCenter, canvas.VAlignMiddle)
+	canvas.DrawTextAligned(cvs, "移动 "+dragPanelName(s.dragPanel), types.Rect{X: gx, Y: gy + gh/2 + 8, Width: gw, Height: 20}, f, *ui.White, canvas.HAlignCenter, canvas.VAlignMiddle)
 }
 
 // titleBar 自绘标题栏：左 logo+标题（拖动区）| 右 面板开关 ×3 + 窗口按钮 ×3。
@@ -228,7 +244,7 @@ func (s *shellState) titleBar() widget.Widget {
 		widget.Div( // app 图标徽标（仅图标、无文字，复刻参考 icon.svg 的 Pair 标志）
 			widget.Style{Height: titleBarH, Padding: types.EdgeInsetsLTRB(10, 0, 4, 0),
 				FlexDirection: "row", AlignItems: "center"},
-			pairLogo(),
+			logo.Small(),
 		),
 	}
 	kids = append(kids, s.titleMenus()...)
@@ -237,7 +253,7 @@ func (s *shellState) titleBar() widget.Widget {
 	kids = append(kids,
 		widget.Lucide("folder", widget.IconSize(13), widget.IconColor(cText)),
 		widget.Div(widget.Style{Width: 6}),
-		label(projectName(), cText, 12),
+		label(filepath.Base(core.Root()), cText, 12),
 		label("  —  Pair CodeAgent", cTextDim, 12),
 	)
 	kids = append(kids, expand(widget.Div(widget.Style{})))
@@ -346,7 +362,7 @@ func (s *shellState) titleMenus() []widget.Widget {
 		menuBarBtn("帮助", []widget.DropdownItem{
 			{Label: "扩展市场", Disabled: true},
 			{Label: "打开设置", Shortcut: "Ctrl+,", Command: "help.settings"},
-			{Label: "更新日志", Disabled: true, Divided: true},
+			{Label: "更新日志", Command: "help.changelog", Divided: true},
 			{Label: "关于", Command: "help.about", Divided: true},
 			{Label: "开发者工具", Shortcut: "F12", Disabled: true},
 		}, s.onHelpMenu),
@@ -356,25 +372,25 @@ func (s *shellState) titleMenus() []widget.Widget {
 func (s *shellState) onFileMenu(cmd string) {
 	switch cmd {
 	case "file.newProject":
-		newProjectViaDialog()
+		core.NewProjectViaDialog()
 	case "file.new":
-		newEntryIn(currentRoot(), false)
+		ctxmenupanel.NewEntryIn(core.Root(), false)
 	case "file.open":
-		openFileViaDialog()
+		ctxmenupanel.OpenFileViaDialog()
 	case "file.openFolder":
-		openFolderViaDialog()
+		ctxmenupanel.OpenFolderViaDialog()
 	case "file.addFolder":
-		addFolderViaDialog()
+		ctxmenupanel.AddFolderViaDialog()
 	case "file.save":
-		theEditor.save()
+		editorpanel.Editor.Save()
 	case "file.saveWorkspace":
-		saveWorkspaceMenu()
+		core.SaveWorkspaceMenu()
 	case "file.manageWorkspace":
-		showWorkspaceManager()
+		core.ShowManager()
 	case "file.closeProject":
-		closeProjectMenu()
+		core.CloseProjectMenu()
 	case "file.closeWorkspace":
-		closeWorkspaceMenu()
+		core.CloseWorkspaceMenu()
 	case "file.quit":
 		application.Close()
 	}
@@ -393,7 +409,7 @@ func (s *shellState) onEditMenu(cmd string) {
 	case "edit.paste":
 		widget.RunEditorCommand("paste")
 	case "edit.chatsearch":
-		theChatState.toggleSearch()
+		chatpanel.TheState.ToggleSearch()
 	case "edit.searchfiles":
 		s.showLeft("search")
 	}
@@ -414,15 +430,15 @@ func (s *shellState) onViewMenu(cmd string) {
 		s.panels.Toggle(state.ZoneBottom)
 		s.SetState()
 	case "view.export":
-		theChatState.exportActive()
+		chatpanel.TheState.ExportActive()
 	}
 }
 
 // termMenuItems 菜单栏「终端」下拉：列出 CMD/PowerShell/Git Bash，本机没探测到的灰显（Disabled）。
 func termMenuItems() []widget.DropdownItem {
 	detected := map[string]bool{}
-	for _, sh := range availableShells() {
-		detected[sh.code] = true
+	for _, sh := range termpanel.AvailableShells() {
+		detected[sh.Code] = true
 	}
 	return []widget.DropdownItem{
 		{Label: "新建 CMD", Command: "term.cmd", Disabled: !detected["cmd"]},
@@ -438,9 +454,9 @@ func (s *shellState) onTerminalMenu(cmd string) {
 	}
 	if !s.panels.Bottom { // 终端面板原来没显示：显示它，并把默认标签设成所选 shell（不凭空多一个 cmd 标签）
 		s.panels.Toggle(state.ZoneBottom)
-		theTermMgr.setActiveShell(code)
+		termpanel.Mgr().SetActiveShell(code)
 	} else { // 面板已开：新开一个该 shell 的标签
-		theTermMgr.newTabWithShell(code)
+		termpanel.Mgr().NewTabWithShell(code)
 	}
 	s.SetState()
 }
@@ -448,13 +464,31 @@ func (s *shellState) onTerminalMenu(cmd string) {
 func (s *shellState) onHelpMenu(cmd string) {
 	switch cmd {
 	case "help.settings":
-		openSettings()
+		settingspanel.OpenDialog()
 	case "help.about":
-		widget.ShowAlert("关于", "伴随式 CodeAgent —— 用 goui（Go 自绘 UI、Skia GPU）全 Go 重写的 IDE 式 AI 编码助手。", widget.MsgInfo, nil)
+		showAboutDialog()
+	case "help.changelog":
+		menuactions.ShowContentDialog("更新日志", 580,
+			widget.NewScrollView(ui.TextC(menuactions.ChangelogText, *ui.Fg, 12)))
 	}
 }
 
-// menuBarBtn 菜单栏一项：标签触发 + 下拉（Dropdown 锚到触发器，深色主题）。
+// showAboutDialog 关于对话框。
+func showAboutDialog() {
+	menuactions.ShowContentDialog("关于", 480,
+		widget.Div(widget.Style{FlexDirection: "column", AlignItems: "stretch", Padding: types.EdgeInsets(8)},
+			ui.TextC("Pair CodeAgent", *ui.Fg, 16),
+			widget.Div(widget.Style{Height: 8}),
+			ui.TextC("v0.1.0", *ui.FgMuted, 11),
+			widget.Div(widget.Style{Height: 12}),
+			ui.TextC(`用 goui（Go 自绘 UI 库、Skia GPU 渲染）全 Go 重写的 IDE 式 AI 编码助手。
+复刻参考伴随式 CodeAgent（Electron + React + TypeScript）的 UI 与交互逻辑。`, *ui.Fg, 12),
+			widget.Div(widget.Style{Height: 12}),
+			ui.TextC("技术栈：Go + goui + SkiaSharp + Lucide 图标", *ui.FgMuted, 11),
+		),
+	)
+}
+
 func menuBarBtn(name string, items []widget.DropdownItem, onCmd func(string)) widget.Widget {
 	// 用 Child=label（非 Text）：Button 对纯文本按钮(child==nil)会强加 64 最小宽 → 菜单项过宽；
 	// 给 child 则按内容紧凑（label+padding，约 40px）。
@@ -471,7 +505,7 @@ func menuBarBtn(name string, items []widget.DropdownItem, onCmd func(string)) wi
 // 一区一组、移动=互换；编辑器恒居中）。分隔条可拖动调尺寸（兼作分隔线）。
 func (s *shellState) body() widget.Widget {
 	p := s.panels
-	theChatState.inputAreaH = p.BottomH // 对话输入区高 = 底部区高，使两者底部对齐
+	chatpanel.TheState.InputAreaH = p.BottomH // 对话输入区高 = 底部区高，使两者底部对齐
 	cols := []widget.Widget{}
 	if p.Left {
 		cols = append(cols,
@@ -497,7 +531,7 @@ func (s *shellState) body() widget.Widget {
 				s.SetState()
 			}),
 			widget.Div(
-				widget.Style{Width: rw, BackgroundColor: ghBgPrimary, FlexDirection: "column", AlignItems: "stretch"},
+				widget.Style{Width: rw, BackgroundColor: ui.Bg, FlexDirection: "column", AlignItems: "stretch"},
 				expand(s.zoneInner(state.ZoneRight)),
 			),
 		)
@@ -508,7 +542,7 @@ func (s *shellState) body() widget.Widget {
 // midColumn 中间列：编辑区（撑满，恒居中）+ 底部区面板（按状态）。
 func (s *shellState) midColumn() widget.Widget {
 	p := s.panels
-	rows := []widget.Widget{expand(editorArea())}
+	rows := []widget.Widget{expand(&editorpanel.EditorPanel{})}
 	if p.Bottom {
 		rows = append(rows,
 			hDivide(func(d float64) {
@@ -540,7 +574,7 @@ func (s *shellState) panelGroup(id string) widget.Widget {
 	case "files":
 		return s.filesGroup()
 	case "chat":
-		return &ChatPanel{}
+		return chatpanel.Area()
 	default:
 		return panelBody(id) // terminal 等
 	}
@@ -592,7 +626,7 @@ func (s *shellState) dragTargetZone() (state.Zone, bool) {
 	if dx*dx+dy*dy < th*th {
 		return state.ZoneLeft, false
 	}
-	if absf(dx) >= absf(dy) {
+	if math.Abs(dx) >= math.Abs(dy) {
 		if dx > 0 {
 			return state.ZoneRight, true
 		}
@@ -643,9 +677,9 @@ func (s *shellState) filesGroup() widget.Widget {
 		}
 	}
 	tabs := widget.NewTabs(
-		widget.TabPane{Label: "文件", Icon: "folder", Content: &FileTreePanel{}},
-		widget.TabPane{Label: "搜索", Icon: "search", Content: &SearchPanel{}},
-		widget.TabPane{Label: "Git", Icon: "git-branch", Content: &GitPanel{}},
+		widget.TabPane{Label: "文件", Icon: "folder", Content: &filetreepanel.FileTreePanel{}},
+		widget.TabPane{Label: "搜索", Icon: "search", Content: &searchpanel.SearchPanel{}},
+		widget.TabPane{Label: "Git", Icon: "git-branch", Content: &gitpanel.GitPanel{}},
 	).WithActive(active).WithOnChange(func(i int) { s.leftView = views[i]; s.SetState() })
 	tabs.Compact = true       // IDE 紧凑：矮条 + 内容紧贴填满
 	tabs.ActiveColor = cText   // 深色主题配色
@@ -658,9 +692,9 @@ func (s *shellState) filesGroup() widget.Widget {
 func panelBody(id string) widget.Widget {
 	switch id {
 	case "files":
-		return &FileTreePanel{} // 左栏「文件」：真实文件树
+		return &filetreepanel.FileTreePanel{} // 左栏「文件」：真实文件树
 	case "terminal":
-		return terminalArea() // 中列底部「终端」：命令运行器
+		return termpanel.Area() // 中列底部「终端」：命令运行器
 	}
 	return widget.Div(
 		widget.Style{Padding: types.EdgeInsets(12)},
@@ -671,20 +705,20 @@ func panelBody(id string) widget.Widget {
 // statusBar 底部状态栏：左 agent 状态灯 + Git 分支，右 模型 + 编码（VS Code 风）。
 // 读实时单例（运行态/分支/模型）；随 shell 重建刷新（面板开关等触发；agent 实时态对话面板已直显）。
 func statusBar() widget.Widget {
-	running := theChatState != nil && theChatState.bridge != nil && theChatState.bridge.isRunning()
-	agentText, dotCol := "就绪", gitGreen
+	running := chatpanel.TheState != nil && chatpanel.TheState.Bridge != nil && chatpanel.TheState.Bridge.IsRunning()
+	agentText, dotCol := "就绪", *ui.Success
 	if running {
-		agentText, dotCol = "运行中", gitOrange
+		agentText, dotCol = "运行中", *ui.Warning
 	}
 	branch := "—"
-	if theGit != nil && theGit.isRepo && theGit.branch != "" {
-		branch = theGit.branch
+	if gitpanel.IsRepo() && gitpanel.Branch() != "" {
+		branch = gitpanel.Branch()
 	}
 	model := "未配置模型"
-	if theSettings.Model != "" {
-		model = theSettings.Model
-	} else if theSettings.Provider != "" {
-		model = theSettings.Provider
+	if core.Settings.Model != "" {
+		model = core.Settings.Model
+	} else if core.Settings.Provider != "" {
+		model = core.Settings.Provider
 	}
 	return widget.Div(
 		widget.Style{Height: statusH, BackgroundColor: cStatusBar, Padding: types.EdgeInsetsLTRB(10, 0, 10, 0),
@@ -745,7 +779,7 @@ func label1(s string, c types.Color, size float64) widget.Widget {
 
 // rightColW 右栏宽度：展开对话列表时额外加宽（列表在对话右侧腾出，对话主区不变）。
 func rightColW(base float64) float64 {
-	if theChatState.showThreads {
+	if chatpanel.TheState.ShowThreads {
 		return base + 190
 	}
 	return base

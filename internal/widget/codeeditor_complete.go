@@ -300,3 +300,53 @@ func (e *CodeEditorElement) paintCompletion(cvs canvas.Canvas, left, top float64
 		cvs.DrawRoundedRect(x+maxW-4, ty, 3, th, 1.5, sb)
 	}
 }
+
+// paintHover 画悬停信息浮层（showHover 命令触发）：符号上方（放不下→下方）一个含类型签名/文档的框。
+// 光标移开（cursor != hoverCursor）即关闭。
+func (e *CodeEditorElement) paintHover(cvs canvas.Canvas, left, top float64) {
+	if e.hoverText == "" {
+		return
+	}
+	if !cePosEq(e.cursor, e.hoverCursor) { // 光标移开 → 关闭
+		e.hoverText = ""
+		return
+	}
+	lines := strings.Split(e.hoverText, "\n")
+	if len(lines) > 16 {
+		lines = append(lines[:16], "…")
+	}
+	maxW := 80.0
+	for _, ln := range lines {
+		if w := e.measure(ln) + 18; w > maxW {
+			maxW = w
+		}
+	}
+	if maxW > 480 {
+		maxW = 480
+	}
+	boxH := float64(len(lines))*ceLineH + 10
+	x := e.posX(e.hoverCursor.line, e.hoverCursor.col, left)
+	yTop := e.posTopY(e.hoverCursor.line, e.hoverCursor.col, top) - boxH - 4 // 符号上方
+	pos := e.Offset()
+	if yTop < pos.Y+2 { // 上方放不下 → 下方
+		yTop = e.posTopY(e.hoverCursor.line, e.hoverCursor.col, top) + ceLineH + 2
+	}
+	if x+maxW > pos.X+e.size.Width-2 { // 右溢 → 左移
+		x = pos.X + e.size.Width - 2 - maxW
+	}
+	if x < pos.X+2 {
+		x = pos.X + 2
+	}
+	sh := paint.DefaultPaint()
+	sh.Color = types.ColorFromRGBA(0, 0, 0, 30)
+	cvs.DrawRoundedRect(x, yTop+2, maxW, boxH, 5, sh)
+	bg := paint.DefaultPaint()
+	bg.Color = elSurface()
+	cvs.DrawRoundedRect(x, yTop, maxW, boxH, 5, bg)
+	bd := paint.DefaultStrokePaint()
+	bd.Color = elBorder()
+	cvs.DrawRoundedRect(x+0.5, yTop+0.5, maxW-1, boxH-1, 5, bd)
+	for i, ln := range lines {
+		canvas.DrawTextAligned(cvs, ln, types.Rect{X: x + 8, Y: yTop + 5 + float64(i)*ceLineH, Width: maxW - 14, Height: ceLineH}, e.font, elTextPrimary(), canvas.HAlignLeft, canvas.VAlignMiddle)
+	}
+}

@@ -1,6 +1,7 @@
 package widget
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/user/goui/internal/event"
@@ -30,6 +31,26 @@ func TestSelectItemAt(t *testing.T) {
 	}
 	if el.itemAt(400) != -1 {
 		t.Errorf("itemAt(400)=%d, want -1(越界)", el.itemAt(400))
+	}
+}
+
+// TestSelectDropdownScrollCap 长列表下拉高度封顶 + 计算可滚动距离 + 定位到当前选中项（防撑爆窗口）。
+func TestSelectDropdownScrollCap(t *testing.T) {
+	var opts []SelectOption
+	for i := 0; i < 100; i++ {
+		opts = append(opts, SelectOption{Label: fmt.Sprintf("f%d", i), Value: fmt.Sprintf("f%d", i)})
+	}
+	// 选中靠后的项，验证打开即定位到它
+	el := (&selectDropdown{options: opts, width: 200, value: "f80"}).CreateElement().(*selectDropdownElement)
+	res := el.Layout(&layout.LayoutContext{Constraints: layout.BoxConstraints{MaxWidth: 200, MaxHeight: 2000}})
+	if res.Size.Height > selectMaxOptionsH+12 { // 100×34=3400，封顶后应 ≈308，绝不是 3408
+		t.Errorf("下拉高度未封顶: %.0f", res.Size.Height)
+	}
+	if el.maxScroll <= 0 {
+		t.Errorf("长列表应可滚动, maxScroll=%.0f", el.maxScroll)
+	}
+	if el.scrollY <= 0 {
+		t.Errorf("打开应定位到当前选中项(f80), scrollY=%.0f", el.scrollY)
 	}
 }
 

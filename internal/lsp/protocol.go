@@ -67,6 +67,52 @@ type PublishDiagnosticsParams struct {
 	Diagnostics []Diagnostic `json:"diagnostics"`
 }
 
+// Location 一个位置（文件 + 区间）：go-to-definition / references 用。
+type Location struct {
+	URI   string `json:"uri"`
+	Range Range  `json:"range"`
+}
+
+// LocationLink gopls 的 definition 可能返回 LocationLink（含 targetUri/targetSelectionRange）。
+type LocationLink struct {
+	TargetURI            string `json:"targetUri"`
+	TargetRange          Range  `json:"targetRange"`
+	TargetSelectionRange Range  `json:"targetSelectionRange"`
+}
+
+// DocumentSymbol 文档符号（大纲；可嵌套 children）。
+type DocumentSymbol struct {
+	Name           string           `json:"name"`
+	Detail         string           `json:"detail"`
+	Kind           int              `json:"kind"`
+	Range          Range            `json:"range"`
+	SelectionRange Range            `json:"selectionRange"`
+	Children       []DocumentSymbol `json:"children"`
+}
+
+// SymbolInformation 旧式扁平符号（documentSymbol 可能返回这个）。
+type SymbolInformation struct {
+	Name     string   `json:"name"`
+	Kind     int      `json:"kind"`
+	Location Location `json:"location"`
+}
+
+// 符号种类（LSP SymbolKind 子集，用于大纲图标/分组）。
+const (
+	SymNamespace   = 3
+	SymPackage     = 4
+	SymClass       = 5
+	SymMethod      = 6
+	SymProperty    = 7
+	SymField       = 8
+	SymConstructor = 9
+	SymInterface   = 11
+	SymFunction    = 12
+	SymVariable    = 13
+	SymConstant    = 14
+	SymStruct      = 23
+)
+
 // Hover 悬停信息。
 type Hover struct {
 	Contents MarkupContent `json:"contents"`

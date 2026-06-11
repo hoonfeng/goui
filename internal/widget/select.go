@@ -25,7 +25,7 @@ type SelectOption struct {
 // Select 下拉选择器。
 type Select struct {
 	StatelessWidget
-	pseudoColors // CSS 伪类：交互态边框色覆盖（:hover/:focus）
+	pseudoColors   // CSS 伪类：交互态边框色覆盖（:hover/:focus）
 	Options        []SelectOption
 	Value          string   // 当前选中值(单选)
 	Values         []string // 当前选中值(多选)
@@ -45,7 +45,7 @@ func NewSelect(options []SelectOption) *Select {
 	return &Select{Options: options, Width: 220} // Placeholder 空→渲染取 i18n 默认
 }
 
-func (s *Select) WithValue(v string) *Select           { s.Value = v; return s }
+func (s *Select) WithValue(v string) *Select            { s.Value = v; return s }
 func (s *Select) WithPlaceholder(p string) *Select      { s.Placeholder = p; return s }
 func (s *Select) WithOnChanged(fn func(string)) *Select { s.OnChanged = fn; return s }
 func (s *Select) WithDisabled(d bool) *Select           { s.Disabled = d; return s }
@@ -53,10 +53,10 @@ func (s *Select) WithWidth(w float64) *Select           { s.Width = w; return s 
 func (s *Select) WithSize(sz string) *Select            { s.Size = sz; return s }
 
 func (s *Select) WithMultiple(b bool) *Select                  { s.Multiple = b; return s }
-func (s *Select) WithValues(v []string) *Select               { s.Values = v; return s }
+func (s *Select) WithValues(v []string) *Select                { s.Values = v; return s }
 func (s *Select) WithOnChangedMulti(fn func([]string)) *Select { s.OnChangedMulti = fn; return s }
-func (s *Select) WithFilterable(b bool) *Select               { s.Filterable = b; return s }
-func (s *Select) WithClearable(b bool) *Select                { s.Clearable = b; return s }
+func (s *Select) WithFilterable(b bool) *Select                { s.Filterable = b; return s }
+func (s *Select) WithClearable(b bool) *Select                 { s.Clearable = b; return s }
 
 // 包级深色主题（同 SetMenuTheme/SetDialogTheme 思路；零值=默认 el 浅色，不破坏其他用户）。
 var (
@@ -435,16 +435,20 @@ func (d *selectDropdown) CreateElement() Element {
 }
 
 const (
-	selectItemH   = 34.0
-	selectSearchH = 40.0
+	selectItemH       = 34.0
+	selectSearchH     = 40.0
+	selectMaxOptionsH = 300.0 // 选项区最大高度（超出则内部滚动），约 8.8 项；防长列表（字体 100+）撑爆窗口
 )
 
 type selectDropdownElement struct {
 	BaseElement
-	dd       *selectDropdown
-	hoverIdx int
-	searchEl Element
-	filter   string
+	dd        *selectDropdown
+	hoverIdx  int
+	searchEl  Element
+	filter    string
+	scrollY   float64 // 选项区竖向滚动偏移（选项总高 > selectMaxOptionsH 时生效）
+	maxScroll float64 // 最大可滚动距离（选项总高 - 视口高）
+	inited    bool    // 首次布局已把视口定位到当前选中项
 }
 
 func (e *selectDropdownElement) Build() []Element {
@@ -497,10 +501,36 @@ func (e *selectDropdownElement) Layout(ctx *layout.LayoutContext) layout.LayoutR
 		}})
 		e.searchEl.SetPosition(types.Point{X: 8, Y: 6})
 	}
-	n := len(e.visible())
-	h := sh + float64(n)*selectItemH + 8
+	vis := e.visible()
+	fullOpts := float64(len(vis)) * selectItemH // 选项区全部内容高
+	viewOpts := fullOpts
+	if viewOpts > selectMaxOptionsH {
+		viewOpts = selectMaxOptionsH // 封顶：超出部分在选项区内部滚动（防长列表撑爆窗口）
+	}
+	e.maxScroll = fullOpts - viewOpts
+	if !e.inited { // 首次布局：视口定位到当前选中项（长列表如字体直接跳到当前字体）
+		e.inited = true
+		e.scrollY = e.scrollToSelected(vis, viewOpts)
+	}
+	e.scrollY = clamp(e.scrollY, 0, e.maxScroll)
+	h := sh + viewOpts + 8
 	e.size = ctx.Constraints.Constrain(types.Size{Width: e.dd.width, Height: h})
 	return layout.LayoutResult{Size: e.size}
+}
+
+// scrollToSelected 返回让当前选中项落入视口（尽量居中）的初始 scrollY；无选中返回 0。
+func (e *selectDropdownElement) scrollToSelected(vis []SelectOption, viewOpts float64) float64 {
+	idx := -1
+	for i, o := range vis {
+		if o.Value == e.dd.value {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return 0
+	}
+	return float64(idx)*selectItemH + selectItemH/2 - viewOpts/2 // 选中项中心对齐视口中心
 }
 
 func (e *selectDropdownElement) Paint(cvs canvas.Canvas, offset types.Point) {
@@ -531,8 +561,15 @@ func (e *selectDropdownElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	if e.dd.multiple && e.dd.getValues != nil {
 		values = e.dd.getValues()
 	}
+	optTop := pos.Y + sh + 4 // 选项视口上缘
+	viewOpts := H - sh - 8   // 选项视口高（与 Layout 一致）
+	cvs.Save()               // 裁剪到选项视口：滚动时上下不溢出（搜索框/空状态在裁剪外另画）
+	cvs.ClipRect(pos.X+1, optTop, W-2, viewOpts)
 	for i, opt := range vis {
-		iy := pos.Y + sh + 4 + float64(i)*selectItemH
+		iy := optTop + float64(i)*selectItemH - e.scrollY
+		if iy+selectItemH < optTop || iy > optTop+viewOpts { // 视口外的项跳过（长列表省绘制）
+			continue
+		}
 		selected := opt.Value == e.dd.value
 		if e.dd.multiple {
 			selected = selectContains(values, opt.Value)
@@ -573,6 +610,20 @@ func (e *selectDropdownElement) Paint(cvs canvas.Canvas, offset types.Point) {
 			cvs.DrawLine(cx+3, cy+3, cx+8, cy-4, cp)
 		}
 	}
+	cvs.Restore()
+
+	// 选项溢出 → 画半透明圆角滚动条 thumb（el-scrollbar 风格，贴右缘）
+	if e.maxScroll > 0 {
+		contentH := viewOpts + e.maxScroll
+		thumbH := viewOpts * viewOpts / contentH
+		if thumbH < 24 {
+			thumbH = 24
+		}
+		thumbY := optTop + (viewOpts-thumbH)*(e.scrollY/e.maxScroll)
+		tp := paint.DefaultPaint()
+		tp.Color = types.ColorFromRGBA(144, 147, 153, 130)
+		cvs.DrawRoundedRect(pos.X+W-5, thumbY, 3, thumbH, 1.5, tp)
+	}
 
 	// 空状态
 	if len(vis) == 0 {
@@ -585,9 +636,19 @@ func (e *selectDropdownElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	}
 }
 
-// itemAt 返回局部 y 对应的可见选项索引（-1 表示空白/搜索框区）。
+// itemAt 返回局部 y 对应的可见选项索引（-1 表示空白/搜索框区/视口外）；计入滚动偏移。
 func (e *selectDropdownElement) itemAt(localY float64) int {
-	idx := int((localY - e.searchH() - 4) / selectItemH)
+	sh := e.searchH()
+	top := sh + 4
+	if localY < top { // 点在搜索框区
+		return -1
+	}
+	if e.size.Height > 0 { // 已布局：拒绝点在选项视口下缘外（底 padding）
+		if localY > top+e.size.Height-sh-8 {
+			return -1
+		}
+	}
+	idx := int((localY - top + e.scrollY) / selectItemH)
 	if idx < 0 || idx >= len(e.visible()) {
 		return -1
 	}
@@ -596,6 +657,15 @@ func (e *selectDropdownElement) itemAt(localY float64) int {
 
 func (e *selectDropdownElement) HandleEvent(ev event.Event) bool {
 	switch ev.Type() {
+	case event.TypeMouseWheel:
+		if me, ok := ev.(*event.MouseEvent); ok && e.maxScroll > 0 {
+			e.scrollY = clamp(e.scrollY-me.DeltaY*scrollWheelStep, 0, e.maxScroll)
+			e.hoverIdx = e.itemAt(me.Y - e.Offset().Y)
+			e.MarkNeedsPaint()
+			ev.StopPropagation() // 自己消费，避免外层 ScrollView 同时滚
+			return true
+		}
+		return false
 	case event.TypeMouseMove, event.TypeMouseEnter:
 		if me, ok := ev.(*event.MouseEvent); ok {
 			e.hoverIdx = e.itemAt(me.Y - e.Offset().Y)

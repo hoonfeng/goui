@@ -41,6 +41,48 @@ func TestOpenAIProviderParams(t *testing.T) {
 	}
 }
 
+// TestApplyThinking 复刻参考 adapter.ts：思考参数仅 DeepSeek V4 系（model 含 "v4"）下发。
+func TestApplyThinking(t *testing.T) {
+	// 非 v4 模型：任何模式都不下发思考参数（避免被服务端拒绝）。
+	for _, mode := range []string{"thinking", "thinking_max", "non-thinking"} {
+		b := map[string]any{}
+		applyThinking(b, "gpt-4o", mode)
+		if _, ok := b["thinking"]; ok {
+			t.Errorf("非 v4 模型(mode=%s)不应下发 thinking", mode)
+		}
+	}
+	// v4 + thinking → enabled + high
+	b := map[string]any{}
+	applyThinking(b, "deepseek-v4-pro", "thinking")
+	if tk, _ := b["thinking"].(map[string]any); tk["type"] != "enabled" {
+		t.Errorf("thinking 应 enabled，得 %v", b["thinking"])
+	}
+	if b["reasoning_effort"] != "high" {
+		t.Errorf("reasoning_effort 应 high，得 %v", b["reasoning_effort"])
+	}
+	// v4 + thinking_max → enabled + max
+	b = map[string]any{}
+	applyThinking(b, "deepseek-v4-flash", "thinking_max")
+	if b["reasoning_effort"] != "max" {
+		t.Errorf("reasoning_effort 应 max，得 %v", b["reasoning_effort"])
+	}
+	// v4 + non-thinking → disabled，无 reasoning_effort
+	b = map[string]any{}
+	applyThinking(b, "deepseek-v4-pro", "non-thinking")
+	if tk, _ := b["thinking"].(map[string]any); tk["type"] != "disabled" {
+		t.Errorf("non-thinking 应 disabled，得 %v", b["thinking"])
+	}
+	if _, ok := b["reasoning_effort"]; ok {
+		t.Error("non-thinking 不应带 reasoning_effort")
+	}
+	// 空模式 → 不下发（宿主未设思考模式时）
+	b = map[string]any{}
+	applyThinking(b, "deepseek-v4-pro", "")
+	if len(b) != 0 {
+		t.Errorf("空模式不应下发任何思考参数，得 %v", b)
+	}
+}
+
 // OpenAI 兼容 SSE 适配器：用 httptest 喂 canned 流（正文分 2 片 + 一个跨 2 片拼接的 tool_call + usage + [DONE]），
 // 验证 content 累积、tool_call arguments 按 index 拼接、流式 onChunk、请求体正确。全离线、无真网络。
 func TestOpenAIProviderSSE(t *testing.T) {

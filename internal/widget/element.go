@@ -307,10 +307,21 @@ func (e *StatefulElement) Update(newWidget Widget) {
 		if u, ok := e.state.(interface{ DidUpdateWidget(old Widget) }); ok {
 			u.DidUpdateWidget(old)
 		}
-		// 配置可能变化，标记重建；Update 发生在 buildTree 中，重建由后续对本元素的
-		// Build() 递归调用完成，无需再触发 SetState（避免双重 state.Build）。
-		e.buildDirty = true
+		// 仅当配置真的变化才标脏重建：与旧配置深度相等则复用缓存子树，避免父级重建时
+		// 无谓地级联重建所有未变的子面板（拖动改尺寸/动画等高频 SetState 的卡顿根因——
+		// 一次 shell.SetState 原本会连锁重建对话面板等整棵树、重渲全部 Markdown）。
+		// 组件自身 SetState 走 Rebuild 直接置脏，状态变化照常重建，不受此影响。
+		if old == nil || !configEqual(old, newWidget) {
+			e.buildDirty = true
+		}
 	}
+}
+
+// configEqual 两个 Widget 配置是否深度相等。含非 nil 函数字段者必不等（reflect.DeepEqual
+// 语义：函数仅 nil==nil）→ 带回调的组件照常重建；无字段/纯数据且未变者（如 companion 各
+// 面板 struct{StatefulWidget}）才复用缓存、跳过级联重建。
+func configEqual(a, b Widget) bool {
+	return reflect.DeepEqual(a, b)
 }
 
 // Rebuild 重建子树（在 SetState 时调用）

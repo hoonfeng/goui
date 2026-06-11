@@ -168,8 +168,8 @@ func TestRegistryDefinitions(t *testing.T) {
 	reg := NewRegistry()
 	RegisterDefaultTools(reg, t.TempDir())
 	defs := reg.Definitions()
-	if len(defs) != 30 { // 19 + git_show/blame/add/commit/branch/checkout/stash(7) + memory_write/read/list/search(4)
-		t.Fatalf("应有 30 个工具定义，得 %d", len(defs))
+	if len(defs) != 45 { // 19 + git(7) + memory(5) + project_info(6) + binary inspect/write(2) + RE strings/find/patch/info/hash/entropy(6)
+		t.Fatalf("应有 45 个工具定义，得 %d", len(defs))
 	}
 	if defs[0].Type != "function" || defs[0].Function.Name != "read_file" {
 		t.Errorf("首个定义 = %+v", defs[0])

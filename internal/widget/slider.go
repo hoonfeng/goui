@@ -179,25 +179,26 @@ func (e *SliderElement) HandleEvent(ev event.Event) bool {
 		e.MarkNeedsPaint()
 		return true
 	case event.TypeMouseLeave:
+		// 仅清悬停；拖拽中鼠标移出滑块不应停拖（有鼠标捕获，按住不放就继续跟手），由 Up/DragEnd 才停。
 		e.hovered = false
-		e.dragging = false
 		e.MarkNeedsPaint()
 		return true
-	case event.TypeMouseDown:
+	// 按下即开始拖：MouseDown 先吸到点击处；超过 app 拖拽阈值(5px)后事件转为 Drag* —— 两路都收，才能连续跟手。
+	case event.TypeMouseDown, event.TypeDragStart:
 		e.dragging = true
 		e.updateValueFromEvent(ev)
 		e.MarkNeedsPaint()
 		return true
-	case event.TypeMouseUp:
+	case event.TypeMouseMove, event.TypeDragMove:
 		if e.dragging {
-			e.dragging = false
-			e.MarkNeedsPaint()
+			e.updateValueFromEvent(ev)
 			return true
 		}
 		return false
-	case event.TypeMouseMove:
+	case event.TypeMouseUp, event.TypeDragEnd:
 		if e.dragging {
-			e.updateValueFromEvent(ev)
+			e.dragging = false
+			e.MarkNeedsPaint()
 			return true
 		}
 		return false
@@ -205,9 +206,9 @@ func (e *SliderElement) HandleEvent(ev event.Event) bool {
 	return false
 }
 
-// updateValueFromEvent 根据鼠标位置更新值(含步长吸附)。
+// updateValueFromEvent 根据鼠标位置更新值(含步长吸附)。兼容 MouseEvent 与 DragEvent（拖拽中是后者）。
 func (e *SliderElement) updateValueFromEvent(ev event.Event) {
-	mouseEv, ok := ev.(*event.MouseEvent)
+	mx, ok := eventMouseX(ev)
 	if !ok {
 		return
 	}
@@ -222,7 +223,7 @@ func (e *SliderElement) updateValueFromEvent(ev event.Event) {
 	if trackW < 1 {
 		trackW = 1
 	}
-	ratio := (mouseEv.X - (pos.X + padding)) / trackW
+	ratio := (mx - (pos.X + padding)) / trackW
 	if ratio < 0 {
 		ratio = 0
 	}
@@ -247,6 +248,17 @@ func (e *SliderElement) updateValueFromEvent(ev event.Event) {
 		}
 		e.MarkNeedsPaint()
 	}
+}
+
+// eventMouseX 从 MouseEvent / DragEvent 取鼠标 X：超过 app 拖拽阈值后，MouseMove 会被改派为 DragMove。
+func eventMouseX(ev event.Event) (float64, bool) {
+	switch m := ev.(type) {
+	case *event.MouseEvent:
+		return m.X, true
+	case *event.DragEvent:
+		return m.X, true
+	}
+	return 0, false
 }
 
 // formatFloat 简单浮点格式化(当前仅整数)。

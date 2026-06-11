@@ -19,10 +19,11 @@ const (
 
 // Font 定义字体属性
 type Font struct {
-	Family  string
-	Size    float64
-	Weight  FontWeight
-	Style   FontStyle
+	Family    string
+	Size      float64
+	Weight    FontWeight
+	Style     FontStyle
+	Underline bool // 下划线（与 Weight 粗体、Style 斜体正交，可叠加）
 }
 
 // DefaultFont 返回默认字体

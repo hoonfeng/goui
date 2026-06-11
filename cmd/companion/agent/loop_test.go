@@ -135,7 +135,7 @@ func TestLoopApprovalReject(t *testing.T) {
 	}}
 	var approvedTools []string
 	loop := &Loop{Provider: mock, Registry: reg, MaxIterations: 5,
-		Approve: func(ctx context.Context, tc ToolCall) bool { approvedTools = append(approvedTools, tc.Function.Name); return false }}
+		Approve: func(ctx context.Context, tc ToolCall) (bool, string) { approvedTools = append(approvedTools, tc.Function.Name); return false, "" }}
 
 	msgs, err := loop.Run(context.Background(), "写个文件", nil)
 	if err != nil {
@@ -168,7 +168,7 @@ func TestLoopApprovalApprove(t *testing.T) {
 		{Content: "已写入 [FINAL]"},
 	}}
 	loop := &Loop{Provider: mock, Registry: reg, MaxIterations: 5,
-		Approve: func(ctx context.Context, tc ToolCall) bool { return true }}
+		Approve: func(ctx context.Context, tc ToolCall) (bool, string) { return true, "" }}
 	if _, err := loop.Run(context.Background(), "写个文件", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestLoopApprovalSkipsReadOnly(t *testing.T) {
 	}}
 	called := false
 	loop := &Loop{Provider: mock, Registry: reg, MaxIterations: 5,
-		Approve: func(ctx context.Context, tc ToolCall) bool { called = true; return false }}
+		Approve: func(ctx context.Context, tc ToolCall) (bool, string) { called = true; return false, "" }}
 	if _, err := loop.Run(context.Background(), "读 x.txt", nil); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

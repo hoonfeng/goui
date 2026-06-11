@@ -179,6 +179,9 @@ func (c *Client) Initialize(rootURI string) error {
 				},
 				"publishDiagnostics": map[string]interface{}{},
 				"hover":              map[string]interface{}{},
+				"definition":         map[string]interface{}{},
+				"references":         map[string]interface{}{},
+				"documentSymbol":     map[string]interface{}{},
 			},
 		},
 	})
@@ -194,6 +197,13 @@ func (c *Client) DidOpen(uri, lang, text string) error {
 		"textDocument": map[string]interface{}{
 			"uri": uri, "languageId": lang, "version": 1, "text": text,
 		},
+	})
+}
+
+// DidClose 通知服务器关闭了文档（标签编辑器切换文件时关旧文件）。
+func (c *Client) DidClose(uri string) error {
+	return c.notify("textDocument/didClose", map[string]interface{}{
+		"textDocument": map[string]interface{}{"uri": uri},
 	})
 }
 
@@ -224,4 +234,98 @@ func (c *Client) Completion(uri string, line, char int) ([]CompletionItem, error
 	var items []CompletionItem
 	json.Unmarshal(res, &items)
 	return items, nil
+}
+
+// Definition 请求转到定义（line/char 0 基）。结果可能是 Location / []Location / []LocationLink，统一成 []Location。
+func (c *Client) Definition(uri string, line, char int) ([]Location, error) {
+	res, err := c.call("textDocument/definition", map[string]interface{}{
+		"textDocument": map[string]interface{}{"uri": uri},
+		"position":     Position{Line: line, Character: char},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(res) == 0 || string(res) == "null" {
+		return nil, nil
+	}
+	var single Location
+	if json.Unmarshal(res, &single) == nil && single.URI != "" {
+		return []Location{single}, nil
+	}
+	var locs []Location
+	if json.Unmarshal(res, &locs) == nil && len(locs) > 0 && locs[0].URI != "" {
+		return locs, nil
+	}
+	var links []LocationLink
+	if json.Unmarshal(res, &links) == nil && len(links) > 0 && links[0].TargetURI != "" {
+		out := make([]Location, len(links))
+		for i, l := range links {
+			out[i] = Location{URI: l.TargetURI, Range: l.TargetSelectionRange}
+		}
+		return out, nil
+	}
+	return nil, nil
+}
+
+// References 查找引用（line/char 0 基；includeDecl 是否含声明本身）。
+func (c *Client) References(uri string, line, char int, includeDecl bool) ([]Location, error) {
+	res, err := c.call("textDocument/references", map[string]interface{}{
+		"textDocument": map[string]interface{}{"uri": uri},
+		"position":     Position{Line: line, Character: char},
+		"context":      map[string]interface{}{"includeDeclaration": includeDecl},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(res) == 0 || string(res) == "null" {
+		return nil, nil
+	}
+	var locs []Location
+	json.Unmarshal(res, &locs)
+	return locs, nil
+}
+
+// DocumentSymbol 文档符号大纲（结果可能是嵌套 []DocumentSymbol 或扁平 []SymbolInformation，统一成前者）。
+func (c *Client) DocumentSymbol(uri string) ([]DocumentSymbol, error) {
+	res, err := c.call("textDocument/documentSymbol", map[string]interface{}{
+		"textDocument": map[string]interface{}{"uri": uri},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(res) == 0 || string(res) == "null" {
+		return nil, nil
+	}
+	var syms []DocumentSymbol
+	if json.Unmarshal(res, &syms) == nil && len(syms) > 0 && syms[0].Name != "" {
+		return syms, nil
+	}
+	var flat []SymbolInformation
+	if json.Unmarshal(res, &flat) == nil && len(flat) > 0 {
+		out := make([]DocumentSymbol, 0, len(flat))
+		for _, s := range flat {
+			out = append(out, DocumentSymbol{Name: s.Name, Kind: s.Kind, Range: s.Location.Range, SelectionRange: s.Location.Range})
+		}
+		return out, nil
+	}
+	return nil, nil
+}
+
+// HoverAt 悬停信息（line/char 0 基）。
+func (c *Client) HoverAt(uri string, line, char int) (*Hover, error) {
+	res, err := c.call("textDocument/hover", map[string]interface{}{
+		"textDocument": map[string]interface{}{"uri": uri},
+		"position":     Position{Line: line, Character: char},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(res) == 0 || string(res) == "null" {
+		return nil, nil
+	}
+	var h Hover
+	if json.Unmarshal(res, &h) != nil || h.Contents.Value == "" {
+		return nil, nil
+	}
+	return &h, nil
 }

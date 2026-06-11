@@ -131,9 +131,13 @@ func (e *StructEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		// 逻辑代码：内嵌 CodeEditor，行号接续全局计数，直接接在局部变量表后
 		cel.ed.LineNumberOffset = gl - 1
 		cel.ed.GutterOverride = gw
-		bh := e.layoutBodyEd(cel, innerW)
-		cel.SetPosition(types.Point{X: x - pos.X, Y: y - pos.Y})
-		cel.Paint(cvs, types.Point{})
+		bh := cel.EmbeddedContentHeight() // 便宜：只算高度推进 y
+		// 函数体在视口内才布局+绘制；off-screen 跳过，省每帧重排+重绘整文件所有函数体（拖动卡顿根因）
+		if y+bh >= pos.Y-seRowH && y <= pos.Y+e.size.Height+seRowH {
+			e.layoutBodyEd(cel, innerW)
+			cel.SetPosition(types.Point{X: x - pos.X, Y: y - pos.Y})
+			cel.Paint(cvs, types.Point{})
+		}
 		gl += len(cel.lines)
 		y += bh + 10
 		e.miniSegs = append(e.miniSegs, seMiniSeg{cStart - top, y - cStart, segCode})
@@ -421,8 +425,18 @@ func (e *StructEditorElement) paintVarTable(cvs canvas.Canvas, x, y, innerW, gw 
 	return y
 }
 
-// paintRow 画一行：行号 + 各单元格文本。
+// yVisible 屏幕 y 处、高 rowH 的一行是否落在视口内（带一行余量，边缘半行仍画）。
+// 视口外的行不必绘制/测量/建命中——避免每帧重算整表几何造成拖动卡顿。
+func (e *StructEditorElement) yVisible(y, rowH float64) bool {
+	pos := e.Offset()
+	return y+rowH >= pos.Y-rowH && y <= pos.Y+e.size.Height+rowH
+}
+
+// paintRow 画一行：行号 + 各单元格文本。视口外的行直接跳过（裁剪剔除）。
 func (e *StructEditorElement) paintRow(cvs canvas.Canvas, x, y, gw float64, colW, colE []float64, section string, row int, vals []string, eachW []float64, gl int, isHeader bool) {
+	if !e.yVisible(y, seRowH) {
+		return // 视口外：不绘制、不测量文本、不建单元格命中（hit-test 只需可见行）
+	}
 	x0 := x + gw
 	cw := 0.0
 	for _, w := range colW {
@@ -535,34 +549,29 @@ func (e *StructEditorElement) paintFuncTable(cvs canvas.Canvas, x, y, innerW, gw
 		tp := typeParamsGo(sub.TypeParams)
 		namePart += tp
 	}
-	// 行号
-	e.drawLineNum(cvs, x, declY, gw, gl, false)
-	// 行底色
-	bg := paint.DefaultPaint()
-	bg.Color = seFuncRowBG()
-	cvs.DrawRect(x0, declY, cw, seRowH, bg)
-	// 选中/编辑函数名 → 高亮（之前无任何反馈，点了像「不可编辑」）
-	editingName := e.selSection == "func:"+itoaCE(si) && e.selRow == 0 && e.selCol == 0
-	nameColor := seFuncRowText()
-	if editingName {
-		sel := paint.DefaultPaint()
-		sel.Color = elPrimary()
-		cvs.DrawRect(x0+1, declY+1, cw-2, seRowH-2, sel)
-		nameColor = types.ColorFromRGB(255, 255, 255)
+	if e.yVisible(declY, seRowH) { // 声明行在视口内才绘制 + 建命中（off-screen 跳过）
+		e.drawLineNum(cvs, x, declY, gw, gl, false)
+		bg := paint.DefaultPaint()
+		bg.Color = seFuncRowBG()
+		cvs.DrawRect(x0, declY, cw, seRowH, bg)
+		// 选中/编辑函数名 → 高亮（之前无任何反馈，点了像「不可编辑」）
+		editingName := e.selSection == "func:"+itoaCE(si) && e.selRow == 0 && e.selCol == 0
+		nameColor := seFuncRowText()
+		if editingName {
+			sel := paint.DefaultPaint()
+			sel.Color = elPrimary()
+			cvs.DrawRect(x0+1, declY+1, cw-2, seRowH-2, sel)
+			nameColor = types.ColorFromRGB(255, 255, 255)
+		}
+		e.font, _, _ = canvas.FontWithStyle("monospace", 13, canvas.FontRegular)
+		tx := x0 + 8.0
+		canvas.DrawTextAligned(cvs, namePart, types.Rect{X: tx, Y: declY, Width: cw - 8.0, Height: seRowH}, e.font, nameColor, canvas.HAlignLeft, canvas.VAlignMiddle)
+		e.cells = append(e.cells, seCellHit{rect: types.Rect{X: x0, Y: declY, Width: cw, Height: seRowH}, section: "func:" + itoaCE(si), row: 0, col: 0})
+		e.foldHits = append(e.foldHits, seFoldHit{rect: types.Rect{X: x0 + cw - 18, Y: declY + 3, Width: 16, Height: seRowH - 6}, sub: si})
+		ln := paint.DefaultStrokePaint()
+		ln.Color = seLineColor()
+		cvs.DrawLine(x0, declY+seRowH, x0+cw, declY+seRowH, ln)
 	}
-	// 单元格
-	e.font, _, _ = canvas.FontWithStyle("monospace", 13, canvas.FontRegular)
-	padL := 8.0
-	tx := x0 + padL
-	canvas.DrawTextAligned(cvs, namePart, types.Rect{X: tx, Y: declY, Width: cw - padL, Height: seRowH}, e.font, nameColor, canvas.HAlignLeft, canvas.VAlignMiddle)
-	// 命中区（用于双击编辑函数名等）
-	e.cells = append(e.cells, seCellHit{rect: types.Rect{X: x0, Y: declY, Width: cw, Height: seRowH}, section: "func:" + itoaCE(si), row: 0, col: 0})
-	// 折叠三角
-	e.foldHits = append(e.foldHits, seFoldHit{rect: types.Rect{X: x0 + cw - 18, Y: declY + 3, Width: 16, Height: seRowH - 6}, sub: si})
-	// 分隔线
-	ln := paint.DefaultStrokePaint()
-	ln.Color = seLineColor()
-	cvs.DrawLine(x0, declY+seRowH, x0+cw, declY+seRowH, ln)
 	y = declY + seRowH
 
 	if collapsed {

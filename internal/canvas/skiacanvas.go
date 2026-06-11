@@ -470,6 +470,7 @@ func (c *SkiaCanvas) DrawText(text string, x, y float64, font Font, p paint.Pain
 		curX = 0
 		baseY = 0
 	}
+	var totalW float32
 	c.eachTextRun(text, font, func(seg string, skFont *goskia.Font) {
 		if skFont == nil {
 			return
@@ -477,9 +478,18 @@ func (c *SkiaCanvas) DrawText(text string, x, y float64, font Font, p paint.Pain
 		c.canvas.DrawText(seg, curX, baseY, skFont, skPaint)
 		w, _ := skFont.MeasureText(seg, skPaint)
 		curX += w
+		totalW += w
 	})
 	if italic {
 		c.canvas.Restore()
+	}
+	if font.Underline && totalW > 0 { // 下划线：基线下方一条横线（已 Restore，正常坐标）
+		ulp := toSkiaPaint(p)
+		ulp.SetStyle(goskia.PaintStyleStroke)
+		ulp.SetStrokeWidth(float32(font.Size) * 0.07)
+		uy := float32(y) + float32(font.Size)*0.13
+		c.canvas.DrawLine(float32(x), uy, float32(x)+totalW, uy, ulp)
+		ulp.Release()
 	}
 	c.dirty = true
 }

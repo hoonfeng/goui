@@ -54,15 +54,35 @@ func (m *MockProvider) Chat(ctx context.Context, messages []Message, tools []Too
 // OpenAIProvider OpenAI 兼容 /chat/completions 适配器。各家差异仅 BaseURL+Model+APIKey。
 // SSE 流式：逐行解析 data:，累积 content/reasoning_content 与 tool_calls（按 index 拼 arguments）。
 type OpenAIProvider struct {
-	BaseURL     string // 如 https://api.deepseek.com/v1（不含 /chat/completions）
-	APIKey      string
-	Model       string
-	Temperature float64      // <0 = 不下发（用服务端默认）；>=0 下发
-	MaxTokens   int          // >0 时下发 max_tokens
-	Client      *http.Client // nil → 默认 120s 超时
+	BaseURL      string // 如 https://api.deepseek.com/v1（不含 /chat/completions）
+	APIKey       string
+	Model        string
+	Temperature  float64      // <0 = 不下发（用服务端默认）；>=0 下发
+	MaxTokens    int          // >0 时下发 max_tokens
+	ThinkingMode string       // non-thinking/thinking/thinking_max；空=不下发思考参数（仅 DeepSeek V4 系生效）
+	Client       *http.Client // nil → 默认 120s 超时
 }
 
 func (p *OpenAIProvider) Name() string { return "openai:" + p.Model }
+
+// applyThinking 把思考模式下发到请求体——1:1 复刻参考源 llm/adapter.ts：
+// 仅对 DeepSeek V4 系模型（model 含 "v4"）生效；非 v4 模型不带思考参数（避免被服务端拒绝）。
+// 非 non-thinking → thinking{enabled} + reasoning_effort(high|max)；non-thinking → thinking{disabled}。
+func applyThinking(body map[string]any, model, mode string) {
+	if mode == "" || !strings.Contains(model, "v4") {
+		return
+	}
+	if mode == "non-thinking" {
+		body["thinking"] = map[string]any{"type": "disabled"}
+		return
+	}
+	body["thinking"] = map[string]any{"type": "enabled"}
+	eff := "high"
+	if mode == "thinking_max" {
+		eff = "max"
+	}
+	body["reasoning_effort"] = eff
+}
 
 func (p *OpenAIProvider) client() *http.Client {
 	if p.Client != nil {
@@ -87,6 +107,7 @@ func (p *OpenAIProvider) Chat(ctx context.Context, messages []Message, tools []T
 	if p.MaxTokens > 0 {
 		body["max_tokens"] = p.MaxTokens
 	}
+	applyThinking(body, p.Model, p.ThinkingMode)
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return Message{}, err

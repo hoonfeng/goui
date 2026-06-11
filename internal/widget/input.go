@@ -1114,6 +1114,9 @@ func (e *InputElement) insertText(s string) {
 		return
 	}
 	e.deleteSelection()
+	// 清空选区锚点：点击聚焦时 selAnchor 被置成光标位（空选区），插入后光标右移会把它变成
+	// 覆盖首字的真选区，导致「聚焦后第一个字被选中、下一字覆盖它」。插入后本就不应有选区。
+	e.selAnchor = -1
 	runes := []rune(e.text)
 	ins := []rune(s)
 	if e.input.MaxLength > 0 {

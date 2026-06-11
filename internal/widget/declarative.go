@@ -505,8 +505,11 @@ func registerBuiltinComponents() {
 		}
 		return &Column{
 			Flex: Flex{
-				MultiChildWidget: MultiChildWidget{Children: children},
-				Direction:        layout.FlexColumn,
+				MultiChildWidget:   MultiChildWidget{Children: children},
+				Direction:          layout.FlexColumn,
+				MainAxisAlignment:  parseJustify(style.JustifyContent),
+				CrossAxisAlignment: parseAlign(style.AlignItems),
+				Gap:                style.Gap,
 			},
 		}
 	})
@@ -525,8 +528,11 @@ func registerBuiltinComponents() {
 		}
 		return &Row{
 			Flex: Flex{
-				MultiChildWidget: MultiChildWidget{Children: children},
-				Direction:        layout.FlexRow,
+				MultiChildWidget:   MultiChildWidget{Children: children},
+				Direction:          layout.FlexRow,
+				MainAxisAlignment:  parseJustify(style.JustifyContent),
+				CrossAxisAlignment: parseAlign(style.AlignItems),
+				Gap:                style.Gap,
 			},
 		}
 	})
@@ -543,11 +549,12 @@ func registerBuiltinComponents() {
 			if len(children) == 0 {
 				return &Container{}
 			}
-			return &Column{
-				Flex: Flex{
-					MultiChildWidget: MultiChildWidget{Children: children},
-					Direction:        layout.FlexColumn,
-				},
+			return &Flex{
+				MultiChildWidget:   MultiChildWidget{Children: children},
+				Direction:          flexDir(style.FlexDirection),
+				MainAxisAlignment:  parseJustify(style.JustifyContent),
+				CrossAxisAlignment: parseAlign(style.AlignItems),
+				Gap:                style.Gap,
 			}
 		}
 		container := &Container{
@@ -571,14 +578,13 @@ func registerBuiltinComponents() {
 		if style.Height != 0 {
 			container.Height = style.Height
 		}
-		if len(children) == 1 {
-			container.Child = children[0]
-		} else if len(children) > 1 {
-			container.Child = &Column{
-				Flex: Flex{
-					MultiChildWidget: MultiChildWidget{Children: children},
-					Direction:        layout.FlexColumn,
-				},
+		if len(children) > 0 {
+			container.Child = &Flex{
+				MultiChildWidget:   MultiChildWidget{Children: children},
+				Direction:          flexDir(style.FlexDirection),
+				MainAxisAlignment:  parseJustify(style.JustifyContent),
+				CrossAxisAlignment: parseAlign(style.AlignItems),
+				Gap:                style.Gap,
 			}
 		}
 		return container
@@ -1418,24 +1424,17 @@ func buildStyledContainer(widgetType string, children []Widget, style Style) Wid
 		container.Height = style.Height
 	}
 
-	if len(children) == 1 {
-		container.Child = children[0]
-	} else if len(children) > 1 {
-		if widgetType == "Row" || widgetType == "HBox" {
-			container.Child = &Row{
-				Flex: Flex{
-					MultiChildWidget: MultiChildWidget{Children: children},
-					Direction:        layout.FlexRow,
-				},
-			}
-		} else {
-			container.Child = &Column{
-				Flex: Flex{
-					MultiChildWidget: MultiChildWidget{Children: children},
-					Direction:        layout.FlexColumn,
-				},
-			}
-		}
+	dir := layout.FlexColumn
+	if widgetType == "Row" || widgetType == "HBox" {
+		dir = layout.FlexRow
+	}
+	// 单子也走 Flex（而非直挂 container.Child）：否则 alignItems/justifyContent 无处生效。
+	container.Child = &Flex{
+		MultiChildWidget:   MultiChildWidget{Children: children},
+		Direction:          dir,
+		MainAxisAlignment:  parseJustify(style.JustifyContent),
+		CrossAxisAlignment: parseAlign(style.AlignItems),
+		Gap:                style.Gap,
 	}
 	return container
 }
