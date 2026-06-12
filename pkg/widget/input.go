@@ -87,6 +87,10 @@ type Input struct {
 	Text             string // 初始文本(预填)
 	ResetToken       int    // 受控清空/重置：改变此值(+SetState)会把运行时文本重置为 Text（发送后清空等）
 
+	// SubmitOnEnter 多行模式下 Enter 是否触发提交回调（发送），而非插入换行。
+	// true → Enter 触发 OnSubmit、Ctrl+Enter 插入换行；false → Enter 插入换行（默认）。
+	SubmitOnEnter bool
+
 	ContextMenuItems    []MenuItem // 自定义右键菜单项（nil=用默认剪切/复制/粘贴/全选）
 	ContextMenuDisabled bool       // 禁用右键菜单（右键不弹出）
 }
@@ -1615,8 +1619,17 @@ func (e *InputElement) HandleEvent(ev event.Event) bool {
 				changed = true
 			}
 		case "Enter":
-			if in.Multiline {
-				e.insertText("\n") // 多行：插入换行
+			if in.Multiline && in.SubmitOnEnter {
+				if keyEv.Mods&event.ModCtrl != 0 {
+					e.insertText("\n") // Ctrl+Enter → 插入换行
+				} else if in.OnSubmit != nil {
+					in.OnSubmit(e.text) // Enter → 提交发送
+					// 不清空文本（由 ResetToken 机制在 chat.go 中统一清空）
+				} else {
+					e.insertText("\n") // 无 OnSubmit 时退化为插入换行
+				}
+			} else if in.Multiline {
+				e.insertText("\n") // 多行（默认）：插入换行
 			} else if in.OnSubmit != nil {
 				// 仅在配置了 OnSubmit（提交型输入框）时，回车提交当前文本并清空
 				in.OnSubmit(e.text)

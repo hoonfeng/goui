@@ -503,6 +503,7 @@ type Text struct {
 	Align      canvas.TextAlign
 	MaxLines   int
 	LineHeight float64 // 自定义行高（0=用字体默认行高）
+	Selectable bool    // 是否支持鼠标选中文本（选中后可 Ctrl+C 复制）
 }
 
 // TextElement 文本 Element
@@ -510,6 +511,11 @@ type TextElement struct {
 	BaseElement
 	text  *Text
 	lines []string // 换行后的文本行缓存
+
+	// 文本选中（Selectable=true 时启用）
+	selStart int  // 选中起始字符索引（在整个文本中的 rune 偏移）
+	selEnd   int  // 选中结束字符索引
+	selecting bool // 鼠标正在拖动选择中
 
 	// 测量缓存：文本/字体不变则复用换行与宽度，免每帧 layout+paint 反复做 O(N) 次 Skia CGO
 	// 测量（自绘 UI 拖动/动画时 layout 反复跑，这是卡顿的真正根因）。多 maxWidth 槽：Flex 一帧
@@ -544,6 +550,9 @@ func (e *TextElement) Update(newWidget Widget) {
 	if t, ok := newWidget.(*Text); ok {
 		e.text = t
 		e.lines = nil // 失效换行缓存，下次 Layout 按新文本重算
+		e.selStart = 0
+		e.selEnd = 0
+		e.selecting = false
 	}
 }
 
@@ -751,9 +760,12 @@ func (e *TextElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		align = canvas.TextAlignRight
 	}
 
+	// ── 选中高亮背景（Selectable=true 且有选中范围时）──
+	if t.Selectable && e.selStart != e.selEnd {
+		e.paintSelection(cvs, lines, pos, maxWidth, lineHeight, align)
+	}
+
 	// 逐行绘制：每行在自己的行盒(高 lineHeight)内**按实际墨迹**垂直居中。
-	// 用 BaselineForMiddle(Skia tight bounds)而非 ascent/descent——中文方块字不占字体
-	// descent，用度量居中会偏上、与同行图标错位；墨迹居中才真正对齐。
 	for i, line := range lines {
 		y := canvas.BaselineForMiddle(cvs, line, t.Font, pos.Y+float64(i)*lineHeight, lineHeight)
 		lineX := pos.X
@@ -771,6 +783,232 @@ func (e *TextElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		}
 		cvs.DrawText(line, lineX, y, t.Font, p)
 	}
+}
+
+// paintSelection 绘制选中区域高亮背景。
+func (e *TextElement) paintSelection(cvs canvas.Canvas, lines []string, pos types.Point, maxWidth, lineHeight float64, align canvas.TextAlign) {
+	selStart, selEnd := e.selStart, e.selEnd
+	if selStart > selEnd {
+		selStart, selEnd = selEnd, selStart
+	}
+	font := e.text.Font
+	// 选中高亮色（使用主题主色的半透明版本）
+	selColor := CurrentTheme().PrimaryColor
+	selColor.A = 60
+	selPaint := paint.DefaultPaint()
+	selPaint.Color = selColor
+
+	runes := []rune(strings.Join(lines, "\n"))
+	totalRunes := len(runes)
+	if selStart < 0 {
+		selStart = 0
+	}
+	if selEnd > totalRunes {
+		selEnd = totalRunes
+	}
+	if selStart >= selEnd {
+		return
+	}
+
+	// 构建每行的 rune 偏移范围 [startRune, endRune)
+	lineRanges := make([]struct{ start, end int }, len(lines))
+	runeOffset := 0
+	for li, line := range lines {
+		lineLen := len([]rune(line))
+		lineRanges[li] = struct{ start, end int }{runeOffset, runeOffset + lineLen}
+		runeOffset += lineLen + 1 // +1 为换行符
+	}
+
+	for li, line := range lines {
+		lr := lineRanges[li]
+		// 检查此行是否与选中范围重叠
+		if lr.end <= selStart || lr.start >= selEnd {
+			continue
+		}
+		// 计算此行中选中范围的列偏移
+		colStart := 0
+		if selStart > lr.start {
+			colStart = selStart - lr.start
+		}
+		colEnd := len([]rune(line))
+		if selEnd < lr.end {
+			colEnd = selEnd - lr.start
+		}
+		if colStart >= colEnd {
+			continue
+		}
+		// 计算选中矩形位置
+		lineRunes := []rune(line)
+		preText := string(lineRunes[:colStart])
+		selText := string(lineRunes[colStart:colEnd])
+		preW := cvs.MeasureText(preText, font).Width
+		selW := cvs.MeasureText(selText, font).Width
+
+		lineX := pos.X
+		if align != canvas.TextAlignLeft {
+			lw := cvs.MeasureText(line, font).Width
+			switch align {
+			case canvas.TextAlignCenter:
+				lineX = pos.X + (maxWidth-lw)/2
+			case canvas.TextAlignRight:
+				lineX = pos.X + maxWidth - lw
+			}
+		}
+
+		selX := lineX + preW
+		selY := pos.Y + float64(li)*lineHeight
+		cvs.DrawRect(selX, selY, selW, lineHeight, selPaint)
+	}
+}
+
+// charIndexAtPos 将鼠标坐标转换为文本中的字符索引（rune 偏移）。
+func (e *TextElement) charIndexAtPos(lines []string, mx, my, posX, posY, maxWidth, lineHeight float64, align canvas.TextAlign) int {
+	font := e.text.Font
+	li := int((my - posY) / lineHeight)
+	if li < 0 || li >= len(lines) {
+		return -1
+	}
+	line := lines[li]
+	if line == "" {
+		runes := []rune(strings.Join(lines, "\n"))
+		offset := 0
+		for i := 0; i < li; i++ {
+			offset += len([]rune(lines[i])) + 1
+		}
+		if offset < len(runes) {
+			return offset
+		}
+		return len(runes)
+	}
+	lineX := posX
+	if align != canvas.TextAlignLeft {
+		lw := canvas.MeasureTextGlobal(line, font).Width
+		switch align {
+		case canvas.TextAlignCenter:
+			lineX = posX + (maxWidth-lw)/2
+		case canvas.TextAlignRight:
+			lineX = posX + maxWidth - lw
+		}
+	}
+	lineRunes := []rune(line)
+	bestIdx := len(lineRunes)
+	for i := range lineRunes {
+		preW := canvas.MeasureTextGlobal(string(lineRunes[:i+1]), font).Width
+		charCenterX := lineX + preW
+		if mx < charCenterX {
+			bestIdx = i
+			break
+		}
+	}
+	runeOffset := 0
+	for i := 0; i < li; i++ {
+		runeOffset += len([]rune(lines[i])) + 1
+	}
+	return runeOffset + bestIdx
+}
+
+// HandleEvent 处理鼠标事件（文本选中）。
+func (e *TextElement) HandleEvent(ev event.Event) bool {
+	if !e.text.Selectable {
+		return false
+	}
+	switch ev.Type() {
+	case event.TypeMouseDown:
+		me, ok := ev.(*event.MouseEvent)
+		if !ok || me.Button != event.ButtonLeft {
+			return false
+		}
+		maxWidth := e.lyMaxW
+		if maxWidth <= 0 {
+			maxWidth = e.size.Width
+		}
+		lineHeight := canvas.GetFaceLineHeight(e.text.Font.Size)
+		if e.text.LineHeight > 0 {
+			lineHeight = e.text.LineHeight
+		}
+		pos := e.Offset()
+		lines := e.visibleLines(maxWidth)
+		idx := e.charIndexAtPos(lines, me.X, me.Y, pos.X, pos.Y, maxWidth, lineHeight, e.text.Align)
+		if idx >= 0 {
+			e.selStart = idx
+			e.selEnd = idx
+			e.selecting = true
+			ev.StopPropagation()
+			e.MarkNeedsPaint()
+			return true
+		}
+	case event.TypeMouseMove:
+		me, ok := ev.(*event.MouseEvent)
+		if !ok || !e.selecting {
+			return false
+		}
+		maxWidth := e.lyMaxW
+		if maxWidth <= 0 {
+			maxWidth = e.size.Width
+		}
+		lineHeight := canvas.GetFaceLineHeight(e.text.Font.Size)
+		if e.text.LineHeight > 0 {
+			lineHeight = e.text.LineHeight
+		}
+		pos := e.Offset()
+		lines := e.visibleLines(maxWidth)
+		idx := e.charIndexAtPos(lines, me.X, me.Y, pos.X, pos.Y, maxWidth, lineHeight, e.text.Align)
+		if idx >= 0 {
+			e.selEnd = idx
+			ev.StopPropagation()
+			e.MarkNeedsPaint()
+			return true
+		}
+	case event.TypeMouseUp:
+		if !e.selecting {
+			return false
+		}
+		e.selecting = false
+		ev.StopPropagation()
+		if e.selStart != e.selEnd && ClipboardWrite != nil {
+			runes := []rune(e.text.Text)
+			start, end := e.selStart, e.selEnd
+			if start > end {
+				start, end = end, start
+			}
+			if start < 0 {
+				start = 0
+			}
+			if end > len(runes) {
+				end = len(runes)
+			}
+			if start < end {
+				ClipboardWrite(string(runes[start:end]))
+			}
+		}
+		e.MarkNeedsPaint()
+		return true
+	case event.TypeKeyDown:
+		ke, ok := ev.(*event.KeyEvent)
+		if !ok || ke.Mods&event.ModCtrl == 0 || ke.KeyCode != 0x43 {
+			return false
+		}
+		// Ctrl+C: 复制选中的文本到剪贴板
+		if e.selStart != e.selEnd && ClipboardWrite != nil {
+			runes := []rune(e.text.Text)
+			start, end := e.selStart, e.selEnd
+			if start > end {
+				start, end = end, start
+			}
+			if start < 0 {
+				start = 0
+			}
+			if end > len(runes) {
+				end = len(runes)
+			}
+			if start < end {
+				ClipboardWrite(string(runes[start:end]))
+				ev.StopPropagation()
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // ─── Web 风格便捷构造函数 ──────────────────────────
