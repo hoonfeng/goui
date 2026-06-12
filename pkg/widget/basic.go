@@ -907,12 +907,69 @@ func (e *TextElement) charIndexAtPos(lines []string, mx, my, posX, posY, maxWidt
 	return runeOffset + bestIdx
 }
 
+// isWordChar 判断 rune 是否为单词字符（字母/数字/下划线/CJK）。
+func isWordChar(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+		return true
+	case r >= 0x4E00 && r <= 0x9FFF, // CJK 统一表意文字
+		r >= 0x3400 && r <= 0x4DBF, // CJK 扩展 A
+		r >= 0xF900 && r <= 0xFAFF: // CJK 兼容表意文字
+		return true
+	default:
+		return false
+	}
+}
+
 // HandleEvent 处理鼠标事件（文本选中）。
 func (e *TextElement) HandleEvent(ev event.Event) bool {
 	if !e.text.Selectable {
 		return false
 	}
 	switch ev.Type() {
+	case event.TypeMouseDoubleClick:
+		me, ok := ev.(*event.MouseEvent)
+		if !ok || me.Button != event.ButtonLeft {
+			return false
+		}
+		maxWidth := e.lyMaxW
+		if maxWidth <= 0 {
+			maxWidth = e.size.Width
+		}
+		lineHeight := canvas.GetFaceLineHeight(e.text.Font.Size)
+		if e.text.LineHeight > 0 {
+			lineHeight = e.text.LineHeight
+		}
+		pos := e.Offset()
+		lines := e.visibleLines(maxWidth)
+		idx := e.charIndexAtPos(lines, me.X, me.Y, pos.X, pos.Y, maxWidth, lineHeight, e.text.Align)
+		if idx >= 0 {
+			runes := []rune(e.text.Text)
+			// 向左扩展至单词起始
+			start := idx
+			for start > 0 && isWordChar(runes[start-1]) {
+				start--
+			}
+			// 向右扩展至单词结束
+			end := idx
+			for end < len(runes) && isWordChar(runes[end]) {
+				end++
+			}
+			// 如果点击位置不是单词字符，则选中单个字符
+			if start == end {
+				if idx < len(runes) {
+					end = idx + 1
+				} else if idx > 0 {
+					start = idx - 1
+				}
+			}
+			e.selStart = start
+			e.selEnd = end
+			e.selecting = false // 双击完成，不进入拖选模式
+			ev.StopPropagation()
+			e.MarkNeedsPaint()
+			return true
+		}
 	case event.TypeMouseDown:
 		me, ok := ev.(*event.MouseEvent)
 		if !ok || me.Button != event.ButtonLeft {
