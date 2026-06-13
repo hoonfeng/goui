@@ -461,7 +461,6 @@ func (app *Application) mainLoop() {
 		// 4. 渲染帧
 		rendered := false
 		if app.Pipeline != nil {
-			t0 := time.Now()
 			if err := app.Pipeline.Render(); err != nil {
 				log.Printf("goui: Render error: %v", err)
 			}
@@ -471,7 +470,6 @@ func (app *Application) mainLoop() {
 
 		// 5. 显示渲染结果到窗口
 		if rendered {
-			t0 := time.Now()
 			app.Window.SwapBuffers()
 
 
@@ -921,6 +919,10 @@ type PlatformError struct {
 func (e *PlatformError) Error() string {
 	return e.Message
 }
+
+
+
+
 
 
 
