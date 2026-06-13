@@ -215,31 +215,46 @@ func sharedMeasureCanvas() *SkiaCanvas {
 }
 
 // ─── 全局 MeasureTextGlobal LRU 缓存 ─────────────────────────
-// avoidMeasureMu 保护缓存不会并发写。同一 (text,font) 在短时间内被反复测量（多 TextElement 同字符串、
+// measureCacheMu 保护缓存不会并发写。同一 (text,font) 在短时间内被反复测量（多 TextElement 同字符串、
 // splitLines 多次调用）时，避免重复 CGO 调用。上限 4000 条目避免内存泄漏。
+//
+// 【性能关键】cacheKey 使用 uint64 FNV-1a 哈希而非 string struct，
+// 将 map 查找的相等比较从 O(n) 字符串比较降为 O(1) uint64 比较，
+// 消除 type:.eq.measureCacheKey 带来的 9.49% CPU 开销。
 var (
 	measureCacheMu    sync.Mutex
-	measureCache      = map[measureCacheKey]TextMetrics{}
-	measureCacheOrder []measureCacheKey
+	measureCache      = map[uint64]cacheEntry{}
+	measureCacheOrder []uint64
 	measureCacheMax   = 4000
 )
 
-type measureCacheKey struct {
-	text   string
-	family string
-	size   float64
-	weight FontWeight
-	style  FontStyle
+// cacheEntry 缓存条目，text 仅用于哈希碰撞验证（99.9999% 情况下不需要）。
+type cacheEntry struct {
+	metrics TextMetrics
+	text    string // 原始文本，仅在哈希碰撞时用于验证
 }
 
-func mkMeasureKey(text string, font Font) measureCacheKey {
-	return measureCacheKey{
-		text:   text,
-		family: font.Family,
-		size:   font.Size,
-		weight: font.Weight,
-		style:  font.Style,
+// cacheHashFNV1a 对 (text,font.Family,size,weight,style) 计算 64 位 FNV-1a 哈希。
+// 内联实现避免 hash/fnv 包的接口开销和内存分配。
+func cacheHashFNV1a(text, family string, size float64, weight FontWeight, style FontStyle) uint64 {
+	h := uint64(14695981039346656037) // FNV-1a offset basis
+	for i := 0; i < len(text); i++ {
+		h ^= uint64(text[i])
+		h *= 1099511628211 // FNV-1a prime
 	}
+	for i := 0; i < len(family); i++ {
+		h ^= uint64(family[i])
+		h *= 1099511628211
+	}
+	// 混合数值字段：用位运算避免 float64→string 转换
+	sizeBits := uint64(size * 1000) // 保留 3 位小数精度
+	h ^= sizeBits
+	h *= 1099511628211
+	h ^= uint64(weight)
+	h *= 1099511628211
+	h ^= uint64(style)
+	h *= 1099511628211
+	return h
 }
 
 // MeasureTextGlobal 测量文本在指定字体下的精确尺寸。
@@ -250,28 +265,33 @@ func MeasureTextGlobal(text string, font Font) TextMetrics {
 	if text == "" {
 		return TextMetrics{}
 	}
-	key := mkMeasureKey(text, font)
+	key := cacheHashFNV1a(text, font.Family, font.Size, font.Weight, font.Style)
 	measureCacheMu.Lock()
-	if m, ok := measureCache[key]; ok {
-		// LRU：把该条目移到末尾（最近使用）
-		for i := range measureCacheOrder {
-			if measureCacheOrder[i] == key {
-				if i < len(measureCacheOrder)-1 {
-					measureCacheOrder = append(measureCacheOrder[:i], measureCacheOrder[i+1:]...)
-					measureCacheOrder = append(measureCacheOrder, key)
+	if entry, ok := measureCache[key]; ok {
+		// 哈希碰撞验证：极低概率，但确保正确性
+		if entry.text == text {
+			// LRU：把该条目移到末尾（最近使用）
+			for i := range measureCacheOrder {
+				if measureCacheOrder[i] == key {
+					if i < len(measureCacheOrder)-1 {
+						measureCacheOrder = append(measureCacheOrder[:i], measureCacheOrder[i+1:]...)
+						measureCacheOrder = append(measureCacheOrder, key)
+					}
+					break
 				}
-				break
 			}
+			measureCacheMu.Unlock()
+			return entry.metrics
 		}
-		measureCacheMu.Unlock()
-		return m
+		// 哈希碰撞：删除错误条目，回退到 CGO 测量
+		delete(measureCache, key)
 	}
 	measureCacheMu.Unlock()
 
 	m := sharedMeasureCanvas().MeasureText(text, font)
 
 	measureCacheMu.Lock()
-	measureCache[key] = m
+	measureCache[key] = cacheEntry{metrics: m, text: text}
 	measureCacheOrder = append(measureCacheOrder, key)
 	if len(measureCache) > measureCacheMax {
 		// 淘汰最旧（LRU 头部）

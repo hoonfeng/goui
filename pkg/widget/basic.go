@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode/utf8"
+	"unsafe"
 
 	"github.com/hoonfeng/goui/pkg/animation"
 	"github.com/hoonfeng/goui/pkg/canvas"
@@ -569,13 +571,25 @@ func (e *TextElement) splitLines(maxWidth float64) []string {
 
 		// 对每个段落进行单词换行
 		runes := []rune(para)
+
+		// 【优化】预编码所有 rune 到 UTF-8 字节缓冲区（一次分配）
+		// 后续用 unsafe.String 零拷贝构造字符串，避免 per-字符 string(runes[a:b]) 的分配
+		buf := make([]byte, len(para)*utf8.UTFMax)
+		bytePos := make([]int, len(runes)+1) // rune 索引 → 字节偏移
+		n := 0
+		for j, r := range runes {
+			bytePos[j] = n
+			n += utf8.EncodeRune(buf[n:], r)
+		}
+		bytePos[len(runes)] = n
+
 		start := 0
 		for start < len(runes) {
 			lastBreak := -1 // 最后一个可换行位置（空格/制表符后）
 
 			for i := start; i < len(runes); i++ {
-				// 测量从 start 到 i 的宽度
-				partialText := string(runes[start : i+1])
+				// 零拷贝构造字符串：指向预编码缓冲区，避免分配
+				partialText := unsafe.String(&buf[bytePos[start]], bytePos[i+1]-bytePos[start])
 				metrics := canvas.MeasureTextGlobal(partialText, e.text.Font)
 				w := metrics.Width
 
