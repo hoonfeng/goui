@@ -18,6 +18,7 @@ type CodeWorkbench struct {
 	fontUnderline bool         // 代码视图下划线
 	ReloadToken   int          // 递增时强制重新初始化（切换文件用）
 	OnChange      func(string) // 内容变化回调（用户编辑或视图切换）
+	OnCursorMove  func(line, col int) // 光标位置变化回调（0 基，转发给宿主状态栏显示 Ln/Col）
 
 	// LSP（接 gopls / tsserver 等）：代码视图的整文件编辑器据此做语义补全/诊断/转到定义/查找引用/大纲/悬停。空=纯词法。
 	LSPServer, LSPWorkspace, LSPFile, LSPLangID string
@@ -147,6 +148,7 @@ func (s *cwState) Build(ctx BuildContext) Widget {
 		ed := NewCodeEditor(c.lang, s.codeText).WithSize(c.Width, c.Height).WithFontFamily(c.fontFamily).WithFontSize(c.fontSize).WithFontStyle(c.fontBold, c.fontItalic, c.fontUnderline)
 		ed.IndentGuides = true
 		ed.CursorRef = s.codeCur   // 切回代码恢复光标/滚动
+		ed.OnCursorMove = c.OnCursorMove // 光标位置变化 → 转发到宿主状态栏
 		ed.ReloadToken = c.ReloadToken // 跟随工作台重载令牌：切文件时重置内容 + 切 LSP 文档
 		if c.LSPServer != "" {     // 代码视图整文件直接喂语言服务器（无需函数体坐标映射）
 			ed.LSPServer, ed.LSPArgs, ed.LSPWorkspace, ed.LSPFile, ed.LSPLangID = c.LSPServer, c.LSPArgs, c.LSPWorkspace, c.LSPFile, c.LSPLangID

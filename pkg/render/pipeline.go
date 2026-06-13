@@ -1,8 +1,10 @@
 package render
 
 import (
-	"github.com/hoonfeng/goui/pkg/canvas"
+	"log"
+
 	"github.com/hoonfeng/goui/internal/layout"
+	"github.com/hoonfeng/goui/pkg/canvas"
 	"github.com/hoonfeng/goui/pkg/paint"
 	"github.com/hoonfeng/goui/pkg/types"
 	"github.com/hoonfeng/goui/pkg/widget"
@@ -10,20 +12,20 @@ import (
 
 // Pipeline 是渲染管线，管理从控件树到最终显示的全过程。
 type Pipeline struct {
-	rootLayer     *Layer
-	rootElement   widget.Element
-	finalCanvas   canvas.Canvas
-	width         int
-	height        int
-	needsRepaint  bool
-	needsLayout   bool
-	didRender     bool // 上次 Render() 是否实际执行了绘制
+	rootLayer    *Layer
+	rootElement  widget.Element
+	finalCanvas  canvas.Canvas
+	width        int
+	height       int
+	needsRepaint bool
+	needsLayout  bool
+	didRender    bool // 上次 Render() 是否实际执行了绘制
 }
 
 // NewPipeline 创建渲染管线
 func NewPipeline(width, height int, finalCanvas canvas.Canvas) *Pipeline {
 	return &Pipeline{
-		rootLayer:    NewLayer(types.Rect{
+		rootLayer: NewLayer(types.Rect{
 			X: 0, Y: 0,
 			Width: float64(width), Height: float64(height),
 		}),
@@ -83,7 +85,9 @@ func (p *Pipeline) PerformLayout() {
 	}
 
 	// 递归构建 Element 树
+	log.Println("goui: PerformLayout: buildTree 开始")
 	p.buildTree(p.rootElement)
+	log.Println("goui: PerformLayout: buildTree 完成")
 
 	// 使用窗口尺寸作为根约束
 	ctx := &layout.LayoutContext{
@@ -94,7 +98,9 @@ func (p *Pipeline) PerformLayout() {
 			MaxHeight: float64(p.height),
 		},
 	}
+	log.Println("goui: PerformLayout: Layout 开始")
 	p.rootElement.Layout(ctx)
+	log.Println("goui: PerformLayout: Layout 完成")
 	p.needsLayout = false
 }
 
@@ -128,15 +134,28 @@ func (p *Pipeline) Render() error {
 	// 清空画布为白色背景
 	p.clearCanvas()
 
-	// 从根 Element 开始绘制
+	// 从根 Element 开始绘制（带视口裁剪）
+	// Save/ClipRect 让 Skia GPU 只处理窗口可见区域的像素，off-screen 元素（如
+	// 滚动视图外的聊天消息/文件树节点）由 Skia 自动裁切，大幅减少像素着色器调用。
+	// RESTORE 确保裁剪不影响后续帧或 HitTest 的坐标变换栈。
 	if p.rootElement != nil {
+		log.Println("goui: Pipeline.Render: Paint 开始")
+		p.finalCanvas.Save()
+		p.finalCanvas.ClipRect(0, 0, float64(p.width), float64(p.height))
 		p.rootElement.Paint(p.finalCanvas, types.Point{})
+		p.finalCanvas.Restore()
+		log.Println("goui: Pipeline.Render: Paint 完成")
+	} else {
+		log.Println("goui: Pipeline.Render: rootElement 为 nil，跳过 Paint")
 	}
 
 	// 刷新画布到屏幕
+	log.Println("goui: Pipeline.Render: Flush 开始")
 	if err := p.finalCanvas.Flush(); err != nil {
+		log.Printf("goui: Pipeline.Render: Flush 错误: %v", err)
 		return err
 	}
+	log.Println("goui: Pipeline.Render: Flush 完成")
 
 	p.needsRepaint = false
 	p.didRender = true

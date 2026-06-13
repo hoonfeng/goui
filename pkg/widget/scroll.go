@@ -3,7 +3,9 @@ package widget
 import (
 	"fmt"
 	"reflect"
+	"time"
 
+	"github.com/hoonfeng/goui/pkg/animation"
 	"github.com/hoonfeng/goui/pkg/canvas"
 	"github.com/hoonfeng/goui/pkg/event"
 	"github.com/hoonfeng/goui/internal/layout"
@@ -54,6 +56,15 @@ type ScrollViewElement struct {
 	draggingBar      bool
 	dragStartMouseY  float64
 	dragStartScrollY float64
+
+	// 平滑滚动动画（Y轴）
+	scrollAnimY     *animation.Controller
+	scrollFromY     float64
+	scrollTargetY   float64
+	// 平滑滚动动画（X轴）
+	scrollAnimX     *animation.Controller
+	scrollFromX     float64
+	scrollTargetX   float64
 }
 
 // CreateElement 创建 ScrollViewElement
@@ -140,25 +151,47 @@ func (e *ScrollViewElement) Layout(ctx *layout.LayoutContext) layout.LayoutResul
 			MaxHeight: ctx.Constraints.MaxHeight,
 		}
 		if e.scrollView.ScrollDirection == layout.FlexColumn {
-			childConstraints.MaxHeight = float64(1 << 31) // 垂直滚动时高度无界
+			childConstraints.MaxHeight = float64(1 << 29) // 垂直滚动时高度无界
 		} else {
-			childConstraints.MaxWidth = float64(1 << 31) // 水平滚动时宽度无界
+			childConstraints.MaxWidth = float64(1 << 29) // 水平滚动时宽度无界
 		}
 
 		result := e.child.Layout(&layout.LayoutContext{Constraints: childConstraints})
 
-		// 计算最大滚动范围，并把现有 offset clamp 回合法区间（内容变短时收回）
+		// 计算最大滚动范围
 		e.maxScroll = types.Point{
 			X: max(0, result.Size.Width-e.size.Width),
 			Y: max(0, result.Size.Height-e.size.Height),
 		}
-		e.scrollOffset.X = clamp(e.scrollOffset.X, 0, e.maxScroll.X)
-		e.scrollOffset.Y = clamp(e.scrollOffset.Y, 0, e.maxScroll.Y)
+
 		// 受控滚到末尾：ScrollEndToken 变化时跳到底部（聊天追加消息后保持看见最新）。
+		// 此机制优先于平滑动画，在 Layout 中直接跳转，确保流式输出时消息能及时出现在底部。
 		if e.scrollView.ScrollEndToken != e.lastScrollEnd {
+			e.stopSmoothScroll()
 			e.scrollOffset.Y = e.maxScroll.Y
 			e.scrollOffset.X = e.maxScroll.X
 			e.lastScrollEnd = e.scrollView.ScrollEndToken
+		} else if !e.isScrollAnimating() {
+			// 非动画状态：把现有 offset clamp 回合法区间（内容变短时收回）
+			e.scrollOffset.X = clamp(e.scrollOffset.X, 0, e.maxScroll.X)
+			e.scrollOffset.Y = clamp(e.scrollOffset.Y, 0, e.maxScroll.Y)
+		} else {
+			// 动画进行中：不 clamp 当前位置（避免截断动画造成跳动），
+			// 但若 maxScroll 变小（内容变短），更新目标位置防止越界。
+			if e.scrollTargetY > e.maxScroll.Y {
+				e.scrollTargetY = e.maxScroll.Y
+				if e.scrollAnimY != nil && e.scrollAnimY.IsRunning() {
+					e.scrollFromY = e.scrollOffset.Y
+					e.restartAnimY()
+				}
+			}
+			if e.scrollTargetX > e.maxScroll.X {
+				e.scrollTargetX = e.maxScroll.X
+				if e.scrollAnimX != nil && e.scrollAnimX.IsRunning() {
+					e.scrollFromX = e.scrollOffset.X
+					e.restartAnimX()
+				}
+			}
 		}
 		e.child.SetPosition(types.Point{X: -e.scrollOffset.X, Y: -e.scrollOffset.Y})
 
@@ -206,6 +239,9 @@ const (
 	scrollWheelStep = 50.0 // 每个滚轮格滚动的像素(win32 已把 DeltaY 归一化为 ±1/格)
 )
 
+// scrollAnimDuration 平滑滚动动画时长。
+const scrollAnimDuration = 180 * time.Millisecond
+
 // vThumbRect 返回竖向滚动条滑块的全局矩形(绘制与拖动命中共用)；无可滚动时 ok=false。
 func (e *ScrollViewElement) vThumbRect() (types.Rect, bool) {
 	if !e.scrollView.ShowBar || e.maxScroll.Y <= 0 {
@@ -250,14 +286,11 @@ func (e *ScrollViewElement) HandleEvent(ev event.Event) bool {
 	switch ev.Type() {
 	case event.TypeMouseWheel:
 		mouseEv := ev.(*event.MouseEvent)
-		e.scrollOffset.X -= mouseEv.DeltaX * scrollWheelStep
-		e.scrollOffset.Y -= mouseEv.DeltaY * scrollWheelStep
-		e.scrollOffset.X = clamp(e.scrollOffset.X, 0, e.maxScroll.X)
-		e.scrollOffset.Y = clamp(e.scrollOffset.Y, 0, e.maxScroll.Y)
-		if e.child != nil {
-			e.child.SetPosition(types.Point{X: -e.scrollOffset.X, Y: -e.scrollOffset.Y})
-		}
-		e.fireScroll()
+		// 计算目标滚动位置
+		targetX := clamp(e.scrollOffset.X-mouseEv.DeltaX*scrollWheelStep, 0, e.maxScroll.X)
+		targetY := clamp(e.scrollOffset.Y-mouseEv.DeltaY*scrollWheelStep, 0, e.maxScroll.Y)
+		// 使用平滑动画滚动到目标位置（替代原来的直接跳转）
+		e.smoothScrollTo(targetX, targetY)
 		// 自己消费滚轮后阻断冒泡，避免外层 ScrollView 同时滚动(嵌套时只滚最内层)
 		ev.StopPropagation()
 		if OnNeedsRepaint != nil {
@@ -274,6 +307,7 @@ func (e *ScrollViewElement) HandleEvent(ev event.Event) bool {
 		if r, okk := e.vThumbRect(); okk {
 			// 滑块窄，命中区四周略放宽，便于点中
 			if me.X >= r.X-6 && me.X < r.X+r.Width+2 && me.Y >= r.Y-2 && me.Y < r.Y+r.Height+2 {
+				e.stopSmoothScroll() // 拖动滚动条时停止平滑动画
 				e.draggingBar = true
 				e.dragStartMouseY = me.Y
 				e.dragStartScrollY = e.scrollOffset.Y
@@ -307,10 +341,143 @@ func (e *ScrollViewElement) HandleEvent(ev event.Event) bool {
 		return false
 
 	case event.TypeMouseLeave:
-		e.draggingBar = false
+		if !e.draggingBar { // 拖动中不重置，否则鼠标移出滑块区域（仍在窗口内）会释放拖动
+			e.draggingBar = false
+		}
 		return false
 	}
 	return false
+}
+
+// ── 平滑滚动动画 ────────────────────────────────────────────
+
+// smoothScrollTo 启动平滑滚动动画，将 scrollOffset 从当前位置过渡到 targetX/targetY。
+// 如果已有动画在运行，自动重设为从当前位置到新目标的动画（不产生跳变）。
+func (e *ScrollViewElement) smoothScrollTo(targetX, targetY float64) {
+	// 处理 Y 轴
+	if e.maxScroll.Y > 0 && targetY != e.scrollOffset.Y {
+		if e.scrollAnimY != nil && e.scrollAnimY.IsRunning() {
+			e.scrollAnimY.Stop()
+		}
+		e.scrollFromY = e.scrollOffset.Y
+		e.scrollTargetY = targetY
+		e.scrollAnimY = animation.NewController(scrollAnimDuration, animation.EaseOutCubic)
+		e.scrollAnimY.OnUpdate = func(v float64) {
+			e.scrollOffset.Y = animation.LerpFloat(e.scrollFromY, e.scrollTargetY, v)
+			if e.child != nil {
+				e.child.SetPosition(types.Point{X: -e.scrollOffset.X, Y: -e.scrollOffset.Y})
+			}
+			e.fireScroll()
+		}
+		e.scrollAnimY.OnDone = func() {
+			// 最终确保精确到位（浮点累计误差补偿）
+			e.scrollOffset.Y = e.scrollTargetY
+			if e.child != nil {
+				e.child.SetPosition(types.Point{X: -e.scrollOffset.X, Y: -e.scrollOffset.Y})
+			}
+			e.fireScroll()
+			if OnNeedsRepaint != nil {
+				OnNeedsRepaint()
+			}
+		}
+		e.scrollAnimY.Start()
+	}
+
+	// 处理 X 轴
+	if e.maxScroll.X > 0 && targetX != e.scrollOffset.X {
+		if e.scrollAnimX != nil && e.scrollAnimX.IsRunning() {
+			e.scrollAnimX.Stop()
+		}
+		e.scrollFromX = e.scrollOffset.X
+		e.scrollTargetX = targetX
+		e.scrollAnimX = animation.NewController(scrollAnimDuration, animation.EaseOutCubic)
+		e.scrollAnimX.OnUpdate = func(v float64) {
+			e.scrollOffset.X = animation.LerpFloat(e.scrollFromX, e.scrollTargetX, v)
+			if e.child != nil {
+				e.child.SetPosition(types.Point{X: -e.scrollOffset.X, Y: -e.scrollOffset.Y})
+			}
+			e.fireScroll()
+		}
+		e.scrollAnimX.OnDone = func() {
+			e.scrollOffset.X = e.scrollTargetX
+			if e.child != nil {
+				e.child.SetPosition(types.Point{X: -e.scrollOffset.X, Y: -e.scrollOffset.Y})
+			}
+			e.fireScroll()
+			if OnNeedsRepaint != nil {
+				OnNeedsRepaint()
+			}
+		}
+		e.scrollAnimX.Start()
+	}
+}
+
+// isScrollAnimating 返回是否有任何方向的平滑滚动动画正在运行。
+func (e *ScrollViewElement) isScrollAnimating() bool {
+	return (e.scrollAnimY != nil && e.scrollAnimY.IsRunning()) ||
+		(e.scrollAnimX != nil && e.scrollAnimX.IsRunning())
+}
+
+// stopSmoothScroll 停止所有正在运行的平滑滚动动画。
+func (e *ScrollViewElement) stopSmoothScroll() {
+	if e.scrollAnimY != nil && e.scrollAnimY.IsRunning() {
+		e.scrollAnimY.Stop()
+	}
+	if e.scrollAnimX != nil && e.scrollAnimX.IsRunning() {
+		e.scrollAnimX.Stop()
+	}
+}
+
+// restartAnimY 重启 Y 轴平滑动画（使用当前的 scrollFromY / scrollTargetY）。
+func (e *ScrollViewElement) restartAnimY() {
+	if e.scrollAnimY != nil {
+		e.scrollAnimY.Stop()
+	}
+	e.scrollAnimY = animation.NewController(scrollAnimDuration, animation.EaseOutCubic)
+	e.scrollAnimY.OnUpdate = func(v float64) {
+		e.scrollOffset.Y = animation.LerpFloat(e.scrollFromY, e.scrollTargetY, v)
+		if e.child != nil {
+			e.child.SetPosition(types.Point{X: -e.scrollOffset.X, Y: -e.scrollOffset.Y})
+		}
+		e.fireScroll()
+	}
+	e.scrollAnimY.OnDone = func() {
+		e.scrollOffset.Y = e.scrollTargetY
+		if e.child != nil {
+			e.child.SetPosition(types.Point{X: -e.scrollOffset.X, Y: -e.scrollOffset.Y})
+		}
+		e.fireScroll()
+		if OnNeedsRepaint != nil {
+			OnNeedsRepaint()
+		}
+	}
+	e.scrollAnimY.Start()
+}
+
+// restartAnimX 重启 X 轴平滑动画（使用当前的 scrollFromX / scrollTargetX）。
+func (e *ScrollViewElement) restartAnimX() {
+	if e.scrollAnimX != nil {
+		e.scrollAnimX.Stop()
+	}
+	e.scrollAnimX = animation.NewController(scrollAnimDuration, animation.EaseOutCubic)
+	e.scrollAnimX.OnUpdate = func(v float64) {
+		e.scrollOffset.X = animation.LerpFloat(e.scrollFromX, e.scrollTargetX, v)
+		if e.child != nil {
+			e.child.SetPosition(types.Point{X: -e.scrollOffset.X, Y: -e.scrollOffset.Y})
+		}
+		e.fireScroll()
+	}
+	e.scrollAnimX.OnDone = func() {
+		e.scrollOffset.X = e.scrollTargetX
+		if e.child != nil {
+			e.child.SetPosition(types.Point{X: -e.scrollOffset.X, Y: -e.scrollOffset.Y})
+		}
+		e.fireScroll()
+		if OnNeedsRepaint != nil {
+			OnNeedsRepaint()
+		}
+	}
+	e.scrollAnimX.Start()
 }
 
 // dragBarTo 按鼠标 Y 把竖向滑块拖到对应位置(轨道位移按比例换算成 scrollOffset)。

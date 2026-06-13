@@ -540,9 +540,12 @@ func (w *Win32Window) Close() {
 
 func (w *Win32Window) SwapBuffers() {
 	if w.glContext == 0 {
+		log.Println("goui: win32.SwapBuffers 跳过（无 GL 上下文）")
 		return // 无 OpenGL 上下文，不执行交换
 	}
+	log.Println("goui: win32.SwapBuffers 调用 procSwapBuffers")
 	procSwapBuffers.Call(w.hdc)
+	log.Println("goui: win32.SwapBuffers 返回")
 }
 
 // ensureGLContext 延迟创建 OpenGL 上下文（首次使用时创建）
@@ -570,13 +573,16 @@ func (w *Win32Window) MakeCurrent() error {
 // WaitMessage 阻塞等待下一条 Windows 消息，避免忙等待空转 CPU
 // 仅在无待处理消息时调用，配合 WaitMessage 可显著降低空闲时 CPU 占用率
 func (w *Win32Window) WaitMessage() {
+	log.Println("goui: win32.WaitMessage 调用（阻塞直到下一条 Windows 消息）")
 	procWaitMessage.Call()
+	log.Println("goui: win32.WaitMessage 返回")
 }
 
 // ProcessEvents 泵送 Windows 消息
 func (w *Win32Window) ProcessEvents() bool {
 	var msg MSG
 	// PM_REMOVE = 1
+	msgCount := 0
 	for {
 		ret, _, _ := procPeekMessageW.Call(
 			uintptr(unsafe.Pointer(&msg)),
@@ -585,6 +591,10 @@ func (w *Win32Window) ProcessEvents() bool {
 		if ret == 0 {
 			break
 		}
+		msgCount++
+		if msgCount == 1 {
+			log.Printf("goui: win32.ProcessEvents 泵到第 1 条消息, msg=%d", msg.Message)
+		}
 		if msg.Message == WM_QUIT {
 			quitExitCode := int(msg.WParam)
 			log.Printf("win32: WM_QUIT received (exitCode=%d, hwnd=%x)", quitExitCode, msg.Hwnd)
@@ -592,6 +602,9 @@ func (w *Win32Window) ProcessEvents() bool {
 		}
 		procTranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))
 		procDispatchMessageW.Call(uintptr(unsafe.Pointer(&msg)))
+	}
+	if msgCount > 0 {
+		log.Printf("goui: win32.ProcessEvents 完成, 共处理 %d 条消息", msgCount)
 	}
 	return !w.closed
 }

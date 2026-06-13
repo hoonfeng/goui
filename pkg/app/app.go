@@ -9,10 +9,10 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/hoonfeng/goui/internal/i18n"
 	"github.com/hoonfeng/goui/pkg/animation"
 	"github.com/hoonfeng/goui/pkg/canvas"
 	"github.com/hoonfeng/goui/pkg/event"
-	"github.com/hoonfeng/goui/internal/i18n"
 	_ "github.com/hoonfeng/goui/pkg/platform"
 	"github.com/hoonfeng/goui/pkg/render"
 	"github.com/hoonfeng/goui/pkg/types"
@@ -36,6 +36,11 @@ type Application struct {
 	lastInputAt      time.Time         // 最近一次键盘/IME 输入时刻（用于编辑期间提速到满帧，详见主循环帧率节流）
 	capturedElement  widget.Element    // 鼠标捕获的 Element（按下时捕获，释放时解除）
 	capturedOnButton event.MouseButton // 捕获时的按键
+
+	// IME 候选窗位置缓存：主循环每帧渲染后都会调用 updateIMECandidatePos，
+	// 但 Win32 ClientToScreen + SetIMECandidatePos 不应在光标未移动时重复调用。
+	lastIMECursorPosX float64
+	lastIMECursorPosY float64
 
 	// ShortcutManager 快捷键管理器，全局快捷键优先于焦点 Widget 处理
 	ShortcutManager *event.ShortcutManager
@@ -418,12 +423,37 @@ func (app *Application) mainLoop() {
 	const frameInterval = 16 * time.Millisecond       // 动画帧率节流目标，约 60fps（流畅）
 	const cursorIdleInterval = 120 * time.Millisecond // 仅光标闪烁（无动画）时的帧率，约 8fps —— 光标闪一下不必满帧重绘
 	firstFrame := true
+
+	// ── 帧率诊断日志 ──
+	var (
+		frameCount    int           // 累计帧数
+		lastFrameLog  = time.Now()  // 上次日志时间
+		totalBuild    time.Duration // 累计 buildTree 耗时
+		totalLayout   time.Duration // 累计 Layout 耗时
+		totalPaint    time.Duration // 累计 Paint 耗时
+		totalFlush    time.Duration // 累计 Flush 耗时
+		lastBuildTime time.Duration // 上次 frame 的 buildTree 耗时；低于阈值时主动清零，避免日志一直显示首帧冷启动值
+	)
+	const frameLogInterval = 5 * time.Second // 每 5 秒输出一次帧率摘要
+
+	frameIndex := 0
 	for app.Running {
+		frameIndex++
 		frameStart := time.Now()
 		// 1. 泵送所有平台消息（非阻塞，PeekMessage）
+		if firstFrame {
+			log.Println("goui: [首帧 1/7] ProcessEvents 开始")
+		} else if frameIndex <= 5 {
+			log.Printf("goui: [帧%d] ProcessEvents 开始", frameIndex)
+		}
 		if !app.Window.ProcessEvents() {
 			app.Running = false
 			break
+		}
+		if firstFrame {
+			log.Println("goui: [首帧 1/7] ProcessEvents 完成")
+		} else if frameIndex <= 5 {
+			log.Printf("goui: [帧%d] ProcessEvents 完成", frameIndex)
 		}
 
 		// 1.2 推进动画时间线：更新所有活跃动画的值（OnUpdate 内通常会触发
@@ -431,89 +461,139 @@ func (app *Application) mainLoop() {
 		animation.Tick(time.Now())
 
 		// 1.5 确保布局已执行，使 HitTest 能正确命中 Element
-		//    事件处理需要正确的布局信息（Offset/Size），若在第一帧时布局未执行，
-		//    HitTest 会返回 nil，导致 hover/enter/leave 检测失效。
-		//    这里先检查 Pipeline 是否需要布局，需要则立即执行不等待 Render。
+		if firstFrame {
+			log.Println("goui: [首帧 2/7] EnsureLayout (buildTree + Layout) 开始")
+		} else if frameIndex <= 5 {
+			log.Printf("goui: [帧%d] EnsureLayout 开始", frameIndex)
+		}
 		if app.Pipeline != nil {
+			t0 := time.Now()
 			app.Pipeline.EnsureLayout()
+			if d := time.Since(t0); d > 500*time.Microsecond {
+				totalBuild += d
+				lastBuildTime = d
+			} else {
+				lastBuildTime = 0 // 低于阈值时主动清零，避免日志一直显示首帧冷启动的 193ms
+			}
+		}
+		if firstFrame {
+			log.Println("goui: [首帧 2/7] EnsureLayout 完成")
+		} else if frameIndex <= 5 {
+			log.Printf("goui: [帧%d] EnsureLayout 完成", frameIndex)
 		}
 
 		// 2. 先处理待处理 UI 事件，确保输入得到即时响应
-		//    将事件处理放在渲染之前，减少输入到视觉反馈的延迟
-		//    同时处理事件可能触发 SetState → MarkNeedsRepaint，确保渲染能捕获最新状态
+		if firstFrame {
+			log.Println("goui: [首帧 3/7] processPendingEvents 开始")
+		} else if frameIndex <= 5 {
+			log.Printf("goui: [帧%d] processPendingEvents 开始", frameIndex)
+		}
 		app.processPendingEvents()
-
-		// 2.5 事件可能触发了重新布局（弹出/关闭浮层、切换标签等改变结构的操作）。
-		//     渲染前再确保一次布局，使新出现/变化的内容在「首帧」就处于正确位置；
-		//     否则会先按旧/默认布局画一帧、下一帧才纠正 → 视觉上「跳一下」（模态打开/切标签尤其明显）。
-		if app.Pipeline != nil {
-			app.Pipeline.EnsureLayout()
+		if firstFrame {
+			log.Println("goui: [首帧 3/7] processPendingEvents 完成")
+		} else if frameIndex <= 5 {
+			log.Printf("goui: [帧%d] processPendingEvents 完成", frameIndex)
 		}
 
-		// 3. 持续重绘：有焦点 Element（光标闪烁）或有活跃动画时标记需要重绘，
-		//    确保基于时间推进的视觉变化（光标闪烁、动画插值）能持续呈现。
-		//    Pipeline.Render 内部检查 needsRepaint，若不标记则跳过渲染。
+		// ⚠️ 注意：不再调用第二次 EnsureLayout()，原因是：
+		//    1. 若事件处理未触发 SetState（多数情况），第二次调用是空操作但仍有 if 判断开销
+		//    2. 若事件处理触发了 SetState → MarkNeedsLayout()，flag 已经设置，
+		//       Render() 中的 needsLayout 检查会在同一帧内正确执行 PerformLayout()
+		//    3. 移除后每帧最多 1 次全树重建（原是 2×EnsureLayout + 1×Render 中的 PerformLayout），
+		//       这是 FPS 低和 progressive slowdown 的根因之一
+
+		// 3. 持续重绘标记
 		if (app.focusedElement != nil && app.focusedElement.IsFocused()) || animation.HasActive() {
 			app.Pipeline.MarkNeedsRepaint()
 		}
 
-		// 4. 渲染帧（需要布局或重绘时才实际执行）
-		//    Pipeline.Render 内部检查 needsRepaint/needsLayout，无变化时直接返回
+		// 4. 渲染帧
 		rendered := false
 		if app.Pipeline != nil {
+			if firstFrame || frameIndex <= 5 {
+				log.Printf("goui: [帧%d] Pipeline.Render 开始", frameIndex)
+			}
+			t0 := time.Now()
 			if err := app.Pipeline.Render(); err != nil {
 				log.Printf("goui: Render error: %v", err)
 			}
+			if pd := time.Since(t0); pd > 1*time.Millisecond {
+				totalPaint += pd
+			}
 			rendered = app.Pipeline.DidRender()
+			if firstFrame || frameIndex <= 5 {
+				// NeedsRepaint is unexported - just log rendered flag
+				log.Printf("goui: [帧%d] Pipeline.Render 完成 (rendered=%v)", frameIndex, rendered)
+			}
 		}
 
 		// 5. 显示渲染结果到窗口
 		if rendered {
-			// GPU 模式：Skia 已直接渲染到窗口 framebuffer（Pipeline.Render → Flush → FlushAndSubmit），
-			// 直接交换缓冲显示。
+			if firstFrame || frameIndex <= 5 {
+				log.Printf("goui: [帧%d] SwapBuffers 开始", frameIndex)
+			}
+			t0 := time.Now()
 			app.Window.SwapBuffers()
+			if fd := time.Since(t0); fd > 500*time.Microsecond {
+				totalFlush += fd
+			}
 
-			// 首帧渲染完成后调用 Ready 回调
 			if firstFrame {
 				firstFrame = false
+				log.Println("goui: [首帧 6/7] Ready 回调开始")
 				if app.Ready != nil {
 					app.Ready()
 				}
+				log.Println("goui: [首帧 7/7] Ready 回调完成 —— 首帧周期结束，进入正常主循环")
 			}
 
-			// 渲染后用最新缓存的光标位置刷新 IME 候选窗口，
-			// 确保候选紧贴当前拼音末尾（InputElement.Paint 中光标位置缓存刚更新，
-			// 使用与渲染一致的 Skia 测量，避免候选漂移）。
 			if app.focusedElement != nil && app.focusedElement.IsFocused() {
 				app.updateIMECandidatePos()
 			}
 		} else {
-			// 6. 空闲：无渲染需要时，若既无焦点也无动画，则阻塞等待下一条消息（省电）。
-			//    用 WaitMessage 真正让线程休眠，避免空转 CPU/GPU。
-			//    持续渲染模式（动画/光标闪烁）的帧间隔由下面的帧率节流统一处理。
 			if !((app.focusedElement != nil && app.focusedElement.IsFocused()) || animation.HasActive() || len(app.subWindows) > 0) {
+				if firstFrame || frameIndex <= 5 {
+					log.Printf("goui: [帧%d] WaitMessage 开始（阻塞等待 Windows 消息）", frameIndex)
+				}
 				app.Window.WaitMessage()
+				if firstFrame || frameIndex <= 5 {
+					log.Printf("goui: [帧%d] WaitMessage 返回", frameIndex)
+				}
 			}
 		}
 
-		// 5.5 处理并渲染所有附属窗口（多窗口）
+		// 5.5 处理并渲染所有附属窗口
 		app.processSubWindows()
 
-		// 帧率节流：持续渲染（动画/光标闪烁）时把帧间隔稳定到约 60fps，
-		// 消除 busy-loop 占满 CPU 导致的抖动与卡顿，让动画更顺滑。
+		// 帧率节流
 		if (app.focusedElement != nil && app.focusedElement.IsFocused()) || animation.HasActive() {
-			app.Window.ProcessEvents() // 睡前再泵一次消息，降低输入延迟
-			// 动画需 ~60fps 流畅；仅光标闪烁则大幅降帧（~8fps）——光标闪一下不必满帧重绘整个 UI，
-			// 显著减少持续渲染期的每帧 CGO 分配/GC 与 CPU/GPU 占用，也压低内存峰值。
+			app.Window.ProcessEvents()
 			fi := frameInterval
-			// 仅「真正空闲」（无动画、且近 600ms 无键盘/IME 输入）才降到 ~8fps 省电；
-			// 编辑活动期间保持满帧——否则长按退格/快速打字时事件比渲染快，文字成块消失=卡顿。
 			if !animation.HasActive() && time.Since(app.lastInputAt) > 600*time.Millisecond {
 				fi = cursorIdleInterval
 			}
 			if elapsed := time.Since(frameStart); elapsed < fi {
 				time.Sleep(fi - elapsed)
 			}
+		}
+
+		// ── 帧率日志：每 5 秒输出一次 ──
+		frameCount++
+		if time.Since(lastFrameLog) >= frameLogInterval {
+			elapsed := time.Since(lastFrameLog)
+			fps := float64(frameCount) / elapsed.Seconds()
+			avgBuild := totalBuild / time.Duration(frameCount)
+			avgLayout := totalLayout / time.Duration(frameCount)
+			avgPaint := totalPaint / time.Duration(frameCount)
+			avgFlush := totalFlush / time.Duration(frameCount)
+			log.Printf("[perf] %.1f fps | frames=%d | build=%v/layout=%v/paint=%v/flush=%v | lastBuild=%v",
+				fps, frameCount, avgBuild, avgLayout, avgPaint, avgFlush, lastBuildTime)
+			frameCount = 0
+			lastFrameLog = time.Now()
+			totalBuild = 0
+			totalLayout = 0
+			totalPaint = 0
+			totalFlush = 0
 		}
 	}
 	log.Println("goui: Application stopped")
@@ -588,6 +668,7 @@ type imeCapable interface {
 
 // updateIMECandidatePos 更新 IME 候选窗口位置到当前焦点输入框的光标处。
 // 如果焦点元素不是 InputElement，则不操作。
+// 内置节流：如果光标位置没有变化，跳过 Win32 API 调用。
 func (app *Application) updateIMECandidatePos() {
 	if app.focusedElement == nil {
 		return
@@ -598,6 +679,13 @@ func (app *Application) updateIMECandidatePos() {
 	}
 	// 获取光标在客户区中的位置（像素坐标）
 	cx, cy := inputEl.CursorClientPos()
+
+	// 光标位置未变化 → 跳过 Win32 API 调用（主循环每帧都会调用此函数）
+	if cx == app.lastIMECursorPosX && cy == app.lastIMECursorPosY {
+		return
+	}
+	app.lastIMECursorPosX = cx
+	app.lastIMECursorPosY = cy
 
 	// 将客户区坐标转换为屏幕坐标（调用 Win32 ClientToScreen）
 	// 通过 window 包提供的平台回调机制通知 win32 层设置候选窗口位置

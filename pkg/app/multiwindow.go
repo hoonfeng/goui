@@ -124,7 +124,6 @@ func (sw *SubWindow) SetIcon(iconPath string) {
 	}
 }
 
-
 // setupEvents 监听副窗口事件分发器，把事件排入本窗口队列。
 func (sw *SubWindow) setupEvents() {
 	d := sw.Window.EventDispatcher()

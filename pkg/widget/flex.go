@@ -2,7 +2,9 @@ package widget
 
 import (
 	"fmt"
+	"log"
 	"reflect"
+	"time"
 
 	"github.com/hoonfeng/goui/pkg/canvas"
 	"github.com/hoonfeng/goui/internal/i18n"
@@ -242,6 +244,17 @@ func (e *FlexElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult {
 	}
 	for i, child := range e.children {
 		childSize := child.Size()
+		// 动态更新 maxCross：弹性子在第二遍获得主轴分配后尺寸可能增大，
+		// 空 Div(0 高)不应污染 maxCross。
+		if isRow {
+			if childSize.Height > maxCross {
+				maxCross = childSize.Height
+			}
+		} else {
+			if childSize.Width > maxCross {
+				maxCross = childSize.Width
+			}
+		}
 		if stretch {
 			childCross := childSize.Height // 该子当前的交叉轴尺寸
 			if !isRow {
@@ -282,6 +295,66 @@ func (e *FlexElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult {
 			mainOffset += extra
 			child.SetPosition(types.Point{X: cross, Y: mainOffset})
 			mainOffset += childSize.Height
+		}
+	}
+
+	// 修正 maxCross：内联拉伸（上方 for 循环）依赖「当前已累计」的 maxCross，
+	// 排列靠前的子项可能在 maxCross 尚未更新时被跳过（如空 Div 高为 0 时
+	// 排在内容子前面），导致前面子项高度不足。补偿拉伸强制收集最终交叉轴，
+	// 对所有仍短于 finalMaxCross 的子补一次拉伸，确保 stretch 语义完全落地。
+	// — 场景：agentMessageCard 的 Row(stretch) 中 shadowBar(高 0) 在
+	//   cardBody(高 contentH) 之前 → 补偿拉伸把 shadowBar 拉到 contentH。
+	if stretch {
+		finalMaxCross := maxCross
+		// 第一遍：收集最终最大交叉轴
+		for _, child := range e.children {
+			sz := child.Size()
+			if isRow {
+				if sz.Height > finalMaxCross {
+					finalMaxCross = sz.Height
+				}
+			} else {
+				if sz.Width > finalMaxCross {
+					finalMaxCross = sz.Width
+				}
+			}
+		}
+		// 第二遍：对所有交叉轴 < finalMaxCross 的子项做补偿拉伸。
+		// 注意：内联拉伸可能已把 maxCross 动态更新到 finalMaxCross，
+		// 但排列在前面的子项仍可能未拉伸 → 此处强制遍历补拉。
+		needsCompensation := false
+		for _, child := range e.children {
+			sz := child.Size()
+			childCross := sz.Height
+			if !isRow {
+				childCross = sz.Width
+			}
+			if childCross < finalMaxCross-0.5 {
+				needsCompensation = true
+				break
+			}
+		}
+		if needsCompensation || finalMaxCross > maxCross {
+			maxCross = finalMaxCross
+			for _, child := range e.children {
+				sz := child.Size()
+				childCross := sz.Height
+				if !isRow {
+					childCross = sz.Width
+				}
+				if childCross < maxCross-0.5 {
+					cc := layout.BoxConstraints{}
+					if isRow {
+						cc.MinWidth, cc.MaxWidth = sz.Width, sz.Width
+						cc.MinHeight, cc.MaxHeight = maxCross, maxCross
+					} else {
+						cc.MinHeight, cc.MaxHeight = sz.Height, sz.Height
+						cc.MinWidth, cc.MaxWidth = maxCross, maxCross
+					}
+					child.Layout(&layout.LayoutContext{Constraints: cc})
+					child.SetPosition(child.Position()) // 保持原定位
+				}
+			}
 		}
 	}
 
@@ -397,8 +470,27 @@ func parseAlign(s string) layout.CrossAxisAlignment {
 
 // Paint 绘制 Flex（递归绘制子控件）
 func (e *FlexElement) Paint(cvs canvas.Canvas, offset types.Point) {
-	for _, child := range e.children {
+	_paintStart := time.Now()
+	_paintType := reflect.TypeOf(e.Widget()).String()
+	_slowChild := ""
+	_slowChildDur := time.Duration(0)
+	defer func() {
+		if d := time.Since(_paintStart); d > 30*time.Millisecond {
+			log.Printf("goui: [Perf] Flex(%s) Paint 耗时 %v (%.0fx%.0f) children=%d slowestChild=[%s %v]", _paintType, d, e.size.Width, e.size.Height, len(e.children), _slowChild, _slowChildDur)
+		}
+	}()
+	for i, child := range e.children {
+		_cStart := time.Now()
 		child.Paint(cvs, offset)
+		if cd := time.Since(_cStart); cd > 10*time.Millisecond {
+			_ct := reflect.TypeOf(child.Widget()).String()
+			_cs := child.Size()
+			log.Printf("goui: [Perf]   Flex.child[%d] %s Paint 耗时 %v (%.0fx%.0f)", i, _ct, cd, _cs.Width, _cs.Height)
+			if cd > _slowChildDur {
+				_slowChildDur = cd
+				_slowChild = fmt.Sprintf("[%d]%s", i, _ct)
+			}
+		}
 	}
 }
 

@@ -1,63 +1,217 @@
-// 系统“选择文件夹”对话框。基于 SHBrowseForFolderW + SHGetPathFromIDListW（经典样式，
-// 不带 BIF_NEWDIALOGSTYLE 故无需 COM 初始化），PIDL 用 CoTaskMemFree 释放。
+// 系统"选择文件夹"模态对话框。
+// 使用 IFileOpenDialog 现代对话框（Vista+ 样式），设置 FOS_PICKFOLDERS 标志
+// 使其看起来和标准"打开文件"对话框一样，但只允许选择文件夹。
+// 替代旧的 SHBrowseForFolderW（经典树形样式）。
 //
 //go:build windows
 
 package win32
 
 import (
+	"log"
 	"syscall"
 	"unsafe"
 
 	"github.com/hoonfeng/goui/pkg/window"
 )
 
-var (
-	procSHBrowseForFolderW   = shell32.NewProc("SHBrowseForFolderW")
-	procSHGetPathFromIDListW = shell32.NewProc("SHGetPathFromIDListW")
-	ole32dll                 = syscall.NewLazyDLL("ole32.dll")
-	procCoTaskMemFree        = ole32dll.NewProc("CoTaskMemFree")
-)
+// ─── COM GUID 常量 ──────────────────────────────────────────
 
-// BROWSEINFOW（64 位自然对齐，与 C 一致：ulFlags 后有 4 字节填充使 lpfn 对齐到 8）。
-type browseInfoW struct {
-	hwndOwner      uintptr
-	pidlRoot       uintptr
-	pszDisplayName *uint16
-	lpszTitle      *uint16
-	ulFlags        uint32
-	lpfn           uintptr
-	lParam         uintptr
-	iImage         int32
+// CLSID_FileOpenDialog
+var clsidFileOpenDialog = guid{
+	0xDC1C5A9C, 0xE88A, 0x4DDE,
+	[8]byte{0xA5, 0xA1, 0x60, 0xF8, 0x2A, 0x20, 0xAE, 0xF7},
 }
 
-const bifReturnOnlyFSDirs = 0x00000001 // 只允许选文件系统目录
+// IID_IFileOpenDialog
+var iidIFileOpenDialog = guid{
+	0xD57C7288, 0xD4AD, 0x4768,
+	[8]byte{0xBE, 0x02, 0x9D, 0x96, 0x95, 0x32, 0xD9, 0x60},
+}
 
+// IID_IShellItem
+var iidIShellItem = guid{
+	0x43826D1E, 0xE718, 0x42EE,
+	[8]byte{0xBC, 0x55, 0xA1, 0xE2, 0x61, 0xC3, 0x7B, 0xFE},
+}
+
+// ─── COM 基础类型 ───────────────────────────────────────────
+
+type guid struct {
+	Data1 uint32
+	Data2 uint16
+	Data3 uint16
+	Data4 [8]byte
+}
+
+// ─── Win32 DLL 与函数 ───────────────────────────────────────
+
+var (
+	ole32                 = syscall.NewLazyDLL("ole32.dll")
+	procCoInitializeEx    = ole32.NewProc("CoInitializeEx")
+	procCoCreateInstance  = ole32.NewProc("CoCreateInstance")
+	procCoTaskMemFree     = ole32.NewProc("CoTaskMemFree")
+	comInitialized        bool
+)
+
+const (
+	coinitApartmentThreaded = 0x02 // COINIT_APARTMENTTHREADED
+	clsctxAll               = 0x17 // CLSCTX_ALL
+	sOK                     = 0    // S_OK
+)
+
+// ─── IFileDialog 选项 ───────────────────────────────────────
+
+const (
+	fosPickFolders     = 0x0020 // FOS_PICKFOLDERS：文件夹选择模式
+	fosForceFilesystem = 0x0040 // FOS_FORCEFILESYSTEM：只允许文件系统项
+	fosNoChangeDir     = 0x0008 // FOS_NOCHANGEDIR：不改变当前目录
+)
+
+// SIGDN (ShellItem GetDisplayName 选项)
+const sigdnFilesysPath = 0x80058000 // SIGDN_FILESYSPATH
+
+// ─── IFileDialog vtable 偏移（IFileDialog 继承 IUnknown）───
+//
+// IUnknown:
+//   0: QueryInterface(this, riid, ppv)
+//   1: AddRef(this)
+//   2: Release(this)
+//
+// IFileDialog:
+//   3: Show(this, hwndOwner)
+//   4: SetFileTypes(...)
+//   5: SetFileTypeIndex(...)
+//   6: GetFileTypeIndex(...)
+//   7: Advise(...)
+//   8: Unadvise(...)
+//   9: SetOptions(this, fos)
+//  10: GetOptions(...)
+//  11: SetDefaultFolder(...)
+//  12: SetFolder(...)
+//  13: GetFolder(...)
+//  14: GetCurrentSelection(...)
+//  15: SetFileName(...)
+//  16: GetFileName(...)
+//  17: SetTitle(this, pszTitle)
+//  18: SetOkButtonLabel(...)
+//  19: SetFileNameLabel(...)
+//  20: GetResult(this, ppsi) → IShellItem
+//
+// IFileOpenDialog:
+//  21: GetResults(...)
+//  22: GetSelectedItems(...)
+
+// ─── IShellItem vtable 偏移 ─────────────────────────────────
+//
+//   0: QueryInterface
+//   1: AddRef
+//   2: Release
+//   3: BindToHandler
+//   4: GetParent
+//   5: GetDisplayName(this, sigdnName, ppszName) → LPWSTR
+//   6: GetAttributes
+//   7: Compare
+
+// ─── 辅助：调用 COM 接口虚方法 ────────────────────────────
+
+// comVtblCall 通过 vtable 调用 COM 接口方法。
+// vtbl: 接口虚函数表指针; index: 方法索引（从0开始）; args: 参数列表（不含 this）
+func comVtblCall(vtbl uintptr, index int, args ...uintptr) uintptr {
+	// 从 vtable 中取出方法指针
+	method := *(*uintptr)(unsafe.Pointer(vtbl + uintptr(index)*8))
+	// 将参数拼接：this 指针 + 其余参数
+	callArgs := make([]uintptr, 0, 1+len(args))
+	callArgs = append(callArgs, vtbl) // this 指针
+	callArgs = append(callArgs, args...)
+	ret, _, _ := syscall.SyscallN(method, callArgs...)
+	return ret
+}
+
+// init 注入文件夹选择对话框实现
 func init() { window.OpenFolderDialog = browseForFolderWin32 }
 
-// browseForFolderWin32 弹出“选择文件夹”模态对话框，返回所选目录绝对路径；取消/出错返回空串。
+// browseForFolderWin32 弹出"选择文件夹"模态对话框（Vista+ IFileOpenDialog 风格），
+// 返回所选目录绝对路径；取消或出错返回空串。
 func browseForFolderWin32(hwnd uintptr, title string) string {
-	var titlePtr *uint16
-	if title != "" {
-		if t, err := syscall.UTF16PtrFromString(title); err == nil {
-			titlePtr = t
+	// 1. 确保 COM 已初始化（STA 模式）
+	if !comInitialized {
+		ret, _, _ := procCoInitializeEx.Call(0, coinitApartmentThreaded)
+		if ret == sOK || ret == 1 { // S_OK 或 S_FALSE（已初始化）
+			comInitialized = true
+		} else {
+			log.Printf("goui/win32: CoInitializeEx failed: 0x%X", ret)
+			return ""
 		}
 	}
-	displayBuf := make([]uint16, 260) // 接收显示名（必需的输出缓冲）
-	bi := browseInfoW{
-		hwndOwner:      hwnd,
-		pszDisplayName: &displayBuf[0],
-		lpszTitle:      titlePtr,
-		ulFlags:        bifReturnOnlyFSDirs,
-	}
-	pidl, _, _ := procSHBrowseForFolderW.Call(uintptr(unsafe.Pointer(&bi)))
-	if pidl == 0 {
-		return "" // 用户取消
-	}
-	defer procCoTaskMemFree.Call(pidl)
-	pathBuf := make([]uint16, 1024)
-	if r, _, _ := procSHGetPathFromIDListW.Call(pidl, uintptr(unsafe.Pointer(&pathBuf[0]))); r == 0 {
+
+	// 2. 创建 IFileOpenDialog 实例
+	var pfd uintptr // IFileOpenDialog 指针
+	ret, _, _ := procCoCreateInstance.Call(
+		uintptr(unsafe.Pointer(&clsidFileOpenDialog)),
+		0,                                          // pUnkOuter = nil
+		clsctxAll,
+		uintptr(unsafe.Pointer(&iidIFileOpenDialog)),
+		uintptr(unsafe.Pointer(&pfd)),
+	)
+	if ret != sOK || pfd == 0 {
+		log.Printf("goui/win32: CoCreateInstance failed: 0x%X", ret)
 		return ""
 	}
-	return syscall.UTF16ToString(pathBuf)
+
+	// 3. 获取 vtable
+	vtbl := *(*uintptr)(unsafe.Pointer(pfd))
+
+	// 4. 设置选项：文件夹选择模式
+	comVtblCall(vtbl, 9, uintptr(fosPickFolders|fosForceFilesystem|fosNoChangeDir)) // SetOptions
+
+	// 5. 设置标题
+	if title != "" {
+		titlePtr, err := syscall.UTF16PtrFromString(title)
+		if err == nil {
+			comVtblCall(vtbl, 17, uintptr(unsafe.Pointer(titlePtr))) // SetTitle
+		}
+	}
+
+	// 6. 显示对话框（模态）
+	ret = comVtblCall(vtbl, 3, hwnd) // Show
+	if ret != sOK {
+		// 用户取消（HRESULT = 0x800704C7 = ERROR_CANCELLED）
+		comVtblCall(vtbl, 2) // Release
+		return ""
+	}
+
+	// 7. 获取结果 ShellItem
+	var psi uintptr // IShellItem 指针
+	ret = comVtblCall(vtbl, 20, uintptr(unsafe.Pointer(&psi))) // GetResult
+	if ret != sOK || psi == 0 {
+		comVtblCall(vtbl, 2) // Release dialog
+		return ""
+	}
+
+	// 8. 获取 ShellItem 的 vtable
+	siVtbl := *(*uintptr)(unsafe.Pointer(psi))
+
+	// 9. 获取文件系统路径
+	var pathPtr uintptr // LPWSTR（由 CoTaskMemAlloc 分配）
+	ret = comVtblCall(siVtbl, 5, sigdnFilesysPath, uintptr(unsafe.Pointer(&pathPtr))) // GetDisplayName
+	if ret != sOK || pathPtr == 0 {
+		comVtblCall(siVtbl, 2) // Release shell item
+		comVtblCall(vtbl, 2)   // Release dialog
+		return ""
+	}
+
+	// 10. 转换路径字符串
+	path := syscall.UTF16ToString((*[1024]uint16)(unsafe.Pointer(pathPtr))[:])
+
+	// 11. 释放 CoTaskMemAlloc 分配的字符串
+	procCoTaskMemFree.Call(pathPtr)
+
+	// 12. 释放 ShellItem
+	comVtblCall(siVtbl, 2) // Release
+
+	// 13. 释放对话框
+	comVtblCall(vtbl, 2) // Release
+
+	return path
 }
