@@ -214,14 +214,73 @@ func sharedMeasureCanvas() *SkiaCanvas {
 	return sharedMeasureInst
 }
 
+// ─── 全局 MeasureTextGlobal LRU 缓存 ─────────────────────────
+// avoidMeasureMu 保护缓存不会并发写。同一 (text,font) 在短时间内被反复测量（多 TextElement 同字符串、
+// splitLines 多次调用）时，避免重复 CGO 调用。上限 4000 条目避免内存泄漏。
+var (
+	measureCacheMu    sync.Mutex
+	measureCache      = map[measureCacheKey]TextMetrics{}
+	measureCacheOrder []measureCacheKey
+	measureCacheMax   = 4000
+)
+
+type measureCacheKey struct {
+	text   string
+	family string
+	size   float64
+	weight FontWeight
+	style  FontStyle
+}
+
+func mkMeasureKey(text string, font Font) measureCacheKey {
+	return measureCacheKey{
+		text:   text,
+		family: font.Family,
+		size:   font.Size,
+		weight: font.Weight,
+		style:  font.Style,
+	}
+}
+
 // MeasureTextGlobal 测量文本在指定字体下的精确尺寸。
 // 不依赖外部 Canvas 实例，可在 Layout 阶段直接调用；
 // 内部委托全局共享的 Skia 测量画布，确保与渲染同源。
+// 带 4000 条 LRU 缓存，避免短时间内的重复 CGO 测量。
 func MeasureTextGlobal(text string, font Font) TextMetrics {
 	if text == "" {
 		return TextMetrics{}
 	}
-	return sharedMeasureCanvas().MeasureText(text, font)
+	key := mkMeasureKey(text, font)
+	measureCacheMu.Lock()
+	if m, ok := measureCache[key]; ok {
+		// LRU：把该条目移到末尾（最近使用）
+		for i := range measureCacheOrder {
+			if measureCacheOrder[i] == key {
+				if i < len(measureCacheOrder)-1 {
+					measureCacheOrder = append(measureCacheOrder[:i], measureCacheOrder[i+1:]...)
+					measureCacheOrder = append(measureCacheOrder, key)
+				}
+				break
+			}
+		}
+		measureCacheMu.Unlock()
+		return m
+	}
+	measureCacheMu.Unlock()
+
+	m := sharedMeasureCanvas().MeasureText(text, font)
+
+	measureCacheMu.Lock()
+	measureCache[key] = m
+	measureCacheOrder = append(measureCacheOrder, key)
+	if len(measureCache) > measureCacheMax {
+		// 淘汰最旧（LRU 头部）
+		old := measureCacheOrder[0]
+		delete(measureCache, old)
+		measureCacheOrder = measureCacheOrder[1:]
+	}
+	measureCacheMu.Unlock()
+	return m
 }
 
 // faceVMetricsCache 按字号缓存真实 Skia 垂直度量（{ascent, descent, lineHeight}），
