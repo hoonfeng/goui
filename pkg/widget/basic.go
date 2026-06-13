@@ -2,6 +2,7 @@ package widget
 
 import (
 	"fmt"
+	"log"
 	"reflect"
 	"strings"
 	"time"
@@ -330,7 +331,7 @@ func (e *ContainerElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult
 			w = c.Width
 		} else if w <= 0 {
 			// 无界宽度不膨胀（如在 Row 中接收 Unbounded 约束时）
-			if maxWidth >= float64(1<<30) {
+			if maxWidth >= float64(1<<28) {
 				w = ctx.Constraints.MinWidth // 用 MinWidth（通常为 0）而不是 INF
 			} else {
 				w = maxWidth // 有界上下文中保持填充行为
@@ -340,7 +341,7 @@ func (e *ContainerElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult
 			h = c.Height
 		} else if h <= 0 {
 			// 无界高度不膨胀（如在 Column/ScrollView 中）
-			if maxHeight >= float64(1<<30) {
+			if maxHeight >= float64(1<<28) {
 				h = ctx.Constraints.MinHeight // 用 MinHeight（通常为 0）而不是 INF
 			} else {
 				h = maxHeight // 有界上下文中保持填充行为
@@ -368,6 +369,14 @@ func (e *ContainerElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult
 
 // Paint 绘制 Container（支持圆角背景、圆角边框和子内容裁剪）
 func (e *ContainerElement) Paint(cvs canvas.Canvas, offset types.Point) {
+	_paintStart := time.Now()
+	_paintType := reflect.TypeOf(e.Widget()).String()
+	defer func() {
+		if d := time.Since(_paintStart); d > 30*time.Millisecond {
+			log.Printf("goui: [Perf] Container(%s) Paint 耗时 %v (%.0fx%.0f) pos=(%.0f,%.0f)", _paintType, d, e.size.Width, e.size.Height, e.position.X, e.position.Y)
+		}
+	}()
+
 	c := e.container
 	pos := e.Offset()
 	br := e.effRadius() // :hover/:focus/:active 可覆盖圆角
@@ -378,33 +387,12 @@ func (e *ContainerElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		defer cvs.Restore()
 	}
 
-	// 盒阴影：多层向外扩散的半透明圆角块叠加，模拟柔和模糊。
-	// （旧实现是单个偏移实心块，会在 Offset.Y 方向露出一坨硬边深色——尤其在深色遮罩上很突兀。）
-	if sh := e.effShadow(); sh != nil {
-		blur := sh.Blur
-		if blur <= 0 {
-			blur = 8
-		}
-		cx := pos.X + sh.Offset.X
-		cy := pos.Y + sh.Offset.Y
-		const shadowLayers = 6
-		la := uint8(float64(sh.Color.A) / float64(shadowLayers))
-		if la < 1 {
-			la = 1
-		}
-		sp := paint.DefaultPaint()
-		sp.Color = types.ColorFromRGBA(sh.Color.R, sh.Color.G, sh.Color.B, la)
-		for i := shadowLayers; i >= 1; i-- {
-			spread := blur * float64(i) / float64(shadowLayers)
-			if br > 0 {
-				cvs.DrawRoundedRect(cx-spread, cy-spread, e.size.Width+2*spread, e.size.Height+2*spread, br+spread, sp)
-			} else {
-				cvs.DrawRect(cx-spread, cy-spread, e.size.Width+2*spread, e.size.Height+2*spread, sp)
-			}
-		}
-	}
+	// 盒阴影 + 背景：使用 Skia 原生 DropShadowImageFilter 一次性完成阴影绘制，
+	// 避免 GPU 模式下多循环 DrawRoundedRect 触发多次 shader 编译带来的几十秒卡顿。
+	// CardElement.Paint 已用此方案，ContainerElement.Paint 同步修复。
+	sh := e.effShadow()
 
-	// 绘制背景：渐变优先，否则纯色（均支持圆角）
+	// 绘制背景：渐变优先，否则纯色。合并阴影效果到单个 DrawRoundedRect 调用。
 	if c.Gradient != nil {
 		gp := paint.DefaultPaint()
 		// Gradient 的 Start/End/Center 用 0~1 相对坐标(相对容器自身矩形，符合 CSS 习惯)，
@@ -421,6 +409,9 @@ func (e *ContainerElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		} else {
 			gp.LinearGradient = &g
 		}
+		if sh != nil {
+			gp.Shadow = sh
+		}
 		if br > 0 {
 			cvs.DrawRoundedRect(pos.X, pos.Y, e.size.Width, e.size.Height, br, gp)
 		} else {
@@ -429,10 +420,23 @@ func (e *ContainerElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	} else if bgC := e.effBg(); bgC != nil {
 		rectPaint := paint.DefaultPaint()
 		rectPaint.Color = *bgC
+		if sh != nil {
+			rectPaint.Shadow = sh
+		}
 		if br > 0 {
 			cvs.DrawRoundedRect(pos.X, pos.Y, e.size.Width, e.size.Height, br, rectPaint)
 		} else {
 			cvs.DrawRect(pos.X, pos.Y, e.size.Width, e.size.Height, rectPaint)
+		}
+	} else if sh != nil {
+		// 仅阴影，无背景色无渐变：绘制透明矩形以产生阴影（利用 Shape 的 alpha 通道触发 shadow filter）
+		shadowPaint := paint.DefaultPaint()
+		shadowPaint.Color = types.ColorTransparent
+		shadowPaint.Shadow = sh
+		if br > 0 {
+			cvs.DrawRoundedRect(pos.X, pos.Y, e.size.Width, e.size.Height, br, shadowPaint)
+		} else {
+			cvs.DrawRect(pos.X, pos.Y, e.size.Width, e.size.Height, shadowPaint)
 		}
 	}
 
