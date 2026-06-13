@@ -385,14 +385,9 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		ly := top + float64(vi)*ceLineH
 		baseY := canvas.BaselineFor(ly, ceLineH, e.font.Size, canvas.VAlignMiddle)
 		runes := []rune(e.lines[i])
-		segX := func(col int) float64 { // 段内列 → 屏幕 x（从段起列量起）
-			if col <= sg.start {
-				return left
-			}
-			return left + e.measure(string(runes[sg.start:col]))
-		}
 		toks := e.hl[i]
 		drawn := sg.start
+		currentX := left // 增量 x 代替 segX（避免对大文件每 token 调 e.measure 从行首重测，O(n²)）
 		for _, tk := range toks {
 			s, en := tk.start, tk.end // token 裁剪到本段 [sg.start,sg.end)
 			if en <= sg.start || s >= sg.end {
@@ -405,18 +400,23 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 				en = sg.end
 			}
 			if s > drawn { // token 之前的未着色段
-				cvs.DrawText(string(runes[drawn:s]), segX(drawn), baseY, e.font, mkPaint(ceTokenColor(tkText)))
+				w := e.measure(string(runes[drawn:s]))
+				cvs.DrawText(string(runes[drawn:s]), currentX, baseY, e.font, mkPaint(ceTokenColor(tkText)))
+				currentX += w
 			}
-			cvs.DrawText(string(runes[s:en]), segX(s), baseY, e.font, mkPaint(ceTokenColor(tk.kind)))
+			w := e.measure(string(runes[s:en]))
+			cvs.DrawText(string(runes[s:en]), currentX, baseY, e.font, mkPaint(ceTokenColor(tk.kind)))
+			currentX += w
 			drawn = en
 		}
 		if drawn < sg.end {
-			cvs.DrawText(string(runes[drawn:sg.end]), segX(drawn), baseY, e.font, mkPaint(ceTokenColor(tkText)))
+			_ = e.measure(string(runes[drawn:sg.end]))
+			cvs.DrawText(string(runes[drawn:sg.end]), currentX, baseY, e.font, mkPaint(ceTokenColor(tkText)))
 		}
 		// 折叠提示：该行被折叠 → 行尾画 ⋯ 块（画在末段尾部）
 		isLastSeg := vi+1 >= len(e.wrapSegs) || e.wrapSegs[vi+1].line != i
 		if isLastSeg && e.folded[i] && e.isFoldStart(i) {
-			lineEndX := segX(sg.end)
+			lineEndX := currentX
 			fp := paint.DefaultPaint()
 			fp.Color = types.ColorFromRGB(0xE8, 0xEC, 0xF0)
 			cvs.DrawRoundedRect(lineEndX+6, ly+4, 22, ceLineH-8, 3, fp)
