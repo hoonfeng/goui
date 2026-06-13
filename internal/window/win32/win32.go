@@ -590,7 +590,6 @@ func (w *Win32Window) ProcessEvents() bool {
 		msgCount++
 		if msg.Message == WM_QUIT {
 			quitExitCode := int(msg.WParam)
-			log.Printf("win32: WM_QUIT received (exitCode=%d, hwnd=%x)", quitExitCode, msg.Hwnd)
 			return false
 		}
 		procTranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))
@@ -744,13 +743,13 @@ func windowProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		}
 
 	case WM_CLOSE:
-		log.Printf("win32: >>> WM_CLOSE received (hwnd=%x)", hwnd)
+
 		win.dispatcher.Dispatch(event.NewBaseEvent(event.TypeWindowClose))
-		log.Printf("win32: <<< WM_CLOSE dispatched (hwnd=%x)", hwnd)
+
 		return 0
 
 	case WM_DESTROY:
-		log.Printf("win32: >>> WM_DESTROY received (hwnd=%x)", hwnd)
+
 		windowMap.Delete(hwnd)
 		// 仅主窗口销毁时 PostQuitMessage 结束消息循环；
 		// 附属窗口（多窗口）销毁只清理自身，不退出整个应用。
@@ -1334,3 +1333,6 @@ func init() {
 	window.SetWindowIcon = setWindowIconWin32
 	window.SetCursor = setCursorWin32
 }
+
+
+
