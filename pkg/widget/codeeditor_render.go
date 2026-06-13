@@ -385,11 +385,13 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		drawn := sg.start
 		currentX := left // 增量 x 代替 segX（避免对大文件每 token 调 e.measure 从行首重测，O(n²)）
 		// drawClipped 在 currentX 处绘制 runes[lo:hi]，超出 visRightX 则裁剪并终止本段后续绘制。
+		// 【普通虚加载】先检查可见性再测量：对已过可见右界的 token 直接跳过，不调用 Skia measure，
+		// 避免每帧对不可见 token 做 CGO 测量（单文字虚加载每 token 先 measure 再检查可见性，帧率反降）。
 		drawClipped := func(lo, hi int, color types.Color) bool {
-			w := e.measure(string(runes[lo:hi]))
 			if currentX >= visRightX {
-				return false // 起点已在可见区右侧，整段跳过
+				return false // 起点已在可见区右侧，整段跳过（不调用 measure）
 			}
+			w := e.measure(string(runes[lo:hi]))
 			if currentX+w > visRightX { // 部分超出 → 裁剪字符串到可见宽度
 				availW := visRightX - currentX
 				if availW > 0 {
