@@ -2,7 +2,6 @@ package widget
 
 import (
 	"fmt"
-	"log"
 	"reflect"
 	"strings"
 	"time"
@@ -369,17 +368,6 @@ func (e *ContainerElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult
 
 // Paint 绘制 Container（支持圆角背景、圆角边框和子内容裁剪）
 func (e *ContainerElement) Paint(cvs canvas.Canvas, offset types.Point) {
-	_paintStart := time.Now()
-	_paintType := reflect.TypeOf(e.Widget()).String()
-	_bgDur := time.Duration(0)
-	_borderDur := time.Duration(0)
-	_childDur := time.Duration(0)
-	defer func() {
-		if d := time.Since(_paintStart); d > 30*time.Millisecond {
-			log.Printf("goui: [Perf] Container(%s) Paint 耗时 %v (%.0fx%.0f) pos=(%.0f,%.0f) bg=%v border=%v child=%v", _paintType, d, e.size.Width, e.size.Height, e.position.X, e.position.Y, _bgDur, _borderDur, _childDur)
-		}
-	}()
-
 	c := e.container
 	pos := e.Offset()
 	br := e.effRadius() // :hover/:focus/:active 可覆盖圆角
@@ -396,7 +384,6 @@ func (e *ContainerElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	sh := e.effShadow()
 
 	// 绘制背景：渐变优先，否则纯色。合并阴影效果到单个 DrawRoundedRect 调用。
-	_bgS := time.Now()
 	if c.Gradient != nil {
 		gp := paint.DefaultPaint()
 		// Gradient 的 Start/End/Center 用 0~1 相对坐标(相对容器自身矩形，符合 CSS 习惯)，
@@ -443,10 +430,8 @@ func (e *ContainerElement) Paint(cvs canvas.Canvas, offset types.Point) {
 			cvs.DrawRect(pos.X, pos.Y, e.size.Width, e.size.Height, shadowPaint)
 		}
 	}
-	_bgDur = time.Since(_bgS)
 
 	// 绘制边框（支持圆角）。effBorder 已把 :hover/:focus/:active 的颜色/宽度覆盖合成进来。
-	_borderS := time.Now()
 	if bd := e.effBorder(); bd != nil {
 		if br > 0 {
 			// 圆角边框：使用 DrawRoundedRect 的描边模式绘制
@@ -486,7 +471,6 @@ func (e *ContainerElement) Paint(cvs canvas.Canvas, offset types.Point) {
 			}
 		}
 	}
-	_borderDur = time.Since(_borderS)
 
 	// 子内容裁剪：圆角容器或 overflow:hidden
 	if br > 0 || c.ClipContent {
@@ -501,9 +485,7 @@ func (e *ContainerElement) Paint(cvs canvas.Canvas, offset types.Point) {
 			X: pos.X + c.Padding.Left,
 			Y: pos.Y + c.Padding.Top,
 		}
-		_childS := time.Now()
 		e.child.Paint(cvs, childOffset)
-		_childDur = time.Since(_childS)
 	}
 }
 
@@ -736,13 +718,6 @@ func (e *TextElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult {
 
 // Paint 绘制文本（支持多行，使用准确的基线位置）
 func (e *TextElement) Paint(cvs canvas.Canvas, offset types.Point) {
-	_paintStart := time.Now()
-	defer func() {
-		if d := time.Since(_paintStart); d > 50*time.Millisecond {
-			log.Printf("goui: [Perf] Text(%s) Paint 耗时 %v (%.0fx%.0f) len=%d lines=%d", reflect.TypeOf(e.Widget()).String(), d, e.size.Width, e.size.Height, len(e.text.Text), len(e.lines))
-		}
-	}()
-
 	t := e.text
 	pos := e.Offset()
 	fontSize := t.Font.Size
@@ -787,7 +762,6 @@ func (e *TextElement) Paint(cvs canvas.Canvas, offset types.Point) {
 
 	// 逐行绘制：每行在自己的行盒(高 lineHeight)内**按实际墨迹**垂直居中。
 	for i, line := range lines {
-		_lineStart := time.Now()
 		y := canvas.BaselineForMiddle(cvs, line, t.Font, pos.Y+float64(i)*lineHeight, lineHeight)
 		lineX := pos.X
 		if align != canvas.TextAlignLeft {
@@ -803,19 +777,7 @@ func (e *TextElement) Paint(cvs canvas.Canvas, offset types.Point) {
 			}
 		}
 		cvs.DrawText(line, lineX, y, t.Font, p)
-		if ld := time.Since(_lineStart); ld > 10*time.Millisecond {
-			log.Printf("goui: [Perf]   Text line[%d] DrawText 耗时 %v line=%q", i, ld, trimForLog(line, 60))
-		}
 	}
-}
-
-// trimForLog 截断长字符串用于日志输出
-func trimForLog(s string, max int) string {
-	rs := []rune(s)
-	if len(rs) <= max {
-		return s
-	}
-	return string(rs[:max]) + "..."
 }
 
 // paintSelection 绘制选中区域高亮背景。

@@ -1,5 +1,7 @@
 package widget
 
+import "unicode/utf8"
+
 // 软自动换行（word wrap）：开启后每个【可见逻辑行】按编辑区像素宽切成 ≥1 个「视觉段」，
 // 渲染/光标/点击/选区/方向键全部以「视觉段(wrapSegs)」为单位排布。关闭时每个可见行恰好
 // 一个整行段 {line,0,len}，与不换行的旧行为逐字节一致（零回归）。
@@ -41,19 +43,39 @@ func (e *CodeEditorElement) ensureWrapSegs(viewW float64) {
 
 // rebuildWrapSegs 据当前 visRows + 换行开关重建视觉段。
 // 折行断点用「等宽单字符宽 × 字数(CJK 2 倍)」快速估算，避免逐子串 Skia 测量（resize 时 O(L²) 卡顿的根源）。
+// 非换行模式下预分配切片且使用 utf8.RuneCountInString 代替 lineRunes（避免 5 万行大文件每行分配 []rune，GC 与分配消耗巨大）。
 func (e *CodeEditorElement) rebuildWrapSegs(viewW float64) {
 	e.wrapW = viewW
 	e.wrapDirty = false
+	// 非换行模式：预分配容量，避免 append 反复扩容
+	n := len(e.visRows)
+	if !e.wrap || viewW <= 0 {
+		if cap(e.wrapSegs) >= n {
+			e.wrapSegs = e.wrapSegs[:n]
+		} else {
+			e.wrapSegs = make([]wrapSeg, n)
+		}
+		for vi, line := range e.visRows {
+			e.wrapSegs[vi] = wrapSeg{line, 0, utf8.RuneCountInString(e.lines[line])}
+		}
+		if n == 0 {
+			e.wrapSegs = append(e.wrapSegs, wrapSeg{0, 0, 0})
+		}
+		return
+	}
+	// 换行模式
 	e.wrapSegs = e.wrapSegs[:0]
 	charW := e.measure("0") // 等宽字体单字符宽，整次重建只测一次
 	if charW <= 0 {
 		charW = 8
 	}
+	if cap(e.wrapSegs) < n {
+		e.wrapSegs = make([]wrapSeg, 0, n)
+	}
 	for _, line := range e.visRows {
 		runes := e.lineRunes(line)
-		if !e.wrap || viewW <= 0 || len(runes) == 0 {
-			// 不换行（或空行/无宽度）：整行一个段，行为同旧版。
-			e.wrapSegs = append(e.wrapSegs, wrapSeg{line, 0, len(runes)})
+		if len(runes) == 0 {
+			e.wrapSegs = append(e.wrapSegs, wrapSeg{line, 0, 0})
 			continue
 		}
 		e.appendLineSegs(line, runes, viewW, charW)

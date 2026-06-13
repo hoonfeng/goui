@@ -2,9 +2,7 @@ package widget
 
 import (
 	"fmt"
-	"log"
 	"reflect"
-	"time"
 
 	"github.com/hoonfeng/goui/pkg/canvas"
 	"github.com/hoonfeng/goui/internal/i18n"
@@ -470,27 +468,8 @@ func parseAlign(s string) layout.CrossAxisAlignment {
 
 // Paint 绘制 Flex（递归绘制子控件）
 func (e *FlexElement) Paint(cvs canvas.Canvas, offset types.Point) {
-	_paintStart := time.Now()
-	_paintType := reflect.TypeOf(e.Widget()).String()
-	_slowChild := ""
-	_slowChildDur := time.Duration(0)
-	defer func() {
-		if d := time.Since(_paintStart); d > 30*time.Millisecond {
-			log.Printf("goui: [Perf] Flex(%s) Paint 耗时 %v (%.0fx%.0f) children=%d slowestChild=[%s %v]", _paintType, d, e.size.Width, e.size.Height, len(e.children), _slowChild, _slowChildDur)
-		}
-	}()
-	for i, child := range e.children {
-		_cStart := time.Now()
+	for _, child := range e.children {
 		child.Paint(cvs, offset)
-		if cd := time.Since(_cStart); cd > 10*time.Millisecond {
-			_ct := reflect.TypeOf(child.Widget()).String()
-			_cs := child.Size()
-			log.Printf("goui: [Perf]   Flex.child[%d] %s Paint 耗时 %v (%.0fx%.0f)", i, _ct, cd, _cs.Width, _cs.Height)
-			if cd > _slowChildDur {
-				_slowChildDur = cd
-				_slowChild = fmt.Sprintf("[%d]%s", i, _ct)
-			}
-		}
 	}
 }
 
@@ -625,13 +604,7 @@ func (e *ExpandedElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult 
 
 func (e *ExpandedElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	if e.child != nil {
-		_start := time.Now()
-		_ct := reflect.TypeOf(e.child.Widget()).String()
-		_cs := e.child.Size()
 		e.child.Paint(cvs, offset)
-		if d := time.Since(_start); d > 10*time.Millisecond {
-			log.Printf("goui: [Perf]   Expanded.child %s Paint 耗时 %v (%.0fx%.0f)", _ct, d, _cs.Width, _cs.Height)
-		}
 	}
 }
 
