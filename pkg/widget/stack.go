@@ -1,7 +1,10 @@
 package widget
 
 import (
+	"log"
+	"reflect"
 	"sort"
+	"time"
 
 	"github.com/hoonfeng/goui/pkg/canvas"
 	"github.com/hoonfeng/goui/internal/layout"
@@ -198,7 +201,13 @@ func (e *StackElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult {
 
 func (e *StackElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	for _, child := range e.Children() { // z 升序：z 大者后画，在上层
+		_start := time.Now()
+		_ct := reflect.TypeOf(child.Widget()).String()
+		_cs := child.Size()
 		child.Paint(cvs, offset)
+		if d := time.Since(_start); d > 10*time.Millisecond {
+			log.Printf("goui: [Perf]   Stack.child %s Paint 耗时 %v (%.0fx%.0f)", _ct, d, _cs.Width, _cs.Height)
+		}
 	}
 }
 

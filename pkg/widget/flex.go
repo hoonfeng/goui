@@ -625,7 +625,13 @@ func (e *ExpandedElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult 
 
 func (e *ExpandedElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	if e.child != nil {
+		_start := time.Now()
+		_ct := reflect.TypeOf(e.child.Widget()).String()
+		_cs := e.child.Size()
 		e.child.Paint(cvs, offset)
+		if d := time.Since(_start); d > 10*time.Millisecond {
+			log.Printf("goui: [Perf]   Expanded.child %s Paint 耗时 %v (%.0fx%.0f)", _ct, d, _cs.Width, _cs.Height)
+		}
 	}
 }
 
