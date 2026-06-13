@@ -1,8 +1,6 @@
 package render
 
 import (
-	"log"
-
 	"github.com/hoonfeng/goui/internal/layout"
 	"github.com/hoonfeng/goui/pkg/canvas"
 	"github.com/hoonfeng/goui/pkg/paint"
@@ -85,9 +83,7 @@ func (p *Pipeline) PerformLayout() {
 	}
 
 	// 递归构建 Element 树
-	log.Println("goui: PerformLayout: buildTree 开始")
 	p.buildTree(p.rootElement)
-	log.Println("goui: PerformLayout: buildTree 完成")
 
 	// 使用窗口尺寸作为根约束
 	ctx := &layout.LayoutContext{
@@ -98,9 +94,7 @@ func (p *Pipeline) PerformLayout() {
 			MaxHeight: float64(p.height),
 		},
 	}
-	log.Println("goui: PerformLayout: Layout 开始")
 	p.rootElement.Layout(ctx)
-	log.Println("goui: PerformLayout: Layout 完成")
 	p.needsLayout = false
 }
 
@@ -224,3 +218,8 @@ func (p *Pipeline) Width() int { return p.width }
 
 // Height 返回管线高度
 func (p *Pipeline) Height() int { return p.height }
+
+// RootElement 返回根 Element
+func (p *Pipeline) RootElement() widget.Element {
+	return p.rootElement
+}
