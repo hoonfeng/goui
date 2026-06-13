@@ -20,17 +20,20 @@ import (
 //   - 滚动条可拖拽
 //   - ItemHeights（可选）：每项实际高度数组，支持行高可变的消息列表等场景。
 //     为 nil 时回退到 ItemHeight 固定高度，兼容旧用法。
+//   - ScrollToBottomToken: 改变此值 → 下次布局滚到底部（聊天追加消息后滚到底）
+//   - 自动高度回写: Layout 后捕获子元素实际高度并更新 ItemHeights（仅当 ItemHeights!=nil）
 type VirtualList struct {
 	StatelessWidget
-	ItemCount   int
-	ItemHeight  float64
-	ItemHeights []float64             // 可选：每项实际高度（为 nil 时用 ItemHeight 固定）
-	Height      float64               // 显式高度(0=从父布局撑满)
-	Width       float64               // 显式宽度(0=从父布局撑满)
-	Overscan    int                   // 视口外额外渲染行数(默认5)
-	RenderItem  func(index int) Widget // 按索引创建列表项控件
-	OnReachEnd  func()                // 滚到接近底部时回调（供 InfiniteScroll 加载更多）
-	OnScroll    func(scrollOffset float64) // 滚动偏移回调
+	ItemCount          int
+	ItemHeight         float64
+	ItemHeights        []float64             // 可选：每项实际高度（为 nil 时用 ItemHeight 固定）
+	Height             float64               // 显式高度(0=从父布局撑满)
+	Width              float64               // 显式宽度(0=从父布局撑满)
+	Overscan           int                   // 视口外额外渲染行数(默认5)
+	RenderItem         func(index int) Widget // 按索引创建列表项控件
+	OnReachEnd         func()                // 滚到接近底部时回调（供 InfiniteScroll 加载更多）
+	OnScroll           func(scrollOffset float64) // 滚动偏移回调
+	ScrollToBottomToken int                  // 改变此值 → 下次布局滚到底部
 }
 
 // NewVirtualList 创建固定高度的虚拟列表（兼容旧 API，Height=280）。
@@ -57,8 +60,11 @@ func (v *VirtualList) WithOnReachEnd(fn func()) *VirtualList { v.OnReachEnd = fn
 // WithOnScroll 注册滚动偏移回调。
 func (v *VirtualList) WithOnScroll(fn func(float64)) *VirtualList { v.OnScroll = fn; return v }
 
-// setItemHeights 设置可变高度数组（链式调用）。
+// SetItemHeights 设置可变高度数组（链式调用）。
 func (v *VirtualList) SetItemHeights(h []float64) *VirtualList { v.ItemHeights = h; return v }
+
+// WithScrollToBottom 设置滚到底令牌（链式调用）。
+func (v *VirtualList) WithScrollToBottom(token int) *VirtualList { v.ScrollToBottomToken = token; return v }
 
 // CreateElement 创建 VirtualListElement
 func (v *VirtualList) CreateElement() Element {
@@ -88,6 +94,8 @@ type VirtualListElement struct {
 	draggingBar      bool
 	dragStartMouseY  float64
 	dragStartScrollY float64
+
+	lastScrollToBottom int // 上次见的 ScrollToBottomToken（受控滚到底用）
 }
 
 // ── 公开接口 ──────────────────────────────────────────────
@@ -289,7 +297,7 @@ func (e *VirtualListElement) removeAll() {
 	e.children = nil
 }
 
-// Layout 执行布局（支持可变高度 ItemHeights）。
+// Layout 执行布局（支持可变高度 ItemHeights + 高度自动回写 + 受控滚到底）。
 func (e *VirtualListElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult {
 	vl := e.vl
 
@@ -317,22 +325,51 @@ func (e *VirtualListElement) Layout(ctx *layout.LayoutContext) layout.LayoutResu
 	e.maxScroll = vlMax(0, totalH-e.viewportH)
 	e.scrollOffset = vlClamp(e.scrollOffset, 0, e.maxScroll)
 
-	// 布局可见项（使用各自的高度约束）
+	// 布局可见项：使用足够大的 MaxHeight（1<<20）让子元素自然生长，
+	// 然后捕获实际高度回写 ItemHeights（仅当 ItemHeights != nil）。
+	heightsChanged := false
 	for idx, el := range e.itemEls {
-		mh := e.itemH(idx)
+		// 使用大 MaxHeight 让子元素无约束生长，测得真实高度
 		childConstraints := layout.BoxConstraints{
 			MinWidth:  w,
 			MaxWidth:  w,
 			MinHeight: 0,
-			MaxHeight: mh,
+			MaxHeight: 1 << 20, // 足够大，不裁剪内容
 		}
 		el.Layout(&layout.LayoutContext{Constraints: childConstraints})
+
+		// 捕获实际渲染高度并回写 ItemHeights
+		if e.vl.ItemHeights != nil && idx >= 0 && idx < len(e.vl.ItemHeights) {
+			actualH := el.Size().Height
+			if actualH != e.vl.ItemHeights[idx] {
+				e.vl.ItemHeights[idx] = actualH
+				heightsChanged = true
+			}
+		}
+	}
+
+	// 实际高度有变化 → 重新计算总高度和 maxScroll
+	if heightsChanged {
+		totalH = e.totalContentH()
+		e.maxScroll = vlMax(0, totalH-e.viewportH)
+		e.scrollOffset = vlClamp(e.scrollOffset, 0, e.maxScroll)
 	}
 
 	// 定位可见项
 	for idx, el := range e.itemEls {
 		off := e.itemOffset(idx)
 		el.SetPosition(types.Point{X: 0, Y: off - e.scrollOffset})
+	}
+
+	// 受控滚到底部：ScrollToBottomToken 变化时跳到底
+	if e.vl.ScrollToBottomToken != e.lastScrollToBottom {
+		e.lastScrollToBottom = e.vl.ScrollToBottomToken
+		maxScr := vlMax(0, e.maxScroll)
+		if e.scrollOffset < maxScr {
+			e.scrollOffset = maxScr
+			e.repositionAll()
+			e.fireScroll()
+		}
 	}
 
 	e.size = ctx.Constraints.Constrain(types.Size{Width: w, Height: vh})
