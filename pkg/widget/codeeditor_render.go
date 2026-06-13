@@ -1,6 +1,7 @@
 package widget
 
 import (
+	"log"
 	"strings"
 	"time"
 
@@ -171,10 +172,16 @@ func (e *CodeEditorElement) posFromXY(sx, sy float64) cePos {
 // ── Paint ──
 
 func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
+	_t0 := time.Now()
+	_tSeg := func(label string, since time.Time) time.Time {
+		log.Printf("goui: [Perf] CodeEditor.Paint %s: %v", label, time.Since(since))
+		return time.Now()
+	}
 	pos := e.Offset()
 	w, h := e.size.Width, e.size.Height
 	e.lastCanvas = cvs     // 缓存画布，供点击定位/IME 候选用与渲染一致的 Skia 测量
 	e.drainLSPCompletion() // 消费异步到达的 LSP 补全结果
+	_tNow := _tSeg("drainLSPCompletion", _t0)
 
 	if e.ed == nil || !e.ed.Embedded {
 		// 独立模式：白底圆角 + 边框（聚焦主色）。嵌入模式(StructEditor)完全无边框，无缝融入整份文档。
@@ -206,6 +213,7 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		estViewW -= sbThick // 长文一般溢出，预留竖条宽，避免段宽来回抖动
 	}
 	e.ensureWrapSegs(estViewW)
+	_tNow = _tSeg("ensureWrapSegs(est)", _tNow)
 
 	contentH := float64(len(e.wrapSegs)) * ceLineH
 	maxLineW := e.maxLineWidth()
@@ -224,6 +232,7 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	}
 	// editorViewW 定下后再确保视觉段按它构建（宽度变才会真重建）。
 	e.ensureWrapSegs(editorViewW)
+	_tNow = _tSeg("ensureWrapSegs(final)", _tNow)
 	contentH = float64(len(e.wrapSegs)) * ceLineH
 	maxScrollY := contentH - viewH
 	if maxScrollY < 0 {
@@ -262,6 +271,7 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 
 	top := contentTop - e.scrollY
 	left := editorTextX - e.scrollX
+	_tNow = _tSeg("scrollCalc", _tNow)
 
 	// 行号栏背景
 	gb := paint.DefaultPaint()
@@ -318,6 +328,7 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 
 	// 缩进连线（indent guides）：各级缩进画虚线；光标所在最内层「跨行括号对」画实线折线——
 	// 折线从开括号位置横折引出、竖到闭括号位置（真正的括号范围，非缩进推断）。
+	_tNow = _tSeg("preIndentGuides", _tNow)
 	if e.ed.IndentGuides {
 		dash := paint.DefaultStrokePaint()
 		dash.Color = types.ColorFromRGB(0xDD, 0xE2, 0xE8)
@@ -362,6 +373,7 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 			}
 		}
 	}
+	_tNow = _tSeg("indentGuides", _tNow)
 
 	// 文本（遍历视觉段，逐段按 token 着色；token 按列裁剪到段区间并平移到段起点）
 	for vi := firstVis; vi <= lastVis; vi++ {
@@ -411,6 +423,7 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 			canvas.DrawTextAligned(cvs, "...", types.Rect{X: lineEndX + 6, Y: ly - 2, Width: 22, Height: ceLineH}, e.font, types.ColorFromRGB(0x6A, 0x73, 0x7D), canvas.HAlignCenter, canvas.VAlignMiddle)
 		}
 	}
+	_tNow = _tSeg("textDrawing", _tNow)
 
 	// 诊断波浪线（LSP 错误/警告）
 	e.paintDiagnostics(cvs, left, top)
@@ -467,6 +480,7 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		}
 	}
 	cvs.Restore()
+	_tNow = _tSeg("imeAndCursor", _tNow)
 
 	// 行号 + 折叠箭头（裁剪到行号栏）
 	cvs.Save()
@@ -495,6 +509,7 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	// 行号栏诊断标记（红/橙圆点）
 	e.paintGutterDiagnostics(cvs, top)
 	cvs.Restore()
+	_tNow = _tSeg("gutter", _tNow)
 
 	// 行号栏右分隔线
 	sep := paint.DefaultStrokePaint()
@@ -502,12 +517,14 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	cvs.DrawLine(editorX, pos.Y+1, editorX, pos.Y+h-1, sep)
 
 	e.paintScrollbars(cvs, pos, w, h, contentH, maxLineW, viewH, editorViewW, maxScrollY, maxScrollX, hBar, vBar, editorTextX)
+	_tNow = _tSeg("scrollbars", _tNow)
 
 	// 缩略图（右侧）
 	e.miniRect = types.Rect{}
 	if miniW > 0 {
 		e.paintMinimap(cvs, pos.X+w-miniW-1, pos.Y+1, h-2, viewH, e.scrollY, maxScrollY)
 	}
+	_tNow = _tSeg("minimap", _tNow)
 
 	// 补全弹窗（编辑器内容之上，可超出编辑区）
 	if e.completing {
@@ -520,6 +537,7 @@ func (e *CodeEditorElement) Paint(cvs canvas.Canvas, offset types.Point) {
 	if e.findActive {
 		e.paintFindBar(cvs, pos, w)
 	}
+	_tSeg("Paint total", _t0)
 }
 
 // paintBracketBox 在括号字符位置画一个蓝色边框（匹配高亮）。
