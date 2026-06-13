@@ -100,12 +100,6 @@ func isWideRune(r rune) bool {
 // appendLineSegs 把单个逻辑行按 viewW 像素宽切成若干段，优先在空白处断行，否则 rune 间硬断。
 // 决不丢字符：每段至少含 1 个 rune。宽度按 charW 累加（O(L)，无逐子串 Skia 测量）。
 func (e *CodeEditorElement) appendLineSegs(line int, runes []rune, viewW, charW float64) {
-	// 超长行（>2000 字符）不换行：整行作为一个段。避免非常长的行（如 ndjson 日志每行数万字符）
-	// 在首帧产生数千个视觉段，每段一次 CGO DrawText 调用累积导致 40+ 秒阻塞。
-	if len(runes) > 2000 {
-		e.wrapSegs = append(e.wrapSegs, wrapSeg{line, 0, len(runes)})
-		return
-	}
 	start := 0
 	n := len(runes)
 	for start < n {

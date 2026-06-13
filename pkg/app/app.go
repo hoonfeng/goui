@@ -441,19 +441,9 @@ func (app *Application) mainLoop() {
 		frameIndex++
 		frameStart := time.Now()
 		// 1. 泵送所有平台消息（非阻塞，PeekMessage）
-		if firstFrame {
-			log.Println("goui: [首帧 1/7] ProcessEvents 开始")
-		} else if frameIndex <= 5 {
-			log.Printf("goui: [帧%d] ProcessEvents 开始", frameIndex)
-		}
 		if !app.Window.ProcessEvents() {
 			app.Running = false
 			break
-		}
-		if firstFrame {
-			log.Println("goui: [首帧 1/7] ProcessEvents 完成")
-		} else if frameIndex <= 5 {
-			log.Printf("goui: [帧%d] ProcessEvents 完成", frameIndex)
 		}
 
 		// 1.2 推进动画时间线：更新所有活跃动画的值（OnUpdate 内通常会触发
@@ -461,11 +451,6 @@ func (app *Application) mainLoop() {
 		animation.Tick(time.Now())
 
 		// 1.5 确保布局已执行，使 HitTest 能正确命中 Element
-		if firstFrame {
-			log.Println("goui: [首帧 2/7] EnsureLayout (buildTree + Layout) 开始")
-		} else if frameIndex <= 5 {
-			log.Printf("goui: [帧%d] EnsureLayout 开始", frameIndex)
-		}
 		if app.Pipeline != nil {
 			t0 := time.Now()
 			app.Pipeline.EnsureLayout()
@@ -476,24 +461,9 @@ func (app *Application) mainLoop() {
 				lastBuildTime = 0 // 低于阈值时主动清零，避免日志一直显示首帧冷启动的 193ms
 			}
 		}
-		if firstFrame {
-			log.Println("goui: [首帧 2/7] EnsureLayout 完成")
-		} else if frameIndex <= 5 {
-			log.Printf("goui: [帧%d] EnsureLayout 完成", frameIndex)
-		}
 
 		// 2. 先处理待处理 UI 事件，确保输入得到即时响应
-		if firstFrame {
-			log.Println("goui: [首帧 3/7] processPendingEvents 开始")
-		} else if frameIndex <= 5 {
-			log.Printf("goui: [帧%d] processPendingEvents 开始", frameIndex)
-		}
 		app.processPendingEvents()
-		if firstFrame {
-			log.Println("goui: [首帧 3/7] processPendingEvents 完成")
-		} else if frameIndex <= 5 {
-			log.Printf("goui: [帧%d] processPendingEvents 完成", frameIndex)
-		}
 
 		// ⚠️ 注意：不再调用第二次 EnsureLayout()，原因是：
 		//    1. 若事件处理未触发 SetState（多数情况），第二次调用是空操作但仍有 if 判断开销
@@ -510,9 +480,6 @@ func (app *Application) mainLoop() {
 		// 4. 渲染帧
 		rendered := false
 		if app.Pipeline != nil {
-			if firstFrame || frameIndex <= 5 {
-				log.Printf("goui: [帧%d] Pipeline.Render 开始", frameIndex)
-			}
 			t0 := time.Now()
 			if err := app.Pipeline.Render(); err != nil {
 				log.Printf("goui: Render error: %v", err)
@@ -521,17 +488,10 @@ func (app *Application) mainLoop() {
 				totalPaint += pd
 			}
 			rendered = app.Pipeline.DidRender()
-			if firstFrame || frameIndex <= 5 {
-				// NeedsRepaint is unexported - just log rendered flag
-				log.Printf("goui: [帧%d] Pipeline.Render 完成 (rendered=%v)", frameIndex, rendered)
-			}
 		}
 
 		// 5. 显示渲染结果到窗口
 		if rendered {
-			if firstFrame || frameIndex <= 5 {
-				log.Printf("goui: [帧%d] SwapBuffers 开始", frameIndex)
-			}
 			t0 := time.Now()
 			app.Window.SwapBuffers()
 			if fd := time.Since(t0); fd > 500*time.Microsecond {
@@ -540,11 +500,9 @@ func (app *Application) mainLoop() {
 
 			if firstFrame {
 				firstFrame = false
-				log.Println("goui: [首帧 6/7] Ready 回调开始")
 				if app.Ready != nil {
 					app.Ready()
 				}
-				log.Println("goui: [首帧 7/7] Ready 回调完成 —— 首帧周期结束，进入正常主循环")
 			}
 
 			if app.focusedElement != nil && app.focusedElement.IsFocused() {
@@ -552,13 +510,7 @@ func (app *Application) mainLoop() {
 			}
 		} else {
 			if !((app.focusedElement != nil && app.focusedElement.IsFocused()) || animation.HasActive() || len(app.subWindows) > 0) {
-				if firstFrame || frameIndex <= 5 {
-					log.Printf("goui: [帧%d] WaitMessage 开始（阻塞等待 Windows 消息）", frameIndex)
-				}
 				app.Window.WaitMessage()
-				if firstFrame || frameIndex <= 5 {
-					log.Printf("goui: [帧%d] WaitMessage 返回", frameIndex)
-				}
 			}
 		}
 

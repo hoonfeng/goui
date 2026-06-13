@@ -139,23 +139,16 @@ func (p *Pipeline) Render() error {
 	// 滚动视图外的聊天消息/文件树节点）由 Skia 自动裁切，大幅减少像素着色器调用。
 	// RESTORE 确保裁剪不影响后续帧或 HitTest 的坐标变换栈。
 	if p.rootElement != nil {
-		log.Println("goui: Pipeline.Render: Paint 开始")
 		p.finalCanvas.Save()
 		p.finalCanvas.ClipRect(0, 0, float64(p.width), float64(p.height))
 		p.rootElement.Paint(p.finalCanvas, types.Point{})
 		p.finalCanvas.Restore()
-		log.Println("goui: Pipeline.Render: Paint 完成")
-	} else {
-		log.Println("goui: Pipeline.Render: rootElement 为 nil，跳过 Paint")
 	}
 
 	// 刷新画布到屏幕
-	log.Println("goui: Pipeline.Render: Flush 开始")
 	if err := p.finalCanvas.Flush(); err != nil {
-		log.Printf("goui: Pipeline.Render: Flush 错误: %v", err)
 		return err
 	}
-	log.Println("goui: Pipeline.Render: Flush 完成")
 
 	p.needsRepaint = false
 	p.didRender = true
