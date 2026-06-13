@@ -77,6 +77,16 @@ func (p *Pipeline) MarkNeedsLayout() {
 	p.needsRepaint = true
 }
 
+// NeedsRepaint 返回是否已标记需要重绘，供主循环在进入 WaitMessage 前判断是否有待渲染的后台工作。
+func (p *Pipeline) NeedsRepaint() bool {
+	return p.needsRepaint
+}
+
+// NeedsLayout 返回是否已标记需要重新布局。
+func (p *Pipeline) NeedsLayout() bool {
+	return p.needsLayout
+}
+
 // Resize 调整渲染管线尺寸
 func (p *Pipeline) Resize(width, height int) {
 	p.width = width

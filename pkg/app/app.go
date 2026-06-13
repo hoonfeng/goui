@@ -51,6 +51,10 @@ type Application struct {
 	isDragging        bool           // 当前是否处于拖拽状态
 	dragSourceElement widget.Element // 拖拽发起 Element（发送 DragEnd/Drop 的目标）
 
+	// 光标闪烁节流时间戳：主循环不再每帧标记重绘，而是每 500ms 触发一次光标闪烁重绘，
+	// 大幅减少 idle 时的 CGO 边界穿越（runtime.cgocall），降低空转 CPU 占用。
+	lastCursorBlink time.Time
+
 	// Ready 首帧渲染完成后的回调（在 mainLoop 的同一 goroutine 中调用）
 	Ready func()
 
@@ -454,8 +458,19 @@ func (app *Application) mainLoop() {
 		//       这是 FPS 低和 progressive slowdown 的根因之一
 
 		// 3. 持续重绘标记
-		if (app.focusedElement != nil && app.focusedElement.IsFocused()) || animation.HasActive() {
-			app.Pipeline.MarkNeedsRepaint()
+		// 优化：不再每帧为光标闪烁标记重绘（之前导致 runtime.cgocall 达 95%）。
+		//   - 动画：每帧标记（流畅运行必需的 60fps）
+		//   - 光标闪烁（有焦点、无动画）：每 500ms 标记一次（InputElement 的光标周期就是 500ms）
+		//   - 无焦点无动画：不标记（Pipeline.Render 走早期返回，随后 WaitMessage 休眠）
+		if animation.HasActive() {
+			app.Pipeline.MarkNeedsRepaint() // 动画需要 60fps
+		} else if app.focusedElement != nil && app.focusedElement.IsFocused() {
+			// 光标闪烁：500ms 周期，由 InputElement.cursorVisible() 根据 focusTime + time.Now() 计算，
+			// 不需要每帧重绘。每 500ms 触发一次即可让光标正常闪烁。
+			if time.Since(app.lastCursorBlink) >= 500*time.Millisecond {
+				app.Pipeline.MarkNeedsRepaint()
+				app.lastCursorBlink = time.Now()
+			}
 		}
 
 		// 4. 渲染帧
@@ -484,8 +499,15 @@ func (app *Application) mainLoop() {
 				app.updateIMECandidatePos()
 			}
 		} else {
-			if !((app.focusedElement != nil && app.focusedElement.IsFocused()) || animation.HasActive() || len(app.subWindows) > 0) {
-				app.Window.WaitMessage()
+			// 检查是否有后台 goroutine（pty/AI/文件加载）标记了待渲染的工作，
+			// 避免在 WaitMessage 中无限阻塞导致 UI 冻结直到用户移动鼠标。
+			hasPendingWork := app.Pipeline != nil && (app.Pipeline.NeedsRepaint() || app.Pipeline.NeedsLayout())
+			if !(hasPendingWork || (app.focusedElement != nil && app.focusedElement.IsFocused()) || animation.HasActive() || len(app.subWindows) > 0) {
+				// 用短 Sleep 轮询替代 Win32 WaitMessage 无限阻塞：
+				// 1. 后台 goroutine 标记重绘后，主循环在 ≤50ms 内响应渲染
+				// 2. 窗口在后台且无工作时，20次/秒的轮询 CPU 占用可忽略
+				// 3. 焦点恢复时 ProcessEvents 在循环顶部消费消息，无任何消息积压
+				time.Sleep(50 * time.Millisecond)
 			}
 		}
 
