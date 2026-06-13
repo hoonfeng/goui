@@ -424,18 +424,6 @@ func (app *Application) mainLoop() {
 	const cursorIdleInterval = 120 * time.Millisecond // 仅光标闪烁（无动画）时的帧率，约 8fps —— 光标闪一下不必满帧重绘
 	firstFrame := true
 
-	// ── 帧率诊断日志 ──
-	var (
-		frameCount    int           // 累计帧数
-		lastFrameLog  = time.Now()  // 上次日志时间
-		totalBuild    time.Duration // 累计 buildTree 耗时
-		totalLayout   time.Duration // 累计 Layout 耗时
-		totalPaint    time.Duration // 累计 Paint 耗时
-		totalFlush    time.Duration // 累计 Flush 耗时
-		lastBuildTime time.Duration // 上次 frame 的 buildTree 耗时；低于阈值时主动清零，避免日志一直显示首帧冷启动值
-	)
-	const frameLogInterval = 5 * time.Second // 每 5 秒输出一次帧率摘要
-
 	frameIndex := 0
 	for app.Running {
 		frameIndex++
@@ -452,14 +440,7 @@ func (app *Application) mainLoop() {
 
 		// 1.5 确保布局已执行，使 HitTest 能正确命中 Element
 		if app.Pipeline != nil {
-			t0 := time.Now()
 			app.Pipeline.EnsureLayout()
-			if d := time.Since(t0); d > 500*time.Microsecond {
-				totalBuild += d
-				lastBuildTime = d
-			} else {
-				lastBuildTime = 0 // 低于阈值时主动清零，避免日志一直显示首帧冷启动的 193ms
-			}
 		}
 
 		// 2. 先处理待处理 UI 事件，确保输入得到即时响应
@@ -484,9 +465,7 @@ func (app *Application) mainLoop() {
 			if err := app.Pipeline.Render(); err != nil {
 				log.Printf("goui: Render error: %v", err)
 			}
-			if pd := time.Since(t0); pd > 1*time.Millisecond {
-				totalPaint += pd
-			}
+
 			rendered = app.Pipeline.DidRender()
 		}
 
@@ -494,9 +473,7 @@ func (app *Application) mainLoop() {
 		if rendered {
 			t0 := time.Now()
 			app.Window.SwapBuffers()
-			if fd := time.Since(t0); fd > 500*time.Microsecond {
-				totalFlush += fd
-			}
+
 
 			if firstFrame {
 				firstFrame = false
@@ -529,24 +506,7 @@ func (app *Application) mainLoop() {
 			}
 		}
 
-		// ── 帧率日志：每 5 秒输出一次 ──
-		frameCount++
-		if time.Since(lastFrameLog) >= frameLogInterval {
-			elapsed := time.Since(lastFrameLog)
-			fps := float64(frameCount) / elapsed.Seconds()
-			avgBuild := totalBuild / time.Duration(frameCount)
-			avgLayout := totalLayout / time.Duration(frameCount)
-			avgPaint := totalPaint / time.Duration(frameCount)
-			avgFlush := totalFlush / time.Duration(frameCount)
-			log.Printf("[perf] %.1f fps | frames=%d | build=%v/layout=%v/paint=%v/flush=%v | lastBuild=%v",
-				fps, frameCount, avgBuild, avgLayout, avgPaint, avgFlush, lastBuildTime)
-			frameCount = 0
-			lastFrameLog = time.Now()
-			totalBuild = 0
-			totalLayout = 0
-			totalPaint = 0
-			totalFlush = 0
-		}
+
 	}
 	log.Println("goui: Application stopped")
 }
@@ -961,3 +921,7 @@ type PlatformError struct {
 func (e *PlatformError) Error() string {
 	return e.Message
 }
+
+
+
+
