@@ -169,6 +169,15 @@ func (c *SkiaCanvas) warmupGPU() {
 	}
 	c.canvas.DrawRoundRect(goskia.RectXYWH(0, 0, 8, 8), 2, 2, p2)
 	p2.Release()
+	// 3. 文本渲染预热：首帧首次 DrawText 时 Skia GPU 需编译 glyph 渲染 shader，
+	// 不做预热的话首条 DrawText 可能独自承担数百毫秒 shader 编译。
+	wtf := goskia.DefaultTypeface()
+	wf := goskia.NewFont(wtf, 14)
+	wp := goskia.NewPaint()
+	wp.SetColor(goskia.ColorBlack)
+	c.canvas.DrawText("W", 0, 10, wf, wp)
+	wp.Release()
+	wf.Release()
 	c.canvas.Clear(goskia.ColorWhite)
 	c.canvas.Restore()
 	c.gpuCtx.FlushAndSubmit(false)
