@@ -589,7 +589,7 @@ func (w *Win32Window) ProcessEvents() bool {
 		}
 		msgCount++
 		if msg.Message == WM_QUIT {
-			quitExitCode := int(msg.WParam)
+			_ = int(msg.WParam)
 			return false
 		}
 		procTranslateMessage.Call(uintptr(unsafe.Pointer(&msg)))

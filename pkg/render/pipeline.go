@@ -1,11 +1,29 @@
 package render
 
 import (
+	"log"
+	"time"
+
 	"github.com/hoonfeng/goui/internal/layout"
 	"github.com/hoonfeng/goui/pkg/canvas"
 	"github.com/hoonfeng/goui/pkg/paint"
 	"github.com/hoonfeng/goui/pkg/types"
 	"github.com/hoonfeng/goui/pkg/widget"
+)
+
+// ── 帧率诊断统计 ──
+var (
+	DiagFrameCount   int64
+	DiagTotalBuild   time.Duration
+	DiagTotalLayout  time.Duration
+	DiagTotalPaint   time.Duration
+	DiagTotalFlush   time.Duration
+	DiagTotalElapsed time.Duration
+	DiagLastLog      time.Time
+	DiagLastBuild    time.Duration
+	DiagLastLayout   time.Duration
+	DiagLastPaint    time.Duration
+	DiagLastFlush    time.Duration
 )
 
 // Pipeline 是渲染管线，管理从控件树到最终显示的全过程。
@@ -120,28 +138,80 @@ func (p *Pipeline) Render() error {
 		return nil
 	}
 
+	// ── 帧率诊断计时 ──
+	frameStart := time.Now()
+	var buildDur, layoutDur, paintDur, flushDur time.Duration
+
 	// 需要先布局再绘制
 	if p.needsLayout {
+		t0 := time.Now()
 		p.PerformLayout()
+		layoutDur = time.Since(t0)
+		if !DiagLastLog.IsZero() {
+			DiagTotalLayout += layoutDur
+		}
 	}
 
-	// 清空画布为白色背景
+	// 清理画布
 	p.clearCanvas()
 
 	// 从根 Element 开始绘制（带视口裁剪）
-	// Save/ClipRect 让 Skia GPU 只处理窗口可见区域的像素，off-screen 元素（如
-	// 滚动视图外的聊天消息/文件树节点）由 Skia 自动裁切，大幅减少像素着色器调用。
-	// RESTORE 确保裁剪不影响后续帧或 HitTest 的坐标变换栈。
 	if p.rootElement != nil {
+		t0 := time.Now()
 		p.finalCanvas.Save()
 		p.finalCanvas.ClipRect(0, 0, float64(p.width), float64(p.height))
 		p.rootElement.Paint(p.finalCanvas, types.Point{})
 		p.finalCanvas.Restore()
+		paintDur = time.Since(t0)
+		if !DiagLastLog.IsZero() {
+			DiagTotalPaint += paintDur
+		}
 	}
 
 	// 刷新画布到屏幕
-	if err := p.finalCanvas.Flush(); err != nil {
-		return err
+	{
+		t0 := time.Now()
+		if err := p.finalCanvas.Flush(); err != nil {
+			return err
+		}
+		flushDur = time.Since(t0)
+		if !DiagLastLog.IsZero() {
+			DiagTotalFlush += flushDur
+		}
+	}
+
+	frameElapsed := time.Since(frameStart)
+	if !DiagLastLog.IsZero() {
+		DiagFrameCount++
+		DiagTotalElapsed += frameElapsed
+		DiagLastBuild = buildDur
+		DiagLastLayout = layoutDur
+		DiagLastPaint = paintDur
+		DiagLastFlush = flushDur
+
+		// 每 5 秒输出一次帧率诊断
+		if time.Since(DiagLastLog) >= 5*time.Second {
+			fps := float64(DiagFrameCount) / time.Since(DiagLastLog).Seconds()
+			avgPaint := DiagTotalPaint / time.Duration(DiagFrameCount)
+			avgFlush := DiagTotalFlush / time.Duration(DiagFrameCount)
+			avgLayout := DiagTotalLayout / time.Duration(DiagFrameCount)
+			log.Printf("[perf] %.1f fps | frames=%d | build=%v/layout=%v/paint=%v/flush=%v | lastBuild=%v",
+				fps, DiagFrameCount,
+				DiagTotalBuild/time.Duration(DiagFrameCount),
+				avgLayout, avgPaint, avgFlush,
+				DiagLastBuild)
+
+			// 重置统计
+			DiagFrameCount = 0
+			DiagTotalBuild = 0
+			DiagTotalLayout = 0
+			DiagTotalPaint = 0
+			DiagTotalFlush = 0
+			DiagTotalElapsed = 0
+			DiagLastLog = time.Now()
+		}
+	} else {
+		DiagLastLog = time.Now()
 	}
 
 	p.needsRepaint = false
