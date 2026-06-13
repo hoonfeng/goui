@@ -3,9 +3,9 @@
 package canvas
 
 import (
-	"bytes"
 	"fmt"
 	"image"
+	"golang.org/x/image/bmp"
 	"image/draw"
 	"image/png"
 	"math"
@@ -123,6 +123,9 @@ func NewSkiaCanvasGPU(width, height int, fboID uint32) (*SkiaCanvas, error) {
 		iface.Release()
 		return nil, err
 	}
+	// GPU warm-up：预编译常见 shader（圆角矩形、DropShadow），
+	// 避免首帧因首次 GPU shader 编译导致数十秒卡顿。
+	c.warmupGPU()
 	return c, nil
 }
 
@@ -138,6 +141,37 @@ func (c *SkiaCanvas) makeGPUSurface() error {
 	c.canvas = surf.Canvas()
 	c.canvas.Clear(goskia.ColorWhite)
 	return nil
+}
+
+// warmupGPU 在首帧之前预编译常见 Skia 绘制操作的 GPU shader，
+// 避免 GPU 模式下首次 DrawRoundRect / DropShadow 时因 shader
+// 编译导致的数十秒卡顿。
+func (c *SkiaCanvas) warmupGPU() {
+	if !c.gpu || c.canvas == nil {
+		return
+	}
+	c.canvas.Save()
+	c.canvas.ClipRect(goskia.RectXYWH(0, 0, 8, 8), goskia.ClipOpIntersect, true)
+	// 1. 圆角矩形（most common, trigger GPU rounded-rect shader）
+	p1 := goskia.NewPaint()
+	p1.SetColor(goskia.ColorBlack)
+	p1.SetAntialias(true)
+	c.canvas.DrawRoundRect(goskia.RectXYWH(0, 0, 8, 8), 2, 2, p1)
+	p1.Release()
+	// 2. 带阴影的圆角矩形（trigger DropShadowImageFilter shader）
+	p2 := goskia.NewPaint()
+	p2.SetColor(goskia.ColorBlack)
+	p2.SetAntialias(true)
+	ds := goskia.NewDropShadowImageFilter(0, 1, 2, 2, goskia.RGBA(0, 0, 0, 40), nil)
+	if ds != nil {
+		p2.SetImageFilter(ds)
+		ds.Release()
+	}
+	c.canvas.DrawRoundRect(goskia.RectXYWH(0, 0, 8, 8), 2, 2, p2)
+	p2.Release()
+	c.canvas.Clear(goskia.ColorWhite)
+	c.canvas.Restore()
+	c.gpuCtx.FlushAndSubmit(false)
 }
 
 // Release 释放 Skia 资源。
@@ -306,6 +340,26 @@ func toSkiaPaint(p paint.Paint) *goskia.Paint {
 		); shader != nil {
 			sp.SetShader(shader)
 			shader.Release()
+		}
+	}
+
+	// 阴影：使用 Skia 原生 DropShadowImageFilter（GPU 单次绘制，避免多循环 DrawRoundedRect）
+	// 偏移 = Shadow.Offset，sigma ≈ Shadow.Blur/2（Skia Gaussian 标准差 ≈ 模糊半径/2）
+	if p.Shadow != nil {
+		sigma := float32(p.Shadow.Blur / 2)
+		if sigma < 0.1 {
+			sigma = 0.1
+		}
+		col := p.Shadow.Color
+		dropShadow := goskia.NewDropShadowImageFilter(
+			float32(p.Shadow.Offset.X), float32(p.Shadow.Offset.Y),
+			sigma, sigma,
+			goskia.RGBA(col.R, col.G, col.B, col.A),
+			nil,
+		)
+		if dropShadow != nil {
+			sp.SetImageFilter(dropShadow)
+			dropShadow.Release() // Paint 持有内部 ref
 		}
 	}
 
@@ -911,29 +965,41 @@ func (c *SkiaCanvas) Flush() error {
 	}
 	defer snapshot.Release()
 
-	// 编码为 PNG 字节
-	data, err := snapshot.Encode(goskia.EncodedFormatPNG, 100)
+	// 直接读取 RGBA 像素，彻底避免 PNG 编解码：
+	//   - 消除 libpng iCCP 警告
+	//   - 消除 PNG 压缩/解压的 CPU 开销
+	//   - 编码+解码往返 → 一次 memcpy
+	pixels, err := snapshot.ReadPixels()
 	if err != nil {
 		return err
 	}
 
-	// 解码回 image.RGBA
-	decoded, err := png.Decode(bytes.NewReader(data))
-	if err != nil {
-		return err
+	w := snapshot.Width()
+	h := snapshot.Height()
+	if c.img == nil || c.img.Bounds().Dx() != w || c.img.Bounds().Dy() != h {
+		c.img = image.NewRGBA(image.Rect(0, 0, w, h))
 	}
-
-	bounds := decoded.Bounds()
-	if c.img == nil || c.img.Bounds().Size() != bounds.Size() {
-		c.img = image.NewRGBA(bounds)
-	}
-	draw.Draw(c.img, bounds, decoded, bounds.Min, draw.Src)
+	copy(c.img.Pix, pixels)
 
 	c.dirty = false
 	return nil
 }
 
-// SaveToPNG 将当前帧缓冲保存为 PNG 文件（用于调试和视觉验证）。
+// SaveToBMP 将当前帧缓冲保存为 BMP 文件（用于调试和视觉验证）。
+func (c *SkiaCanvas) SaveToBMP(filename string) error {
+	if err := c.Flush(); err != nil {
+		return err
+	}
+	f, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return bmp.Encode(f, c.img)
+}
+
+// SaveToPNG 将当前帧缓冲保存为 PNG 文件（向后兼容，内部仍使用 BMP 读取）。
+// 新代码请使用 SaveToBMP。
 func (c *SkiaCanvas) SaveToPNG(filename string) error {
 	if err := c.Flush(); err != nil {
 		return err

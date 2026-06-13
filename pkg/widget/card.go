@@ -133,7 +133,8 @@ func (e *CardElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		radius = 0
 	}
 
-	// 绘制阴影（通过多次叠加半透明矩形模拟模糊阴影）
+	// 绘制阴影 + 卡片背景（使用 Skia 原生 DropShadowImageFilter 一次性完成，
+	// 避免 GPU 模式下多循环 DrawRoundedRect 触发多次 shader 编译带来的几十秒卡顿）
 	if c.Elevation > 0 {
 		shadowColor := c.ShadowColor
 		if shadowColor == (types.Color{}) {
@@ -148,45 +149,28 @@ func (e *CardElement) Paint(cvs canvas.Canvas, offset types.Point) {
 			shadowBlur = 8
 		}
 
-		// 简化阴影：绘制多个半透明偏移层
-		layers := int(shadowBlur / 2)
-		if layers < 3 {
-			layers = 3
+		// 单次绘制：Paint + Shadow → Skia 自动产出带阴影的卡片
+		cardPaint := paint.DefaultPaint()
+		cardPaint.Color = c.Color
+		cardPaint.Shadow = &paint.Shadow{
+			Offset: shadowOffset,
+			Blur:   shadowBlur,
+			Color:  shadowColor,
 		}
-		for i := layers; i >= 0; i-- {
-			alpha := uint8(8 + i*3)
-			if alpha > 40 {
-				alpha = 40
-			}
-			shadowPaint := paint.DefaultPaint()
-			shadowPaint.Color = types.ColorFromRGBA(0, 0, 0, alpha)
-			offsetY := shadowOffset.Y * float64(layers-i) / float64(layers)
-			offsetX := shadowOffset.X * float64(layers-i) / float64(layers)
-			shrink := float64(layers-i) * 0.5
-
-			if radius > 0 {
-				cvs.DrawRoundedRect(
-					pos.X+offsetX+shrink, pos.Y+offsetY+shrink,
-					e.size.Width-shrink*2, e.size.Height-shrink*2,
-					radius, shadowPaint,
-				)
-			} else {
-				cvs.DrawRect(
-					pos.X+offsetX+shrink, pos.Y+offsetY+shrink,
-					e.size.Width-shrink*2, e.size.Height-shrink*2,
-					shadowPaint,
-				)
-			}
+		if radius > 0 {
+			cvs.DrawRoundedRect(pos.X, pos.Y, e.size.Width, e.size.Height, radius, cardPaint)
+		} else {
+			cvs.DrawRect(pos.X, pos.Y, e.size.Width, e.size.Height, cardPaint)
 		}
-	}
-
-	// 绘制卡片背景
-	bgPaint := paint.DefaultPaint()
-	bgPaint.Color = c.Color
-	if radius > 0 {
-		cvs.DrawRoundedRect(pos.X, pos.Y, e.size.Width, e.size.Height, radius, bgPaint)
 	} else {
-		cvs.DrawRect(pos.X, pos.Y, e.size.Width, e.size.Height, bgPaint)
+		// 无阴影：仅绘制卡片背景
+		bgPaint := paint.DefaultPaint()
+		bgPaint.Color = c.Color
+		if radius > 0 {
+			cvs.DrawRoundedRect(pos.X, pos.Y, e.size.Width, e.size.Height, radius, bgPaint)
+		} else {
+			cvs.DrawRect(pos.X, pos.Y, e.size.Width, e.size.Height, bgPaint)
+		}
 	}
 
 	// 绘制边框

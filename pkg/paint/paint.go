@@ -21,6 +21,7 @@ type Paint struct {
 	Opacity      float64 // 透明度 0.0-1.0
 	LinearGradient *Gradient
 	RadialGradient *Gradient
+	Shadow       *Shadow // 阴影效果（使用 Skia ImageFilter 实现，GPU 优化单次绘制）
 }
 
 // DefaultPaint 返回默认的填充画笔
