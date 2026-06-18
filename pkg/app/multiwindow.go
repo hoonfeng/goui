@@ -1,7 +1,6 @@
 package app
 
 import (
-	"log"
 
 	"github.com/hoonfeng/goui/pkg/canvas"
 	"github.com/hoonfeng/goui/pkg/event"
@@ -37,26 +36,13 @@ func (app *Application) OpenWindow(config window.WindowConfig, root widget.Widge
 		return nil, err
 	}
 	sw := &SubWindow{Window: w, firstFrame: true}
-	// 副窗口 GPU 模式：在其自身 GL 上下文下用 GPU SkiaCanvas，Skia 直接渲染到该窗口 framebuffer
-	if err := w.MakeCurrent(); err == nil {
-		if gpu, e := canvas.NewSkiaCanvasGPU(config.Width, config.Height, 0); e == nil {
-			sw.skia = gpu
-		} else {
-			log.Printf("goui: 附属窗口 GPU SkiaCanvas 失败(%v)，降级软件 raster", e)
-			sw.skia = canvas.NewSkiaCanvas(config.Width, config.Height)
-		}
-	} else {
-		sw.skia = canvas.NewSkiaCanvas(config.Width, config.Height)
-	}
+	// 副窗口 Raster 模式：CPU SkiaCanvas，GDI 输出，不依赖 OpenGL
+	sw.skia = canvas.NewSkiaCanvas(config.Width, config.Height)
 	sw.pipeline = render.NewPipeline(config.Width, config.Height, sw.skia)
 	sw.pipeline.SetRootElement(widget.CreateElementFor(root))
 	sw.setupEvents()
 
 	app.subWindows = append(app.subWindows, sw)
-	// 切回主窗口上下文，避免影响主循环后续渲染
-	if app.Window != nil {
-		app.Window.MakeCurrent()
-	}
 	return sw, nil
 }
 
@@ -201,10 +187,6 @@ func (sw *SubWindow) renderAndPresent() {
 	if sw.closed {
 		return
 	}
-	// GPU 模式：渲染前须切到本副窗口的 GL 上下文（Skia 直接画到它的 framebuffer）
-	if err := sw.Window.MakeCurrent(); err != nil {
-		return
-	}
 	sw.pipeline.EnsureLayout()
 	if sw.firstFrame {
 		sw.pipeline.MarkNeedsRepaint()
@@ -216,31 +198,11 @@ func (sw *SubWindow) renderAndPresent() {
 	if !sw.pipeline.DidRender() {
 		return
 	}
-	// GPU 已直接渲染到 framebuffer → 交换缓冲显示
-	sw.Window.SwapBuffers()
+	// Raster 模式：用 GDI 直接输出像素
+	sw.Window.PresentImage(sw.skia.Image())
 }
 
-// releaseGPUResources 在各窗口 GL 上下文销毁前，显式释放所有窗口的 Skia GPU 资源
-// （surface / DirectContext / GLInterface）。否则 goskia 的 finalizer 会在进程退出时
-// 访问已销毁的 GL 上下文而崩溃（main 已正常返回但进程 exit 1）。
-func (app *Application) releaseGPUResources() {
-	// 先释放副窗口（各自的 GL 上下文）
-	for _, sw := range app.subWindows {
-		if sw.Window != nil {
-			_ = sw.Window.MakeCurrent()
-		}
-		if sw.skia != nil {
-			sw.skia.Release()
-		}
-	}
-	// 再切回主窗口上下文释放主画布
-	if app.Window != nil {
-		_ = app.Window.MakeCurrent()
-	}
-	if c, ok := app.Canvas.(*canvas.SkiaCanvas); ok {
-		c.Release()
-	}
-}
+// 
 
 // processSubWindows 在主循环中处理所有附属窗口的事件与渲染，并回收已关闭者。
 func (app *Application) processSubWindows() {

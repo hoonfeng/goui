@@ -88,7 +88,7 @@ type Input struct {
 	ResetToken       int    // 受控清空/重置：改变此值(+SetState)会把运行时文本重置为 Text（发送后清空等）
 
 	// SubmitOnEnter 多行模式下 Enter 是否触发提交回调（发送），而非插入换行。
-	// true → Enter 触发 OnSubmit、Ctrl+Enter 插入换行；false → Enter 插入换行（默认）。
+	// true → Enter 触发 OnSubmit、Shift+Enter 插入换行；false → Enter 插入换行（默认）。
 	SubmitOnEnter bool
 
 	ContextMenuItems    []MenuItem // 自定义右键菜单项（nil=用默认剪切/复制/粘贴/全选）
@@ -1052,21 +1052,52 @@ func (e *InputElement) selectionRange() (int, int) {
 func (e *InputElement) clearSelection() { e.selAnchor = -1 }
 
 // selectedText 返回选区内的文本（无选区时为空串）。
+// 防御：对 lo/hi 限幅到 rune 长度内，防止 text 缩短后 selAnchor/cursorPos 越界导致切片 panic。
 func (e *InputElement) selectedText() string {
 	if !e.hasSelection() {
 		return ""
 	}
 	lo, hi := e.selectionRange()
-	return string([]rune(e.text)[lo:hi])
+	runes := []rune(e.text)
+	n := len(runes)
+	if lo < 0 {
+		lo = 0
+	}
+	if hi > n {
+		hi = n
+	}
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	if lo >= n || hi <= lo {
+		return ""
+	}
+	return string(runes[lo:hi])
 }
 
 // deleteSelection 删除选区文本，光标置于选区起点，返回是否删除了内容。
+// 防御：对 lo/hi 限幅到 rune 长度内，防止 text 缩短后 selAnchor/cursorPos 越界导致切片 panic。
 func (e *InputElement) deleteSelection() bool {
 	if !e.hasSelection() {
 		return false
 	}
 	lo, hi := e.selectionRange()
 	runes := []rune(e.text)
+	n := len(runes)
+	if lo > n {
+		lo = n
+	}
+	if hi > n {
+		hi = n
+	}
+	if lo > hi {
+		lo, hi = hi, lo // 再次归一化
+	}
+	if lo >= n {
+		// 选区完全落在文本之外，无事可删
+		e.clearSelection()
+		return false
+	}
 	e.text = string(runes[:lo]) + string(runes[hi:])
 	e.cursorPos = lo
 	e.clearSelection()
@@ -1620,8 +1651,8 @@ func (e *InputElement) HandleEvent(ev event.Event) bool {
 			}
 		case "Enter":
 			if in.Multiline && in.SubmitOnEnter {
-				if keyEv.Mods&event.ModCtrl != 0 {
-					e.insertText("\n") // Ctrl+Enter → 插入换行
+				if keyEv.Mods&event.ModShift != 0 {
+					e.insertText("\n") // Shift+Enter → 插入换行
 				} else if in.OnSubmit != nil {
 					in.OnSubmit(e.text) // Enter → 提交发送
 					// 不清空文本（由 ResetToken 机制在 chat.go 中统一清空）
@@ -1749,6 +1780,7 @@ func (e *InputElement) Update(newWidget Widget) {
 		if newInput.ResetToken != e.lastReset {
 			e.text = newInput.Text
 			e.cursorPos = len([]rune(e.text))
+			e.clearSelection() // 重置选区锚点，避免旧 selAnchor 越界导致 deleteSelection 切片 panic
 			e.scrollOffset, e.scrollX, e.scrollY = 0, 0, 0
 			e.lastReset = newInput.ResetToken
 		}

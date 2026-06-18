@@ -4,11 +4,12 @@ package widget
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
+	"github.com/hoonfeng/goui/internal/layout"
 	"github.com/hoonfeng/goui/pkg/canvas"
 	"github.com/hoonfeng/goui/pkg/event"
-	"github.com/hoonfeng/goui/internal/layout"
 	"github.com/hoonfeng/goui/pkg/types"
 )
 
@@ -77,6 +78,7 @@ func CreateElementFor(w Widget) Element {
 	if creator, ok := w.(interface{ CreateState() State }); ok {
 		el := &StatefulElement{
 			BaseElement: BaseElement{widget: w},
+			buildDirty: true,
 		}
 		// 立即创建状态
 		state := creator.CreateState()
@@ -108,12 +110,18 @@ func CreateElementFor(w Widget) Element {
 		// 仅当 widget 类型不一致时才修复（避免不必要的操作）
 		if se.widget != w {
 			se.widget = w
+			se.widgetType = reflect.TypeOf(w)
 		}
 	}
 	if fe, ok := el.(*FlexElement); ok {
 		if fe.widget != w {
 			fe.widget = w
+			fe.widgetType = reflect.TypeOf(w)
 		}
+	}
+	// 为新创建的 Element 设置 widgetType 缓存（若尚未设置）
+	if be, ok := el.(*BaseElement); ok && be.widgetType == nil && be.widget != nil {
+		be.widgetType = reflect.TypeOf(be.widget)
 	}
 	return el
 }
@@ -130,6 +138,10 @@ type BuildContext struct {
 type Element interface {
 	// Widget 返回关联的 Widget
 	Widget() Widget
+
+	// WidgetType 返回 Widget 的动态类型（反射缓存）。用于 Build 中类型匹配判断，
+	// 替代 reflect.TypeOf(el.Widget()) == reflect.TypeOf(w) 的重复反射开销。
+	WidgetType() reflect.Type
 
 	// Mount 挂载 Element 到树中
 	Mount(parent Element, slotIndex int)

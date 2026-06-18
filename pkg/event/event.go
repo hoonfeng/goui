@@ -35,6 +35,10 @@ const (
 	TypeTouchMove
 	TypeTouchEnd
 	TypeIMEComposition // IME 输入法组合字符串更新
+
+	// ── 窗口激活/失活（Win32 WM_ACTIVATE，用于主循环在后台时跳过 SwapBuffers）──
+	TypeWindowActivate   // 窗口获得焦点/激活
+	TypeWindowDeactivate // 窗口失去焦点/失活
 )
 
 // MouseButton 鼠标按键

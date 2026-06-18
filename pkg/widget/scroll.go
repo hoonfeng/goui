@@ -122,7 +122,7 @@ func (e *ScrollViewElement) Build() []Element {
 		e.children = nil
 		return nil
 	}
-	if e.child != nil && reflect.TypeOf(e.child.Widget()) == reflect.TypeOf(c) {
+	if e.child != nil && e.child.WidgetType() == reflect.TypeOf(c) {
 		e.child.Update(c)
 	} else {
 		if e.child != nil {
@@ -368,6 +368,9 @@ func (e *ScrollViewElement) smoothScrollTo(targetX, targetY float64) {
 				e.child.SetPosition(types.Point{X: -e.scrollOffset.X, Y: -e.scrollOffset.Y})
 			}
 			e.fireScroll()
+			if OnNeedsRepaint != nil {
+				OnNeedsRepaint()
+			}
 		}
 		e.scrollAnimY.OnDone = func() {
 			// 最终确保精确到位（浮点累计误差补偿）
@@ -397,6 +400,9 @@ func (e *ScrollViewElement) smoothScrollTo(targetX, targetY float64) {
 				e.child.SetPosition(types.Point{X: -e.scrollOffset.X, Y: -e.scrollOffset.Y})
 			}
 			e.fireScroll()
+			if OnNeedsRepaint != nil {
+				OnNeedsRepaint()
+			}
 		}
 		e.scrollAnimX.OnDone = func() {
 			e.scrollOffset.X = e.scrollTargetX
@@ -440,6 +446,9 @@ func (e *ScrollViewElement) restartAnimY() {
 			e.child.SetPosition(types.Point{X: -e.scrollOffset.X, Y: -e.scrollOffset.Y})
 		}
 		e.fireScroll()
+		if OnNeedsRepaint != nil {
+			OnNeedsRepaint()
+		}
 	}
 	e.scrollAnimY.OnDone = func() {
 		e.scrollOffset.Y = e.scrollTargetY
@@ -466,6 +475,9 @@ func (e *ScrollViewElement) restartAnimX() {
 			e.child.SetPosition(types.Point{X: -e.scrollOffset.X, Y: -e.scrollOffset.Y})
 		}
 		e.fireScroll()
+		if OnNeedsRepaint != nil {
+			OnNeedsRepaint()
+		}
 	}
 	e.scrollAnimX.OnDone = func() {
 		e.scrollOffset.X = e.scrollTargetX

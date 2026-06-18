@@ -89,28 +89,27 @@ func (e *FlexElement) Build() []Element {
 	}
 
 	// 数量匹配时，逐个检查 Widget 类型，类型匹配则复用
-	anyReused := false
 	for i, child := range children {
-		if i < len(oldChildren) && reflect.TypeOf(oldChildren[i].Widget()) == reflect.TypeOf(child) {
+		if i < len(oldChildren) && oldChildren[i].WidgetType() == reflect.TypeOf(child) {
 			// 类型匹配：复用并更新
 			oldChildren[i].Update(child)
 		} else {
-			// 类型不匹配：重建整个数组
-			for _, oc := range oldChildren {
-				oc.Unmount()
+			// 类型不匹配：逐项替换而非全量重建——只 Unmount 当前旧 Element 并创建新的，
+			// 其他位置的 Element（含深层 InputElement 等有状态组件）保留不受影响，
+			// 避免因某个占位 Div↔Container 交替导致整棵树状态丢失、滚动复位、输入框失焦。
+			if i < len(oldChildren) {
+				oldChildren[i].Unmount()
 			}
-			e.children = make([]Element, 0, len(children))
-			for _, c := range children {
-				el := CreateElementFor(c)
-				el.Mount(e, len(e.children))
-				e.children = append(e.children, el)
+			newEl := CreateElementFor(child)
+			newEl.Mount(e, i)
+			if i < len(oldChildren) {
+				oldChildren[i] = newEl
+			} else {
+				oldChildren = append(oldChildren, newEl)
 			}
-			return e.children
 		}
 	}
-	if anyReused {
-		e.children = oldChildren
-	}
+	e.children = oldChildren
 	return e.children
 }
 
@@ -574,10 +573,22 @@ type ExpandedElement struct {
 
 func (e *ExpandedElement) Build() []Element {
 	if e.expanded.Child != nil {
-		e.child = CreateElementFor(e.expanded.Child)
-		e.child.Mount(e, 0)
+		// 复用已有子 Element（类型匹配时），避免每帧重建导致丢失状态（如 Splitter 拖动、VirtualList 缓存等）。
+		if e.child != nil && reflect.TypeOf(e.child.Widget()) == reflect.TypeOf(e.expanded.Child) {
+			e.child.Update(e.expanded.Child)
+		} else {
+			if e.child != nil {
+				e.child.Unmount()
+			}
+			e.child = CreateElementFor(e.expanded.Child)
+			e.child.Mount(e, 0)
+		}
 		e.children = []Element{e.child}
 		return e.children
+	}
+	if e.child != nil {
+		e.child.Unmount()
+		e.child = nil
 	}
 	e.children = nil
 	return nil

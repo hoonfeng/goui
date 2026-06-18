@@ -53,7 +53,7 @@ func (e *windowDragElement) Build() []Element {
 		e.children = nil
 		return nil
 	}
-	if e.child != nil && reflect.TypeOf(e.child.Widget()) == reflect.TypeOf(e.w.child) {
+	if e.child != nil && e.child.WidgetType() == reflect.TypeOf(e.w.child) {
 		e.child.Update(e.w.child)
 	} else {
 		if e.child != nil {

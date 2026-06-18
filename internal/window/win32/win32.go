@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"image"
 	"unsafe"
 
 	"github.com/hoonfeng/goui/pkg/event"
@@ -63,6 +64,7 @@ var (
 	procSetPixelFormat    = gdi32.NewProc("SetPixelFormat")
 	procChoosePixelFormat = gdi32.NewProc("ChoosePixelFormat")
 	procSwapBuffers       = gdi32.NewProc("SwapBuffers")
+	procStretchDIBits     = gdi32.NewProc("StretchDIBits")
 	procValidateRect      = user32.NewProc("ValidateRect")
 	procScreenToClient    = user32.NewProc("ScreenToClient")
 	procClientToScreen    = user32.NewProc("ClientToScreen")
@@ -70,6 +72,7 @@ var (
 	procWglCreateContext  = opengl32.NewProc("wglCreateContext")
 	procWglDeleteContext  = opengl32.NewProc("wglDeleteContext")
 	procWglMakeCurrent    = opengl32.NewProc("wglMakeCurrent")
+	procWglGetProcAddress = opengl32.NewProc("wglGetProcAddress")
 	// IMM32 输入法 API
 	procImmGetContext            = imm32.NewProc("ImmGetContext")
 	procImmReleaseContext        = imm32.NewProc("ImmReleaseContext")
@@ -138,6 +141,7 @@ const (
 	WM_MOVE                 = 0x0003
 	WM_QUIT                 = 0x0012
 	WM_SIZE                 = 0x0005
+	WM_ACTIVATE             = 0x0006
 	WM_PAINT                = 0x000F
 	WM_CLOSE                = 0x0010
 	WM_ERASEBKGND           = 0x0014
@@ -320,6 +324,13 @@ var windowMap sync.Map
 // 附属窗口（多窗口）关闭不应退出整个进程。
 var primaryHwnd uintptr
 
+// WA_ACTIVE / WA_INACTIVE / WA_CLICKACTIVE — WM_ACTIVATE 的 wParam 低字值。
+const (
+	WA_INACTIVE    = 0
+	WA_ACTIVE      = 1
+	WA_CLICKACTIVE = 2
+)
+
 // Win32Window 实现 window.Window 接口
 type Win32Window struct {
 	hwnd        uintptr
@@ -337,6 +348,7 @@ type Win32Window struct {
 	vSync       bool
 	pixelFormat int
 	mu          sync.Mutex
+	isActive    bool // 窗口是否处于激活（前台）状态
 }
 
 // NewWindow 创建新的 Win32 窗口
@@ -487,6 +499,10 @@ func (w *Win32Window) createGLContext() error {
 	}
 
 	w.glContext = glCtx
+
+	// 启用 VSync（垂直同步）：使 SwapBuffers 等待垂直消隐，消除画面闪烁/撕裂
+	w.enableVSync()
+
 	return nil
 }
 
@@ -515,6 +531,20 @@ func (w *Win32Window) Hide()                              { procShowWindow.Call(
 func (w *Win32Window) EventDispatcher() *event.Dispatcher { return w.dispatcher }
 func (w *Win32Window) NativeHandle() uintptr              { return w.hwnd }
 func (w *Win32Window) IsClosed() bool                     { return w.closed }
+func (w *Win32Window) enableVSync() {
+	// 通过 wglGetProcAddress 获取 wglSwapIntervalEXT 函数指针
+	// WGL_EXT_swap_control 是广泛支持的 OpenGL 扩展
+	procName, _ := syscall.BytePtrFromString("wglSwapIntervalEXT")
+	ptr, _, _ := procWglGetProcAddress.Call(uintptr(unsafe.Pointer(procName)))
+	if ptr == 0 {
+		// 不支持该扩展，静默忽略
+		return
+	}
+	// 调用 wglSwapIntervalEXT(1) 启用垂直同步
+	// 参数 1=启用, 0=禁用
+	syscall.Syscall(ptr, 1, 1, 0, 0)
+}
+
 func (w *Win32Window) SetVSync(enabled bool)              { w.vSync = enabled }
 
 func (w *Win32Window) Close() {
@@ -540,10 +570,70 @@ func (w *Win32Window) Close() {
 
 func (w *Win32Window) SwapBuffers() {
 	if w.glContext == 0 {
-		// 无 OpenGL 上下文，跳过交换
-		return // 无 OpenGL 上下文，不执行交换
+		return
 	}
 	procSwapBuffers.Call(w.hdc)
+}
+
+func (w *Win32Window) PresentImage(img *image.RGBA) {
+	if img == nil || w.hdc == 0 {
+		return
+	}
+	bounds := img.Bounds()
+	bmpW := bounds.Dx()
+	bmpH := bounds.Dy()
+	if bmpW <= 0 || bmpH <= 0 {
+		return
+	}
+	// 使用 BI_BITFIELDS 显式指定 RGBA 像素布局（而非 BI_RGB 的默认 BGRA）。
+	// Go 的 image.RGBA 和 goskia ReadPixels 都使用 RGBA 字节序（R,G,B,A in memory），
+	// 但 BI_RGB 32bpp 期望 BGRA（B,G,R,A），若不校正会导致 R/B 通道交换、主题颜色异常。
+	// BITMAPINFOHEADER (40 bytes) + 3 DWORD 掩码 (12 bytes) = 52 bytes。
+	header := make([]byte, 52)
+	header[0] = 40             // biSize = 40 (BITMAPINFOHEADER 大小)
+	header[4] = byte(bmpW)
+	header[5] = byte(bmpW >> 8)
+	header[6] = byte(bmpW >> 16)
+	header[7] = byte(bmpW >> 24)
+	negH := -bmpH
+	header[8] = byte(negH)
+	header[9] = byte(negH >> 8)
+	header[10] = byte(negH >> 16)
+	header[11] = byte(negH >> 24)
+	header[12] = 1             // biPlanes = 1
+	header[14] = 32            // biBitCount = 32
+	header[16] = 3             // biCompression = BI_BITFIELDS (3)
+	size := bmpW * bmpH * 4
+	header[20] = byte(size)
+	header[21] = byte(size >> 8)
+	header[22] = byte(size >> 16)
+	header[23] = byte(size >> 24)
+	// 颜色掩码（紧接在 40 字节 BITMAPINFOHEADER 之后）
+	// image.RGBA pixel [R,G,B,A] 作为 uint32 LE 的值 = A<<24|B<<16|G<<8|R
+	// Red   mask 0x000000FF → 提取 byte 0 (R)
+	header[40] = 0xFF
+	header[41] = 0
+	header[42] = 0
+	header[43] = 0
+	// Green mask 0x0000FF00 → 提取 byte 1 (G)
+	header[44] = 0
+	header[45] = 0xFF
+	header[46] = 0
+	header[47] = 0
+	// Blue  mask 0x00FF0000 → 提取 byte 2 (B)
+	header[48] = 0
+	header[49] = 0
+	header[50] = 0xFF
+	header[51] = 0
+	procStretchDIBits.Call(
+		w.hdc,
+		0, 0, uintptr(bmpW), uintptr(bmpH),
+		0, 0, uintptr(bmpW), uintptr(bmpH),
+		uintptr(unsafe.Pointer(&img.Pix[0])),
+		uintptr(unsafe.Pointer(&header[0])),
+		0,
+		0x00CC0020,
+	)
 }
 
 // ensureGLContext 延迟创建 OpenGL 上下文（首次使用时创建）
@@ -757,6 +847,20 @@ func windowProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 			procPostQuitMessage.Call(0)
 		}
 		return 0
+
+	case WM_ACTIVATE:
+		// 窗口激活/失活：wParam 低字 = WA_ACTIVE / WA_INACTIVE / WA_CLICKACTIVE。
+		// 用于通知应用层在窗口后台时跳过 SwapBuffers（防止 GPU 驱动阻塞）。
+		active := (wParam & 0xFFFF) != WA_INACTIVE
+		if active != win.isActive {
+			win.isActive = active
+			if active {
+				win.dispatcher.Dispatch(event.NewBaseEvent(event.TypeWindowActivate))
+			} else {
+				win.dispatcher.Dispatch(event.NewBaseEvent(event.TypeWindowDeactivate))
+			}
+		}
+		return defWindowProc(hwnd, msg, wParam, lParam)
 
 	case WM_SIZE:
 		width := int(lParam & 0xFFFF)

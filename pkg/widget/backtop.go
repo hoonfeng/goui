@@ -49,7 +49,7 @@ const backtopBtnSize = 40.0
 func (e *BacktopElement) Build() []Element {
 	c := e.backtop.scroll
 	// reconcile：复用 ScrollViewElement，保留 scrollOffset（relayout 时页面不回顶）
-	if e.scrollEl != nil && reflect.TypeOf(e.scrollEl.Widget()) == reflect.TypeOf(Widget(c)) {
+	if e.scrollEl != nil && e.scrollEl.WidgetType() == reflect.TypeOf(Widget(c)) {
 		e.scrollEl.Update(c)
 	} else {
 		if e.scrollEl != nil {

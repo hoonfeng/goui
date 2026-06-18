@@ -54,7 +54,7 @@ func (e *PopconfirmElement) Build() []Element {
 		e.children = nil
 		return nil
 	}
-	if e.triggerEl != nil && reflect.TypeOf(e.triggerEl.Widget()) == reflect.TypeOf(c) {
+	if e.triggerEl != nil && e.triggerEl.WidgetType() == reflect.TypeOf(c) {
 		e.triggerEl.Update(c)
 	} else {
 		if e.triggerEl != nil {

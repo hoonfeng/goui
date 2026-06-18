@@ -452,7 +452,7 @@ func (e *OverlayHostElement) Build() []Element {
 	kids := make([]Element, 0, 4)
 	if e.host.Child != nil {
 		// reconcile：复用主内容子树，保留其运行时状态（如 ScrollView 滚动位置）
-		if e.childEl != nil && reflect.TypeOf(e.childEl.Widget()) == reflect.TypeOf(e.host.Child) {
+		if e.childEl != nil && e.childEl.WidgetType() == reflect.TypeOf(e.host.Child) {
 			e.childEl.Update(e.host.Child)
 		} else {
 			if e.childEl != nil {

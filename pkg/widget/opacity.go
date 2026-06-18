@@ -47,7 +47,7 @@ func (e *opacityElement) Build() []Element {
 		e.children = nil
 		return nil
 	}
-	if e.child != nil && reflect.TypeOf(e.child.Widget()) == reflect.TypeOf(e.opacity.Child) {
+	if e.child != nil && e.child.WidgetType() == reflect.TypeOf(e.opacity.Child) {
 		e.child.Update(e.opacity.Child)
 	} else {
 		if e.child != nil {

@@ -233,7 +233,7 @@ func (e *ContainerElement) effBorder() *paint.Border {
 func (e *ContainerElement) Build() []Element {
 	if e.container.Child != nil {
 		// 尝试复用已有子 Element
-		if e.child != nil && reflect.TypeOf(e.child.Widget()) == reflect.TypeOf(e.container.Child) {
+		if e.child != nil && e.child.WidgetType() == reflect.TypeOf(e.container.Child) {
 			e.child.Update(e.container.Child)
 		} else {
 			// 类型不匹配或第一次构建：卸载旧的创建新的
@@ -546,7 +546,8 @@ func (e *TextElement) Update(newWidget Widget) {
 	e.dirty = true
 	if t, ok := newWidget.(*Text); ok {
 		e.text = t
-		e.lines = nil // 失效换行缓存，下次 Layout 按新文本重算
+		// 不在这里清空 e.lines——visibleLines 会自动检测文本追加
+		// 做增量测量，或在全量变化时从 splitLines 重建。
 		e.selStart = 0
 		e.selEnd = 0
 		e.selecting = false
@@ -627,10 +628,41 @@ func (e *TextElement) splitLines(maxWidth float64) []string {
 // visibleLines 在 splitLines 基础上应用 MaxLines：超出则截到 MaxLines 行、末行加省略号。
 // MaxLines<=0 表示不限制。Layout 与 Paint 都用它，保证测高与渲染一致。
 func (e *TextElement) visibleLines(maxWidth float64) []string {
+	// ── 增量更新（Streaming 优化）──
+	// 当文本追加（旧文本是前缀）、旧测量存在、宽度不变时，
+	// 只测量新增后缀的换行，保留现有行缓存避免全量 O(N) Skia 重测。
+	if e.cvText != e.text.Text && e.cvText != "" && e.lines != nil &&
+		strings.HasPrefix(e.text.Text, e.cvText) && len(e.text.Text) > len(e.cvText) {
+		
+		suffix := e.text.Text[len(e.cvText):]
+		// 对后缀做换行测量：从旧最后一行（可能未完）开始，完成后缀全部分段
+		e.lines = e.appendMeasuredLines(e.lines, suffix, maxWidth)
+		e.cvText = e.text.Text
+		e.cvFont = e.text.Font
+		e.cvWidth = canvas.MeasureTextGlobal(e.text.Text, e.text.Font).Width
+		// 清空槽缓存（旧行缓存已无效）
+		e.cvEntries = e.cvEntries[:0]
+		// 将新 lines 存入槽缓存
+		ml := e.text.MaxLines
+		out := e.lines
+		if ml > 0 && len(out) > ml {
+			trim := make([]string, ml)
+			copy(trim, out[:ml])
+			trim[ml-1] = ellipsizeToWidth(trim[ml-1], e.text.Font, maxWidth)
+			out = trim
+		}
+		if len(e.cvEntries) >= 6 {
+			e.cvEntries = e.cvEntries[1:]
+		}
+		e.cvEntries = append(e.cvEntries, tmEntry{maxWidth, e.text.MaxLines, out, e.cvWidth})
+		return out
+	}
+
 	// 文本/字体变了 → 整组槽失效。
 	if e.cvText != e.text.Text || e.cvFont != e.text.Font {
 		e.cvText, e.cvFont = e.text.Text, e.text.Font
 		e.cvEntries = e.cvEntries[:0]
+		e.lines = nil
 	}
 	// 命中某宽度槽 → 直接复用，跳过 splitLines 的 O(N) Skia 测量。
 	for i := range e.cvEntries {
@@ -640,6 +672,7 @@ func (e *TextElement) visibleLines(maxWidth float64) []string {
 		}
 	}
 	lines := e.splitLines(maxWidth)
+	e.lines = lines
 	ml := e.text.MaxLines
 	if ml > 0 && len(lines) > ml {
 		out := make([]string, ml)
@@ -653,6 +686,67 @@ func (e *TextElement) visibleLines(maxWidth float64) []string {
 	}
 	e.cvEntries = append(e.cvEntries, tmEntry{maxWidth, e.text.MaxLines, lines, e.cvWidth})
 	return lines
+}
+
+// appendMeasuredLines 增量测量新增后缀文本的换行，保留现有行缓存。
+// streaming 场景：旧文本 = "Hello World"，新文本 = "Hello World new content"，
+// suffix = " new content"。将旧最后一行 + suffix 合并重测换行。
+// 返回更新后的 lines。
+func (e *TextElement) appendMeasuredLines(lines []string, suffix string, maxWidth float64) []string {
+	if suffix == "" {
+		return lines
+	}
+	// 取旧最后一行与后缀合并（旧最后一行可能因换行截断而不完整）
+	var combined string
+	if len(lines) > 0 {
+		combined = lines[len(lines)-1] + suffix
+		lines = lines[:len(lines)-1]
+	} else {
+		combined = suffix
+	}
+	// 对合并文本做换行测量（复用 splitLines 的段落逻辑）
+	var newSegments []string
+	paragraphs := splitByNewline(combined)
+	for pi, para := range paragraphs {
+		if pi > 0 {
+			newSegments = append(newSegments, "") // 保留换行符
+		}
+		if para == "" {
+			continue
+		}
+		runes := []rune(para)
+		buf := make([]byte, len(para)*utf8.UTFMax)
+		bytePos := make([]int, len(runes)+1)
+		n := 0
+		for j, r := range runes {
+			bytePos[j] = n
+			n += utf8.EncodeRune(buf[n:], r)
+		}
+		bytePos[len(runes)] = n
+		start := 0
+		for start < len(runes) {
+			lastBreak := -1
+			for i := start; i < len(runes); i++ {
+				partialText := unsafe.String(&buf[bytePos[start]], bytePos[i+1]-bytePos[start])
+				metrics := canvas.MeasureTextGlobal(partialText, e.text.Font)
+				if metrics.Width > maxWidth && i > start {
+					if lastBreak > start {
+						newSegments = append(newSegments, string(runes[start:lastBreak]))
+						start = lastBreak
+					} else {
+						newSegments = append(newSegments, string(runes[start:i]))
+						start = i
+					}
+					break
+				}
+				if i == len(runes)-1 {
+					newSegments = append(newSegments, string(runes[start:]))
+					start = len(runes)
+				}
+			}
+		}
+	}
+	return append(lines, newSegments...)
 }
 
 // ellipsizeToWidth 给单行末尾加省略号，必要时削减字符以容纳 … 不超过 maxWidth。
@@ -774,9 +868,10 @@ func (e *TextElement) Paint(cvs canvas.Canvas, offset types.Point) {
 		e.paintSelection(cvs, lines, pos, maxWidth, lineHeight, align)
 	}
 
-	// 逐行绘制：每行在自己的行盒(高 lineHeight)内**按实际墨迹**垂直居中。
+	// 逐行绘制：每行使用字体度量计算基线，确保同一字号的所有字符在同一水平线上，
+	// 避免因不同字符的 ink 墨迹盒差异导致的视觉高低不平。
 	for i, line := range lines {
-		y := canvas.BaselineForMiddle(cvs, line, t.Font, pos.Y+float64(i)*lineHeight, lineHeight)
+		y := canvas.BaselineFor(pos.Y+float64(i)*lineHeight, lineHeight, fontSize, canvas.VAlignMiddle)
 		lineX := pos.X
 		if align != canvas.TextAlignLeft {
 			lw := cvs.MeasureText(line, t.Font).Width

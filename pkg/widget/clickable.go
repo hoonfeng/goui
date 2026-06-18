@@ -125,7 +125,9 @@ func (e *ClickableElement) HandleEvent(ev event.Event) bool {
 		return true
 	case event.TypeMouseUp:
 		if e.pressed && e.clickable.OnClick != nil {
-			e.clickable.OnClick()
+			if me, ok := ev.(*event.MouseEvent); ok && me.Button == event.ButtonLeft {
+				e.clickable.OnClick()
+			}
 		}
 		e.pressed = false
 		if e.clickable.StopPropagation {

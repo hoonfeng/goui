@@ -3,9 +3,9 @@ package widget
 import (
 	"reflect"
 
+	"github.com/hoonfeng/goui/internal/layout"
 	"github.com/hoonfeng/goui/pkg/canvas"
 	"github.com/hoonfeng/goui/pkg/event"
-	"github.com/hoonfeng/goui/internal/layout"
 	"github.com/hoonfeng/goui/pkg/types"
 )
 
@@ -19,10 +19,32 @@ type BaseElement struct {
 	offset    types.Point
 	slotIndex int
 	dirty     bool
+
+	// widgetType 缓存 Widget 的动态类型，避免每帧 Build 时反复调用 reflect.TypeOf。
+	// 在 CreateElementFor/Mount/Update 中设置。WidgetType() 返回缓存值，零值走 reflect.TypeOf 兜底。
+	widgetType reflect.Type
 }
 
 // Widget 返回关联的 Widget
 func (e *BaseElement) Widget() Widget { return e.widget }
+
+// WidgetType 返回缓存的 Widget 动态类型（零值则按需反射）。
+// 用于 Element 间类型比较，避免重复的 reflect.TypeOf 调用。
+func (e *BaseElement) WidgetType() reflect.Type {
+	if e.widgetType != nil {
+		return e.widgetType
+	}
+	if e.widget != nil {
+		e.widgetType = reflect.TypeOf(e.widget)
+	}
+	return e.widgetType
+}
+
+// updateWidgetType 更新 Widget 及其类型缓存。由 CreateElementFor 和 Update 调用。
+func (e *BaseElement) updateWidgetType(w Widget) {
+	e.widget = w
+	e.widgetType = reflect.TypeOf(w)
+}
 
 // Parent 返回父 Element
 func (e *BaseElement) Parent() Element { return e.parent }
@@ -69,7 +91,7 @@ func (e *BaseElement) Unmount() {
 
 // Update 更新 Widget 配置
 func (e *BaseElement) Update(newWidget Widget) {
-	e.widget = newWidget
+	e.updateWidgetType(newWidget)
 	e.dirty = true
 }
 
@@ -117,10 +139,18 @@ func (e *BaseElement) Blur() {}
 // IsFocused 检查是否拥有焦点
 func (e *BaseElement) IsFocused() bool { return false }
 
+// SubtreeStableChecker 由 buildTree 检查：Element 的子树自上次 Build 后无结构变化。
+// 实现了此接口的 Element，buildTree 在对它调用 Build() 后检查 Stable() 返回值，
+// 若为 true 则跳过其子树的递归遍历。
+type SubtreeStableChecker interface {
+	Stable() bool
+}
+
 // StatelessElement 无状态 Element
 type StatelessElement struct {
 	BaseElement
-	built bool
+	built  bool
+	stable bool // 上次 Build() 后子树结构无变化，buildTree 可跳过递归
 }
 
 // createStatelessElement 工厂函数
@@ -128,29 +158,15 @@ func createStatelessElement(w Widget) *StatelessElement {
 	return &StatelessElement{BaseElement: BaseElement{widget: w}}
 }
 
+// Stable 返回子树结构是否稳定。
+func (e *StatelessElement) Stable() bool { return e.stable }
+
 // Update 更新 Widget 配置并标记需要重建
 func (e *StatelessElement) Update(newWidget Widget) {
-	e.widget = newWidget
-	e.built = false // 重置，下次 Build 会重新构建
+	e.updateWidgetType(newWidget)
+	e.built = false
+	e.stable = false
 	e.dirty = true
-}
-
-// Layout 委托给子 Element
-func (e *StatelessElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult {
-	if len(e.children) > 0 {
-		result := e.children[0].Layout(ctx)
-		e.size = result.Size
-		return result
-	}
-	e.size = ctx.Constraints.Constrain(e.size)
-	return layout.LayoutResult{Size: e.size}
-}
-
-// Paint 绘制子 Element
-func (e *StatelessElement) Paint(cvs canvas.Canvas, offset types.Point) {
-	for _, child := range e.children {
-		child.Paint(cvs, offset)
-	}
 }
 
 // Build 构建子 Element
@@ -158,16 +174,18 @@ func (e *StatelessElement) Paint(cvs canvas.Canvas, offset types.Point) {
 // 当子控件类型匹配时复用已有的 Element 以保持状态。
 func (e *StatelessElement) Build() []Element {
 	if e.built {
+		e.stable = true // 缓存命中 → 子树结构稳定，buildTree 可跳过递归
 		return e.children
 	}
 	e.built = true
+	e.stable = false
 
 	// 检查是否实现了 Builder 接口
 	if builder, ok := e.widget.(interface{ Build(BuildContext) Widget }); ok {
 		w := builder.Build(BuildContext{Element: e})
 		if w != nil {
 			// 尝试复用已有的子 Element（类型匹配时）
-			if len(e.children) > 0 && reflect.TypeOf(e.children[0].Widget()) == reflect.TypeOf(w) {
+			if len(e.children) > 0 && e.children[0].WidgetType() == reflect.TypeOf(w) {
 				e.children[0].Update(w)
 			} else {
 				// 类型不匹配，卸载旧的创建新的
@@ -190,6 +208,24 @@ func (e *StatelessElement) Build() []Element {
 	return nil
 }
 
+// Layout 委托给子 Element
+func (e *StatelessElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult {
+	if len(e.children) > 0 {
+		result := e.children[0].Layout(ctx)
+		e.size = result.Size
+		return result
+	}
+	e.size = ctx.Constraints.Constrain(e.size)
+	return layout.LayoutResult{Size: e.size}
+}
+
+// Paint 绘制子 Element
+func (e *StatelessElement) Paint(cvs canvas.Canvas, offset types.Point) {
+	for _, child := range e.children {
+		child.Paint(cvs, offset)
+	}
+}
+
 // globalRebuildSeq 在全局性变化（如语言切换）时自增，使所有 StatefulElement
 // 在下一次 buildTree 强制重建一次（绕过脏检查缓存）。
 var globalRebuildSeq int
@@ -204,6 +240,7 @@ type StatefulElement struct {
 	child          Element
 	buildDirty     bool // SetState/Update 后置位；仅脏时才重新 state.Build（减少每帧重建/GC）
 	lastRebuildSeq int  // 上次重建时的 globalRebuildSeq，用于响应全局强制重建
+	builtOnce      bool    // 首次 Build 已完成（防 Stable 误判跳过子树递归）
 }
 
 // createStatefulElement 工厂函数
@@ -211,6 +248,9 @@ func createStatefulElement(w Widget) *StatefulElement {
 	return &StatefulElement{BaseElement: BaseElement{widget: w}}
 }
 
+func (e *StatefulElement) Stable() bool {
+	return e.builtOnce && !e.buildDirty
+}
 // CreateState 创建并初始化状态
 func (e *StatefulElement) CreateState() {
 	if e.state != nil {
@@ -246,11 +286,12 @@ func (e *StatefulElement) Build() []Element {
 
 	// 状态未脏、已构建过、且未发生全局强制重建：复用缓存子树，避免动画/高频
 	// 重建时每帧重复 state.Build（显著减少分配与 GC）。
-	if e.child != nil && !e.buildDirty && e.lastRebuildSeq == globalRebuildSeq {
+	if e.builtOnce && e.child != nil && !e.buildDirty && e.lastRebuildSeq == globalRebuildSeq {
 		e.children = []Element{e.child}
 		return e.children
 	}
 	e.buildDirty = false
+	e.builtOnce = true
 	e.lastRebuildSeq = globalRebuildSeq
 
 	// 调用 state.Build 获取子控件
@@ -262,7 +303,7 @@ func (e *StatefulElement) Build() []Element {
 	}
 
 	// 尝试复用已有的子 Element（当 Widget 类型匹配时）
-	if e.child != nil && reflect.TypeOf(e.child.Widget()) == reflect.TypeOf(w) {
+	if e.child != nil && e.child.WidgetType() == reflect.TypeOf(w) {
 		e.child.Update(w)
 		e.children = []Element{e.child}
 		return e.children
@@ -333,17 +374,21 @@ func (e *StatefulElement) Rebuild() {
 	// 避免 SetState 路径与 buildTree 路径重复构建（动画高频重建时尤其重要）。
 	e.buildDirty = true
 
-	// 标记需要布局和重绘
+	// 
+	// key fix: propagate buildDirty up parent chain so buildTree can reach all dirty nodes
+	for p := e.parent; p != nil; p = p.Parent() {
+		if se, ok := p.(*StatefulElement); ok {
+			se.buildDirty = true
+		}
+	}
+
+	// notify need layout and repaint
 	e.MarkNeedsLayout()
 	e.MarkNeedsPaint()
-
-	// 通知 Pipeline 需要重绘（UI 状态已改变）
-	if OnNeedsRepaint != nil {
-		OnNeedsRepaint()
-	}
 }
 
-// RenderObjectElement 直接管理渲染的 Element
-type RenderObjectElement struct {
-	BaseElement
+// IsFocusable 返回此元素是否可以获取焦点
+func (e *StatefulElement) IsFocusable() bool {
+	// 默认有状态的 StatefulWidget 不可聚焦，由具体子类重写
+	return false
 }

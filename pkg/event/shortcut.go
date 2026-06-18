@@ -53,17 +53,14 @@ func (m *ShortcutManager) Match(ev *KeyEvent) bool {
 	if ev.Type() != TypeKeyDown {
 		return false
 	}
-	s := Shortcut{
-		KeyCode: ev.KeyCode,
-		Mods:    ev.Mods,
+	// ⚠️ Shortcut 结构体包含 Label 字段，不能直接作为 map key 比较（注册时 Label 非空，
+	// Match 构造的 Shortcut Label="" → 永远不匹配）。用迭代按 KeyCode+Mods 匹配。
+	for s, handler := range m.shortcuts {
+		if s.KeyCode == ev.KeyCode && s.Mods == ev.Mods {
+			handler()
+			return true
+		}
 	}
-	if handler, ok := m.shortcuts[s]; ok {
-		handler()
-		return true
-	}
-	// 特殊处理：精确匹配（不考虑未按下的修饰键）
-	// 如果事件带 Ctrl，但注册的是 Ctrl+X，只要 Ctrl 匹配就可行
-	// 但如果事件不带 Ctrl，注册需要 Ctrl，则不匹配
 	return false
 }
 
@@ -72,13 +69,11 @@ func (m *ShortcutManager) MatchExact(ev *KeyEvent) bool {
 	if ev.Type() != TypeKeyDown {
 		return false
 	}
-	s := Shortcut{
-		KeyCode: ev.KeyCode,
-		Mods:    ev.Mods,
-	}
-	if handler, ok := m.shortcuts[s]; ok {
-		handler()
-		return true
+	for s, handler := range m.shortcuts {
+		if s.KeyCode == ev.KeyCode && s.Mods == ev.Mods {
+			handler()
+			return true
+		}
 	}
 	return false
 }

@@ -5,9 +5,9 @@ import (
 	"reflect"
 	"sort"
 
+	"github.com/hoonfeng/goui/internal/layout"
 	"github.com/hoonfeng/goui/pkg/canvas"
 	"github.com/hoonfeng/goui/pkg/event"
-	"github.com/hoonfeng/goui/internal/layout"
 	"github.com/hoonfeng/goui/pkg/paint"
 	"github.com/hoonfeng/goui/pkg/types"
 )
@@ -119,6 +119,12 @@ type TableElement struct {
 	vDragMouseY float64
 	vDragScroll float64
 	inited      bool
+
+	// 行虚拟化：只维护可见行（+ overscan）的 cell Element，而非全量创建。
+	// visRowStart/visRowEnd 由 Layout 根据 scrollY/bodyH 计算，Build 据此管理元素。
+	visRowStart int // 当前可见行范围起点（显示行索引）
+	visRowEnd   int // 当前可见行范围终点（不含）
+	rowOverscan int // 视口上下额外保留的行数（默认 5）
 }
 
 func (e *TableElement) ensureInit() {
@@ -166,6 +172,23 @@ func (e *TableElement) Build() []Element {
 	if e.cellEls == nil {
 		e.cellEls = map[int]Element{}
 	}
+	if e.rowOverscan <= 0 {
+		e.rowOverscan = 5
+	}
+
+	// 未初始化可见范围时（首帧），估算一个屏幕的行数作为初始范围
+	if e.visRowEnd <= e.visRowStart {
+		estRows := 20 // 默认一屏约 20 行
+		if e.table.Height > 0 {
+			estRows = int(e.table.Height/tableRowH) + e.rowOverscan*2
+		}
+		if estRows > len(e.table.Data) {
+			estRows = len(e.table.Data)
+		}
+		e.visRowStart = 0
+		e.visRowEnd = estRows
+	}
+
 	ncol := len(e.table.Columns)
 	var kids []Element
 	used := map[int]bool{}
@@ -173,14 +196,17 @@ func (e *TableElement) Build() []Element {
 		if col.Render == nil {
 			continue
 		}
-		for r, row := range e.table.Data {
+		// ★ 行虚拟化：只遍历可见行范围 [visRowStart, visRowEnd)
+		for d := e.visRowStart; d < e.visRowEnd && d < len(e.table.Data); d++ {
+			r := e.order[d]
+			row := e.table.Data[r]
 			w := col.Render(row)
 			if w == nil {
 				continue
 			}
 			key := r*ncol + c
 			el, ok := e.cellEls[key]
-			if ok && reflect.TypeOf(el.Widget()) == reflect.TypeOf(w) {
+			if ok && el.WidgetType() == reflect.TypeOf(w) {
 				el.Update(w)
 			} else {
 				if ok {
@@ -194,10 +220,11 @@ func (e *TableElement) Build() []Element {
 			kids = append(kids, el)
 		}
 	}
-	for k, el := range e.cellEls {
-		if !used[k] {
+	// 清理可见范围外的 cell Element
+	for key, el := range e.cellEls {
+		if !used[key] {
 			el.Unmount()
-			delete(e.cellEls, k)
+			delete(e.cellEls, key)
 		}
 	}
 
@@ -207,16 +234,18 @@ func (e *TableElement) Build() []Element {
 			e.expandEls = map[int]Element{}
 		}
 		usedExp := map[int]bool{}
-		for r, row := range e.table.Data {
+		// ★ 只对可见范围内的展开行创建 Element
+		for d := e.visRowStart; d < e.visRowEnd && d < len(e.table.Data); d++ {
+			r := e.order[d]
 			if !e.expanded[r] {
 				continue
 			}
-			w := e.table.RenderExpand(row)
+			w := e.table.RenderExpand(e.table.Data[r])
 			if w == nil {
 				continue
 			}
 			el, ok := e.expandEls[r]
-			if ok && reflect.TypeOf(el.Widget()) == reflect.TypeOf(w) {
+			if ok && el.WidgetType() == reflect.TypeOf(w) {
 				el.Update(w)
 			} else {
 				if ok {
@@ -229,6 +258,7 @@ func (e *TableElement) Build() []Element {
 			usedExp[r] = true
 			kids = append(kids, el)
 		}
+		// 清理不可见展开行
 		for r, el := range e.expandEls {
 			if !usedExp[r] {
 				el.Unmount()
@@ -404,6 +434,48 @@ func (e *TableElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult {
 		e.size = ctx.Constraints.Constrain(types.Size{Width: w, Height: tableHeaderH + e.contentH + hbarSpace})
 	}
 
+	// ★ 计算可见行范围（行虚拟化），供下一次 Build 使用
+	firstRow := 0
+	lastRow := len(e.order)
+	if e.bodyH > 0 && len(e.order) > 0 {
+		// 二分查找第一个 rowTops > scrollY 的行
+		lo, hi := 0, len(e.order)
+		for lo < hi {
+			mid := (lo + hi) / 2
+			if e.rowTops[mid] > e.scrollY {
+				hi = mid
+			} else {
+				lo = mid + 1
+			}
+		}
+		firstRow = lo - e.rowOverscan
+		if firstRow < 0 {
+			firstRow = 0
+		}
+
+		// 最后一个 rowTops < scrollY + bodyH 的行
+		bottom := e.scrollY + e.bodyH
+		lo2, hi2 := 0, len(e.order)
+		for lo2 < hi2 {
+			mid := (lo2 + hi2) / 2
+			if e.rowTops[mid] > bottom {
+				hi2 = mid
+			} else {
+				lo2 = mid + 1
+			}
+		}
+		lastRow = lo2 + e.rowOverscan
+		if lastRow > len(e.order) {
+			lastRow = len(e.order)
+		}
+	}
+	// 范围变化时标记重建（触发下次 buildTree 更新可见元素）
+	if e.visRowStart != firstRow || e.visRowEnd != lastRow {
+		e.visRowStart = firstRow
+		e.visRowEnd = lastRow
+		e.MarkNeedsLayout() // 脏标记上溯，触发下一帧 buildTree 更新可见元素
+	}
+
 	// slot 单元格按"显示行" + 列渲染 x 定位（含竖向 scrollY 偏移）
 	ncol := len(e.table.Columns)
 	for c, col := range e.table.Columns {
@@ -412,7 +484,9 @@ func (e *TableElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult {
 		}
 		cx := e.colX[c]
 		cw := e.colWidths[c]
-		for disp, r := range e.order {
+		// 只定位可见行范围的 cell element（其他行已被 Build 清理）
+		for disp := e.visRowStart; disp < e.visRowEnd && disp < len(e.order); disp++ {
+			r := e.order[disp]
 			el := e.cellEls[r*ncol+c]
 			if el == nil {
 				continue
@@ -426,7 +500,8 @@ func (e *TableElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult {
 	}
 
 	// 展开内容定位（行下方，缩进对齐数据区，含 scrollY）
-	for disp, r := range e.order {
+	for disp := e.visRowStart; disp < e.visRowEnd && disp < len(e.order); disp++ {
+		r := e.order[disp]
 		el := e.expandEls[r]
 		if el == nil {
 			continue

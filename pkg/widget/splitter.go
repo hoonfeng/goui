@@ -38,7 +38,7 @@ type SplitterElement struct {
 }
 
 func (e *SplitterElement) reconcile(old Element, w Widget, idx int) Element {
-	if old != nil && reflect.TypeOf(old.Widget()) == reflect.TypeOf(w) {
+	if old != nil && old.WidgetType() == reflect.TypeOf(w) {
 		old.Update(w)
 		return old
 	}
@@ -62,7 +62,10 @@ func (e *SplitterElement) Layout(ctx *layout.LayoutContext) layout.LayoutResult 
 	if w >= float64(1<<30) {
 		w = 400
 	}
-	h := e.splitter.Height
+	h := ctx.Constraints.MaxHeight
+	if h >= float64(1<<30) {
+		h = e.splitter.Height // 无界时回落固定值（用在非 Expanded 容器中）
+	}
 	leftW := (w - splitterBar) * e.ratio
 	rightW := w - splitterBar - leftW
 	tight := func(el Element, cw, x float64) {
@@ -110,6 +113,7 @@ func (e *SplitterElement) HandleEvent(ev event.Event) bool {
 	case event.TypeMouseDown:
 		if lx >= barX-4 && lx <= barX+splitterBar+4 {
 			e.dragging = true
+			ev.StopPropagation()
 			if RequestPointerCapture != nil {
 				RequestPointerCapture(e)
 			}

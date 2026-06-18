@@ -2,6 +2,8 @@
 package window
 
 import (
+	"image"
+
 	"github.com/hoonfeng/goui/pkg/event"
 )
 
@@ -51,6 +53,11 @@ type Window interface {
 	// WaitMessage 阻塞等待下一条消息到达，用于空闲时让出 CPU。
 	// 仅在没有任何待处理消息和渲染需要时调用，避免忙等待空转。
 	WaitMessage()
+
+	// PresentImage 将 RGBA 图像直接显示到窗口客户区（Raster 模式）。
+	// 替代 SwapBuffers，使用 GDI BitBlt/SetDIBitsToDevice 直接将像素数据输出到屏幕。
+	// img 必须是 Image() 返回的 image.RGBA，其尺寸应与窗口客户区一致。
+	PresentImage(img *image.RGBA)
 }
 
 // WindowConfig 窗口创建配置
@@ -101,13 +108,13 @@ var (
 // 仅在文本输入框聚焦时启用，焦点离开后禁用，避免失焦仍弹出候选。
 var SetIMEEnabled func(hwnd uintptr, enabled bool)
 
-// OpenFileDialog 弹出系统“打开文件”对话框（模态），由平台层实现并在 init 中设置。
+// OpenFileDialog 弹出系统"打开文件"对话框（模态），由平台层实现并在 init 中设置。
 // hwnd: 父窗口句柄（0 表示无属主）; title: 对话框标题; filter: 过滤器描述
 // （形如 "图片|*.png;*.jpg" 的竖线分隔对，多组用换行分隔）。
 // 返回用户选择的绝对路径；取消或未实现返回空串。
 var OpenFileDialog func(hwnd uintptr, title, filter string) string
 
-// OpenFolderDialog 弹出系统“选择文件夹”对话框（模态），由平台层实现并在 init 中设置。
+// OpenFolderDialog 弹出系统"选择文件夹"对话框（模态），由平台层实现并在 init 中设置。
 // hwnd: 父窗口句柄（0 表示无属主）; title: 对话框标题。
 // 返回用户选择的目录绝对路径；取消或未实现返回空串。
 var OpenFolderDialog func(hwnd uintptr, title string) string

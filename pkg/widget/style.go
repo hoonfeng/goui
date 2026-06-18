@@ -3,8 +3,8 @@ package widget
 import (
 	"reflect"
 
-	"github.com/hoonfeng/goui/pkg/canvas"
 	"github.com/hoonfeng/goui/internal/layout"
+	"github.com/hoonfeng/goui/pkg/canvas"
 	"github.com/hoonfeng/goui/pkg/paint"
 	"github.com/hoonfeng/goui/pkg/types"
 )
@@ -396,7 +396,7 @@ func (e *StyledElement) Build() []Element {
 
 		// 复用已存在的 Container Element（当 Widget 类型匹配时）
 		containerWidget := Widget(container)
-		if len(e.children) == 1 && reflect.TypeOf(e.children[0].Widget()) == reflect.TypeOf(containerWidget) {
+		if len(e.children) == 1 && e.children[0].WidgetType() == reflect.TypeOf(containerWidget) {
 			e.children[0].Update(containerWidget)
 		} else {
 			for _, child := range e.children {
@@ -416,7 +416,7 @@ func (e *StyledElement) Build() []Element {
 		allMatch := true
 		for i, w := range sw.Children {
 			styledChild := applyStyleToWidget(w, style)
-			if i < len(oldChildren) && reflect.TypeOf(oldChildren[i].Widget()) == reflect.TypeOf(styledChild) {
+			if i < len(oldChildren) && oldChildren[i].WidgetType() == reflect.TypeOf(styledChild) {
 				oldChildren[i].Update(styledChild)
 			} else {
 				allMatch = false

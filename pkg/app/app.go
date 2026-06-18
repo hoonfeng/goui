@@ -55,8 +55,19 @@ type Application struct {
 	// 大幅减少 idle 时的 CGO 边界穿越（runtime.cgocall），降低空转 CPU 占用。
 	lastCursorBlink time.Time
 
+	// isActive 窗口是否处于激活（前台）状态，由 win32 WM_ACTIVATE 事件更新。
+	// 后台时跳过 SwapBuffers，避免 GPU 驱动阻塞导致主循环卡死。
+	isActive bool
+
 	// Ready 首帧渲染完成后的回调（在 mainLoop 的同一 goroutine 中调用）
 	Ready func()
+
+	// OnDataChange 【轮询模式】UI 线程每帧调用的数据变更检测回调。
+	// 由外部设置（如 chat.ChatState），返回 true 表示数据已更新、需要重新布局渲染。
+	// 适用于「Agent 只写数据、UI 自己读」架构：Agent goroutine 写 state 并递增版本号，
+	// UI 线程每帧调用此函数检查版本号，只在变化时触发重建，避免事件驱动的卡顿。
+	// 返回 true → 管线自动 MarkNeedsLayout → 走完整布局+渲染。
+	OnDataChange func() bool
 
 	// subWindows 附属窗口（多窗口），主循环每帧处理其事件与渲染。
 	subWindows []*SubWindow
@@ -66,7 +77,8 @@ type Application struct {
 func NewApplication() *Application {
 	return &Application{
 		ShortcutManager: event.NewShortcutManager(),
-		dragThreshold:   5.0, // 5 像素移动阈值触发拖拽
+		dragThreshold:   5.0,  // 5 像素移动阈值触发拖拽
+		isActive:        true, // 初始默认前台激活
 	}
 }
 
@@ -76,7 +88,8 @@ type Config struct {
 	Width      int
 	Height     int
 	Resizable  bool
-	Borderless bool    // 无边框窗口
+	Borderless bool
+	BackgroundColor types.Color // 清屏底色，默认白色。深色主题设为此色避免 clear→paint 间闪烁    // 无边框窗口
 	Opacity    float64 // 窗口整体不透明度 0~1（0 或 1=不透明；0<x<1=半透明）
 }
 
@@ -154,35 +167,31 @@ func (app *Application) Run(config Config) error {
 		return err
 	}
 	defer app.Window.Close()
-
-	// 2. 尝试绑定 OpenGL 上下文（某些平台不需要 GL 也能工作）
-	glAvailable := false
-	if err := app.Window.MakeCurrent(); err != nil {
-		log.Printf("goui: OpenGL context not available, using software rendering only: %v", err)
-	} else {
-		glAvailable = true
-	}
-
-	// 3. 创建 Canvas：SkiaCanvas（Skia 硬件加速 2D 渲染，基于 goskia CGO 绑定）。
-	//    有 GL 上下文时用 GPU 模式——Skia 经 OpenGL 直接渲染到窗口 framebuffer，
-	//    省去「位图回读 → image.RGBA → 纹理上传」与每帧 PNG 编解码；否则回退 raster。
-	var skCanvas *canvas.SkiaCanvas
-	if glAvailable {
-		if gpu, e := canvas.NewSkiaCanvasGPU(config.Width, config.Height, 0); e == nil {
-			skCanvas = gpu
-			log.Println("goui: SkiaCanvas GPU 模式（Skia 直接渲染到窗口 framebuffer，无位图上传）")
-		} else {
-			log.Printf("goui: GPU SkiaCanvas 创建失败(%v)，降级软件 raster（窗口显示可能受限）", e)
-			skCanvas = canvas.NewSkiaCanvas(config.Width, config.Height)
+	// GPU 资源释放必须在窗口 GL 上下文销毁（window.Close）之前执行。
+	// defer 按 LIFO 顺序：此处 defer 先于上方的 defer Close 执行。
+	defer func() {
+		if sk, ok := app.Canvas.(*canvas.SkiaCanvas); ok {
+			sk.Release()
 		}
-	} else {
-		skCanvas = canvas.NewSkiaCanvas(config.Width, config.Height)
-		log.Println("goui: OpenGL 不可用，SkiaCanvas 用软件渲染")
+	}()
+
+	// 2. 创建 Skia GPU 画布：经 OpenGL 直接渲染到窗口默认 framebuffer（FBO 0）。
+	//    GPU 模式跨平台、性能好；窗口遮盖恢复后由应用层重绘驱动重置，不依赖 GPU FBO 持久。
+	log.Println("goui: 使用 GPU 模式（Skia OpenGL 渲染 → wglSwapBuffers 屏幕输出）")
+	if err := app.Window.MakeCurrent(); err != nil {
+		return fmt.Errorf("goui: MakeCurrent failed: %w", err)
 	}
-	app.Canvas = skCanvas
+	sk, err := canvas.NewSkiaCanvasGPU(config.Width, config.Height, 0)
+	if err != nil {
+		return fmt.Errorf("goui: NewSkiaCanvasGPU failed: %w", err)
+	}
+	app.Canvas = sk
 
 	// 4. 创建渲染管线
 	app.Pipeline = render.NewPipeline(config.Width, config.Height, app.Canvas)
+	if config.BackgroundColor != (types.Color{}) {
+		app.Pipeline.BackgroundColor = config.BackgroundColor
+	}
 
 	// 5. 初始化根控件
 	if app.RootWidget != nil {
@@ -205,11 +214,12 @@ func (app *Application) Run(config Config) error {
 		}
 	}
 
-	// 状态改变（SetState）触发重新布局：buildTree 复用 Element 不丢运行时状态，
-	// 使深层组件的配置变化能正确传播（如 AnimatedContainer 的目标值、文本变化等）。
+	// 状态改变（SetState）入队通知（队列机制，非直接 MarkNeedsLayout）：
+	// SetState 只递增计数器，主循环每帧调用 ConsumePendingUpdates 统一消费一次。
+	// 多次 SetState 压缩为一次布局重建，减少 60fps 流式事件下全树重建的频次。
 	widget.OnNeedsLayout = func() {
 		if app.Pipeline != nil {
-			app.Pipeline.MarkNeedsLayout()
+			app.Pipeline.EnqueueUpdate()
 		}
 	}
 
@@ -217,6 +227,7 @@ func (app *Application) Run(config Config) error {
 	widget.OnOverlayChanged = func() {
 		if app.Pipeline != nil {
 			app.Pipeline.MarkNeedsLayout()
+			app.Pipeline.EnqueueUpdate()
 		}
 	}
 
@@ -265,6 +276,17 @@ func (app *Application) Run(config Config) error {
 		}
 	}
 
+	// 6.1.2 桥接“选择文件夹”对话框，供对话面板添加目录附件等调用。
+	if window.OpenFolderDialog != nil {
+		widget.OpenFolderDialog = func(title string) string {
+			var hwnd uintptr
+			if app.Window != nil {
+				hwnd = app.Window.NativeHandle()
+			}
+			return window.OpenFolderDialog(hwnd, title)
+		}
+	}
+
 	// 6.2 动画帧回调：动画注册/推进时标记需要重绘，驱动主循环连续出帧。
 	animation.SetFrameCallback(func() {
 		if app.Pipeline != nil {
@@ -284,10 +306,6 @@ func (app *Application) Run(config Config) error {
 	// 9. 进入主循环
 	app.Running = true
 	app.mainLoop()
-
-	// 9.1 释放 Skia GPU 资源——必须在各窗口 GL 上下文销毁前（此时 GL 仍有效）。
-	// 否则 goskia 的 GPU surface/context finalizer 会在进程退出时访问已销毁的 GL 上下文而崩溃（exit 1）。
-	app.releaseGPUResources()
 
 	// 清理：断开全局回调，避免 dangling 引用
 	widget.OnNeedsRepaint = nil
@@ -362,6 +380,21 @@ func (app *Application) setupEventHandlers() {
 		}
 	})
 
+	// 窗口激活/失活事件：更新 isActive 状态。后台窗口时主循环跳过 SwapBuffers，
+	// 避免 GPU 驱动在非前台窗口调用 SwapBuffers 阻塞数秒。
+	dispatcher.AddEventListener(event.TypeWindowActivate, func(e event.Event) {
+		app.isActive = true
+		// 恢复前台：立即标记重新布局+重绘，使窗口内容即刻刷新
+		if app.Pipeline != nil {
+			app.Pipeline.MarkNeedsLayout()
+		}
+	})
+
+	// 窗口失活：isActive=false，主循环后续不再调用 SwapBuffers
+	dispatcher.AddEventListener(event.TypeWindowDeactivate, func(e event.Event) {
+		app.isActive = false
+	})
+
 	// 重绘事件
 	dispatcher.AddEventListener(event.TypeWindowPaint, func(e event.Event) {
 		if app.Pipeline != nil {
@@ -424,8 +457,9 @@ func (app *Application) setupEventHandlers() {
 // mainLoop 主事件循环
 func (app *Application) mainLoop() {
 	log.Println("goui: Application started")
-	const frameInterval = 16 * time.Millisecond       // 动画帧率节流目标，约 60fps（流畅）
-	const cursorIdleInterval = 120 * time.Millisecond // 仅光标闪烁（无动画）时的帧率，约 8fps —— 光标闪一下不必满帧重绘
+	const frameInterval60fps = 16 * time.Millisecond   // 动画/输入活跃时 60fps
+	const frameIntervalCursor = 120 * time.Millisecond // 仅光标闪烁时 ~8fps
+	const frameIntervalIdle = 200 * time.Millisecond   // 完全空闲时 5fps
 	firstFrame := true
 
 	frameIndex := 0
@@ -438,24 +472,42 @@ func (app *Application) mainLoop() {
 			break
 		}
 
+		// ★ 2. 先处理所有待处理 UI 事件（鼠标/键盘/IME）
+		//    必须在 animation.Tick(drain→SetState→Rebuild) 之前执行，
+		//    确保用户输入优先响应，不被 Agent 流式输出的全树重建阻塞。
+		//    HitTest 使用前帧布局（当前树），对快速鼠标移动可能有 1 帧滞后，
+		//    但在 60fps 下不可感知，且远优于输入被延迟数十帧的体验。
+		app.processPendingEvents()
+
 		// 1.2 推进动画时间线：更新所有活跃动画的值（OnUpdate 内通常会触发
 		//     SetState/MarkNeedsRepaint），使动画逐帧呈现。
 		animation.Tick(time.Now())
 
-		// 1.5 确保布局已执行，使 HitTest 能正确命中 Element
-		if app.Pipeline != nil {
-			app.Pipeline.EnsureLayout()
+		// ★ 1.2.5 【轮询模式】UI 线程每帧检查外部数据是否变化。
+		// Agent/后台 goroutine 只写数据（不调 SetState），UI 线程自己轮询读取。
+		// 检测到数据变化时自动标记需要布局重建（走完整布局+渲染）。
+		if app.Pipeline != nil && app.OnDataChange != nil && app.OnDataChange() {
+			app.Pipeline.MarkNeedsLayout()
 		}
 
-		// 2. 先处理待处理 UI 事件，确保输入得到即时响应
-		app.processPendingEvents()
+		// 1.3 消费队列式状态更新通知：将本帧内所有 SetState 压缩为至多一次布局重建。
+		// 动画 pump 中的 drain 可能多次调用 SetState（如 Agent 流式输出），
+		// 但布局重建只执行一次，大幅降低 60fps 全树重建的开销。
+		if app.Pipeline != nil {
+			app.Pipeline.ConsumePendingUpdates()
+		}
 
-		// ⚠️ 注意：不再调用第二次 EnsureLayout()，原因是：
-		//    1. 若事件处理未触发 SetState（多数情况），第二次调用是空操作但仍有 if 判断开销
-		//    2. 若事件处理触发了 SetState → MarkNeedsLayout()，flag 已经设置，
-		//       Render() 中的 needsLayout 检查会在同一帧内正确执行 PerformLayout()
-		//    3. 移除后每帧最多 1 次全树重建（原是 2×EnsureLayout + 1×Render 中的 PerformLayout），
-		//       这是 FPS 低和 progressive slowdown 的根因之一
+		// 1.5 确保布局已执行，使下一帧的 HitTest 能正确命中 Element
+		if app.Pipeline != nil {
+			app.Pipeline.EnsureLayout()
+			// ★ 树重建后校验 focusedElement 是否仍在树中
+			app.ensureValidFocus()
+		}
+
+		// 注：EnsureLayout() 只调一次（这里），不额外调用第二次。
+		// 若事件处理触发了 SetState → MarkNeedsLayout()，flag 已设置，
+		// Render() 中的 PerformLayout 会在同一帧内正确执行。
+		// 每帧至多 1 次全树重建，避免两次 EnsureLayout 的冗余开销。
 
 		// 3. 持续重绘标记
 		// 优化：不再每帧为光标闪烁标记重绘（之前导致 runtime.cgocall 达 95%）。
@@ -483,10 +535,9 @@ func (app *Application) mainLoop() {
 			rendered = app.Pipeline.DidRender()
 		}
 
-		// 5. 显示渲染结果到窗口
+		// 5. 显示渲染结果到窗口（GPU 模式：wglSwapBuffers 交换 GL 前后缓冲区）
 		if rendered {
 			app.Window.SwapBuffers()
-
 
 			if firstFrame {
 				firstFrame = false
@@ -514,18 +565,34 @@ func (app *Application) mainLoop() {
 		// 5.5 处理并渲染所有附属窗口
 		app.processSubWindows()
 
-		// 帧率节流
-		if (app.focusedElement != nil && app.focusedElement.IsFocused()) || animation.HasActive() {
+		// 帧率节流（三级策略）
+		//   1. 动画活跃 → 60fps（确保动画流畅）
+		//   2. 用户输入后 600ms 内 → 60fps（确保快速响应）
+		//   3. 仅光标闪烁 → ~8fps（减少空转 CPU）
+		//   4. 完全空闲 → 5fps 轮询（兼顾响应与功耗）
+		if animation.HasActive() {
 			app.Window.ProcessEvents()
-			fi := frameInterval
-			if !animation.HasActive() && time.Since(app.lastInputAt) > 600*time.Millisecond {
-				fi = cursorIdleInterval
+			if elapsed := time.Since(frameStart); elapsed < frameInterval60fps {
+				time.Sleep(frameInterval60fps - elapsed)
 			}
-			if elapsed := time.Since(frameStart); elapsed < fi {
-				time.Sleep(fi - elapsed)
+		} else if app.focusedElement != nil && app.focusedElement.IsFocused() && time.Since(app.lastInputAt) <= 600*time.Millisecond {
+			// 输入后 600ms 内：60fps 确保快速响应
+			app.Window.ProcessEvents()
+			if elapsed := time.Since(frameStart); elapsed < frameInterval60fps {
+				time.Sleep(frameInterval60fps - elapsed)
+			}
+		} else if app.focusedElement != nil && app.focusedElement.IsFocused() {
+			// 仅有光标闪烁：~8fps
+			app.Window.ProcessEvents()
+			if elapsed := time.Since(frameStart); elapsed < frameIntervalCursor {
+				time.Sleep(frameIntervalCursor - elapsed)
+			}
+		} else if !rendered {
+			// 完全空闲（无焦点、无动画）：长休眠轮询
+			if elapsed := time.Since(frameStart); elapsed < frameIntervalIdle {
+				time.Sleep(frameIntervalIdle - elapsed)
 			}
 		}
-
 
 	}
 	log.Println("goui: Application stopped")
@@ -907,6 +974,34 @@ func (app *Application) applyCursor() {
 }
 
 // routeKeyEvent 路由键盘事件到当前焦点 Element，并向上冒泡
+// ensureValidFocus 校验 focusedElement 是否仍在 Element 树中。
+// 树重建（buildTree）可能导致旧元素被 Unmount、新元素创建，
+// 若 focusedElement 的父链无法追溯到 rootElement，则清除焦点。
+func (app *Application) ensureValidFocus() {
+	if app.focusedElement == nil || app.Pipeline == nil {
+		return
+	}
+	root := app.Pipeline.RootElement()
+	if root == nil {
+		app.ClearFocus()
+		return
+	}
+	// 沿父链上溯，看能否到达 rootElement
+	found := false
+	for el := app.focusedElement; el != nil; el = el.Parent() {
+		if el == root {
+			found = true
+			break
+		}
+	}
+	if !found {
+		// 元素已不在树中 → 清除焦点
+		app.focusedElement.Blur()
+		app.focusedElement = nil
+		app.updateIMEEnabled()
+	}
+}
+
 func (app *Application) routeKeyEvent(ev *event.KeyEvent) {
 	if app.focusedElement != nil {
 		current := app.focusedElement
@@ -941,11 +1036,3 @@ type PlatformError struct {
 func (e *PlatformError) Error() string {
 	return e.Message
 }
-
-
-
-
-
-
-
-

@@ -117,12 +117,14 @@ const sigdnFilesysPath = 0x80058000 // SIGDN_FILESYSPATH
 
 // comVtblCall 通过 vtable 调用 COM 接口方法。
 // vtbl: 接口虚函数表指针; index: 方法索引（从0开始）; args: 参数列表（不含 this）
-func comVtblCall(vtbl uintptr, index int, args ...uintptr) uintptr {
+func comVtblCall(this uintptr, index int, args ...uintptr) uintptr {
+	// this 是 COM 接口指针，其前 8 字节是 vtable 指针
+	vtbl := *(*uintptr)(unsafe.Pointer(this))
 	// 从 vtable 中取出方法指针
 	method := *(*uintptr)(unsafe.Pointer(vtbl + uintptr(index)*8))
-	// 将参数拼接：this 指针 + 其余参数
+	// 将参数拼接：this 指针（传入接口指针，非 vtable 指针）
 	callArgs := make([]uintptr, 0, 1+len(args))
-	callArgs = append(callArgs, vtbl) // this 指针
+	callArgs = append(callArgs, this) // this = 接口指针
 	callArgs = append(callArgs, args...)
 	ret, _, _ := syscall.SyscallN(method, callArgs...)
 	return ret
@@ -159,45 +161,43 @@ func browseForFolderWin32(hwnd uintptr, title string) string {
 		return ""
 	}
 
-	// 3. 获取 vtable
-	vtbl := *(*uintptr)(unsafe.Pointer(pfd))
+	// 3. COM vtable 在 comVtblCall 内部提取，直接传 pfd
 
 	// 4. 设置选项：文件夹选择模式
-	comVtblCall(vtbl, 9, uintptr(fosPickFolders|fosForceFilesystem|fosNoChangeDir)) // SetOptions
+	comVtblCall(pfd, 9, uintptr(fosPickFolders|fosForceFilesystem|fosNoChangeDir)) // SetOptions
 
 	// 5. 设置标题
 	if title != "" {
 		titlePtr, err := syscall.UTF16PtrFromString(title)
 		if err == nil {
-			comVtblCall(vtbl, 17, uintptr(unsafe.Pointer(titlePtr))) // SetTitle
+			comVtblCall(pfd, 17, uintptr(unsafe.Pointer(titlePtr))) // SetTitle
 		}
 	}
 
 	// 6. 显示对话框（模态）
-	ret = comVtblCall(vtbl, 3, hwnd) // Show
+	ret = comVtblCall(pfd, 3, hwnd) // Show
 	if ret != sOK {
 		// 用户取消（HRESULT = 0x800704C7 = ERROR_CANCELLED）
-		comVtblCall(vtbl, 2) // Release
+		comVtblCall(pfd, 2) // Release
 		return ""
 	}
 
 	// 7. 获取结果 ShellItem
 	var psi uintptr // IShellItem 指针
-	ret = comVtblCall(vtbl, 20, uintptr(unsafe.Pointer(&psi))) // GetResult
+	ret = comVtblCall(pfd, 20, uintptr(unsafe.Pointer(&psi))) // GetResult
 	if ret != sOK || psi == 0 {
-		comVtblCall(vtbl, 2) // Release dialog
+		comVtblCall(pfd, 2) // Release dialog
 		return ""
 	}
 
-	// 8. 获取 ShellItem 的 vtable
-	siVtbl := *(*uintptr)(unsafe.Pointer(psi))
+	// 8. ShellItem vtable 在 comVtblCall 内部提取，直接传 psi
 
 	// 9. 获取文件系统路径
 	var pathPtr uintptr // LPWSTR（由 CoTaskMemAlloc 分配）
-	ret = comVtblCall(siVtbl, 5, sigdnFilesysPath, uintptr(unsafe.Pointer(&pathPtr))) // GetDisplayName
+	ret = comVtblCall(psi, 5, sigdnFilesysPath, uintptr(unsafe.Pointer(&pathPtr))) // GetDisplayName
 	if ret != sOK || pathPtr == 0 {
-		comVtblCall(siVtbl, 2) // Release shell item
-		comVtblCall(vtbl, 2)   // Release dialog
+		comVtblCall(psi, 2) // Release shell item
+		comVtblCall(pfd, 2)   // Release dialog
 		return ""
 	}
 
@@ -208,10 +208,10 @@ func browseForFolderWin32(hwnd uintptr, title string) string {
 	procCoTaskMemFree.Call(pathPtr)
 
 	// 12. 释放 ShellItem
-	comVtblCall(siVtbl, 2) // Release
+	comVtblCall(psi, 2) // Release
 
 	// 13. 释放对话框
-	comVtblCall(vtbl, 2) // Release
+	comVtblCall(pfd, 2) // Release
 
 	return path
 }

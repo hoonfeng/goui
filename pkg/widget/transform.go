@@ -52,7 +52,7 @@ func (e *transformElement) Build() []Element {
 		e.children = nil
 		return nil
 	}
-	if e.child != nil && reflect.TypeOf(e.child.Widget()) == reflect.TypeOf(e.transform.Child) {
+	if e.child != nil && e.child.WidgetType() == reflect.TypeOf(e.transform.Child) {
 		e.child.Update(e.transform.Child)
 	} else {
 		if e.child != nil {

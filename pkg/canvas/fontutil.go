@@ -28,6 +28,14 @@ func isMonoFamily(family string) bool {
 	return false
 }
 
+// isGenericMono 判断是否为通用等宽关键字而非具体字体名。
+// "monospace"/"mono" 是 CSS 通用关键字，需要走默认等宽加载路径（Consolas）；
+// "Cascadia Code"/"JetBrains Mono" 等具体字体应加载用户选择的系统字体。
+func isGenericMono(family string) bool {
+	low := strings.ToLower(strings.TrimSpace(family))
+	return low == "monospace" || low == "mono"
+}
+
 // cacheKey 生成字体缓存键
 func cacheKey(size float64, weight FontWeight) string {
 	return fmt.Sprintf("%.1f-%d", size, weight)
@@ -199,6 +207,11 @@ func loadFontFromFile(path string, size float64) (gofont.Face, error) {
 }
 
 // sharedMeasureOnce/sharedMeasureInst 维护一个全局共享、仅用于测量的 1x1 画布。
+// GlyphChecker 可以检查字符是否有对应字形。
+type GlyphChecker interface {
+	UnicharToGlyph(r rune) uint16
+}
+
 var (
 	sharedMeasureOnce sync.Once
 	sharedMeasureInst *SkiaCanvas
@@ -361,14 +374,13 @@ func RuneCoveredByPrimary(r rune) bool {
 	}
 	// 复用 Skia 全局共享的主 Typeface 做覆盖检测（unichar→glyph，非 0 即含该字形），
 	// 不再单独用 gofont 解析一份字库。
-	tf := sharedMeasureCanvas().getOrCreateTypefaceForCoverage()
-	if tf == nil {
-		coverageCache[r] = true // 无法检测时假设覆盖，不触发回退
-		return true
+	if checker := sharedMeasureCanvas().getGlyphChecker(); checker != nil {
+		covered := checker.UnicharToGlyph(r) != 0
+		coverageCache[r] = covered
+		return covered
 	}
-	covered := tf.UnicharToGlyph(r) != 0
-	coverageCache[r] = covered
-	return covered
+	coverageCache[r] = true // 无法检测时假设覆盖，不触发回退
+	return true
 }
 
 // FallbackFamily 按字符所属脚本返回一个系统 fallback 字体族名。

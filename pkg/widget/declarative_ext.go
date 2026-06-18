@@ -480,7 +480,7 @@ func registerExtComponents() {
 	})
 
 	RegisterComponent("Markdown", func(ctx DeclarativeContext) Widget {
-		return NewMarkdownView(orStr(propsStr(ctx.Spec.Props, "source"), ctx.Spec.Text))
+		return NewMarkdownView(orStr(propsStr(ctx.Spec.Props, "source"), ctx.Spec.Text), MarkdownStyle{})
 	})
 
 	// ── 收尾：日期时间 / 日历 / 容器 / 编辑器 ──

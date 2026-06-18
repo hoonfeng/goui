@@ -465,7 +465,7 @@ func ShowContextMenuStyled(x, y float64, items []MenuItem, bg, text, hover, bord
 		Content:        m,
 		Placement:      PlacementBottomStart,
 		Gap:            0,
-		Transition:     "fade",
+		Transition:     "", // �˵�Ӧ����ʾ������ fade ��������һ֡�ɼ�
 		OnClickOutside: func() { HideOverlay(id) },
 	})
 	return id

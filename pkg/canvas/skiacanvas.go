@@ -1,3 +1,5 @@
+//go:build cgo
+
 // Package canvas 提供了 2D 绘制接口。
 // SkiaCanvas 是基于 Skia 硬件加速的 Canvas 实现，使用 goskia CGO 绑定。
 package canvas
@@ -5,7 +7,6 @@ package canvas
 import (
 	"fmt"
 	"image"
-	"golang.org/x/image/bmp"
 	"image/draw"
 	"image/png"
 	"math"
@@ -13,6 +14,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+
+	"golang.org/x/image/bmp"
 
 	goskia "github.com/hoonfeng/goskia/skia"
 	"github.com/hoonfeng/goui/pkg/paint"
@@ -67,7 +70,7 @@ func NewSkiaCanvas(width, height int) *SkiaCanvas {
 	// 初始化 Skia 全局状态（线程安全，只执行一次）
 	c.initOnce.Do(func() {
 		goskia.Init()
-		goskia.SetFontCacheLimit(16 << 20) // 32 MiB 字形缓存上限（进程级）
+		goskia.SetFontCacheLimit(128 << 20) // 128 MiB 字形缓存上限（进程级）
 	})
 
 	// 创建 Raster Surface（CPU 渲染，N32 Premul = RGBA8888 格式）
@@ -102,7 +105,7 @@ func NewSkiaCanvasGPU(width, height int, fboID uint32) (*SkiaCanvas, error) {
 	}
 	c.initOnce.Do(func() {
 		goskia.Init()
-		goskia.SetFontCacheLimit(16 << 20)
+		goskia.SetFontCacheLimit(128 << 20)
 	})
 
 	iface, err := goskia.NewNativeGLInterface()
@@ -760,64 +763,92 @@ func (c *SkiaCanvas) getOrCreateSkiaFont(font Font) *goskia.Font {
 }
 
 // getOrCreateTypefaceLocked 获取或创建 goskia Typeface（调用者需持有 mu 锁）。
+// 缓存键含字体族 + 字重（不同字体族各自独立缓存），支持用户自定义 UI 字体。
 func (c *SkiaCanvas) getOrCreateTypefaceLocked(font Font) *goskia.Typeface {
 	weight := font.Weight
-	if isMonoFamily(font.Family) { // 等宽族 → 加载真等宽字体（Consolas/系统等宽）
+	family := font.Family
+	if family == "" {
+		family = "sans-serif"
+	}
+
+	if isMonoFamily(family) {
+		// 用户选了具体的等宽字体（如 "Cascadia Code"、"JetBrains Mono"），
+		// 优先使用 Skia 系统字体接口按用户所选字体名加载，按字体族独立缓存。
+		// 仅在通用关键字（monospace/mono）或加载失败时回退到默认 Consolas 路径。
+		if !isGenericMono(family) {
+			tfKey := fmt.Sprintf("typeface-%s-w%d", family, weight)
+			if tf, ok := c.typefaceCache[tfKey]; ok {
+				return tf
+			}
+			skStyle := goskia.FontStyleNormal
+			if weight == FontWeightBold {
+				skStyle = goskia.FontStyleBold
+			}
+			tf := goskia.NewTypeface(family, skStyle)
+			if tf != nil {
+				c.typefaceCache[tfKey] = tf
+				return tf
+			}
+			// 加载失败 → 回退到默认等宽字体
+		}
 		return c.getOrCreateMonoTypefaceLocked(weight)
 	}
-	// Typeface 与字号无关（字号是 NewFont(typeface,size) 那层的事），仅按字重缓存。
-	// 否则每个不同字号都会各加载一份完整字库 Typeface，内存成倍膨胀。
-	tfKey := fmt.Sprintf("typeface-w%d", weight)
+
+	// Typeface 与字号无关（字号是 NewFont(typeface,size) 那层的事）。
+	// 缓存键含字体族 + 字重：不同族（如 "Segoe UI" 与 "Microsoft YaHei"）各自独立。
+	tfKey := fmt.Sprintf("typeface-%s-w%d", family, weight)
 	if tf, ok := c.typefaceCache[tfKey]; ok {
 		return tf
 	}
 
 	var tf *goskia.Typeface
 
-	// 从项目 fonts 目录加载
-	if fontDir := getProjectFontDir(); fontDir != "" {
-		var fontFiles []string
-		switch weight {
-		case FontWeightBold:
-			fontFiles = []string{
-				filepath.Join(fontDir, "AlibabaPuHuiTi-3-85-Bold.ttf"),
-				filepath.Join(fontDir, "AlibabaPuHuiTi-3-65-Medium.ttf"),
-				filepath.Join(fontDir, "AlibabaPuHuiTi-3-55-Regular.ttf"),
+	// 默认字体（sans-serif 或空） → 用项目 fonts/ 目录的阿里普惠体（跨平台一致体验，支持中文）
+	if family == "sans-serif" {
+		if fontDir := getProjectFontDir(); fontDir != "" {
+			var fontFiles []string
+			switch weight {
+			case FontWeightBold:
+				fontFiles = []string{
+					filepath.Join(fontDir, "AlibabaPuHuiTi-3-85-Bold.ttf"),
+					filepath.Join(fontDir, "AlibabaPuHuiTi-3-65-Medium.ttf"),
+					filepath.Join(fontDir, "AlibabaPuHuiTi-3-55-Regular.ttf"),
+				}
+			case FontWeightMedium:
+				fontFiles = []string{
+					filepath.Join(fontDir, "AlibabaPuHuiTi-3-65-Medium.ttf"),
+					filepath.Join(fontDir, "AlibabaPuHuiTi-3-55-Regular.ttf"),
+					filepath.Join(fontDir, "AlibabaPuHuiTi-3-85-Bold.ttf"),
+				}
+			default:
+				fontFiles = []string{
+					filepath.Join(fontDir, "AlibabaPuHuiTi-3-65-Medium.ttf"),
+					filepath.Join(fontDir, "AlibabaPuHuiTi-3-55-Regular.ttf"),
+					filepath.Join(fontDir, "AlibabaPuHuiTi-3-85-Bold.ttf"),
+				}
 			}
-		case FontWeightMedium:
-			fontFiles = []string{
-				filepath.Join(fontDir, "AlibabaPuHuiTi-3-65-Medium.ttf"),
-				filepath.Join(fontDir, "AlibabaPuHuiTi-3-55-Regular.ttf"),
-				filepath.Join(fontDir, "AlibabaPuHuiTi-3-85-Bold.ttf"),
-			}
-		default:
-			fontFiles = []string{
-				filepath.Join(fontDir, "AlibabaPuHuiTi-3-65-Medium.ttf"),
-				filepath.Join(fontDir, "AlibabaPuHuiTi-3-55-Regular.ttf"),
-				filepath.Join(fontDir, "AlibabaPuHuiTi-3-85-Bold.ttf"),
-			}
-		}
-		for _, fp := range fontFiles {
-			data, err := os.ReadFile(fp)
-			if err == nil {
-				tf = goskia.NewTypefaceFromData(data, 0)
-				if tf != nil {
-					break
+			for _, fp := range fontFiles {
+				data, err := os.ReadFile(fp)
+				if err == nil {
+					tf = goskia.NewTypefaceFromData(data, 0)
+					if tf != nil {
+						break
+					}
 				}
 			}
 		}
-	}
-
-	// 回退到系统默认字体
-	if tf == nil {
+	} else {
+		// 用户指定的字体族 → 用 Skia 系统字体加载（Win32 原生字体枚举）
 		skStyle := goskia.FontStyleNormal
 		if weight == FontWeightBold {
 			skStyle = goskia.FontStyleBold
 		}
-		tf = goskia.NewTypeface(font.Family, skStyle)
-		if tf == nil {
-			tf = goskia.DefaultTypeface()
-		}
+		tf = goskia.NewTypeface(family, skStyle)
+	}
+
+	// 回退到系统默认字体
+	if tf == nil {
+		tf = goskia.DefaultTypeface()
 	}
 
 	if tf != nil {
@@ -904,6 +935,11 @@ func (c *SkiaCanvas) getOrCreateTypefaceForCoverage() *goskia.Typeface {
 	fontStoreMu.Lock()
 	defer fontStoreMu.Unlock()
 	return c.getOrCreateTypefaceLocked(Font{Weight: FontWeightNormal, Size: 16})
+}
+
+// getGlyphChecker 返回字形覆盖检测器（包装 getOrCreateTypefaceForCoverage 的结果）。
+func (c *SkiaCanvas) getGlyphChecker() GlyphChecker {
+	return c.getOrCreateTypefaceForCoverage()
 }
 
 // ============================================================================
@@ -1020,5 +1056,3 @@ func (c *SkiaCanvas) SaveToPNG(filename string) error {
 	defer f.Close()
 	return png.Encode(f, c.img)
 }
-
-

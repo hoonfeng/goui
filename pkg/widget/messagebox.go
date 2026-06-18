@@ -33,7 +33,12 @@ func ShowAlert(title, message string, mtype MessageType, onOk func()) int {
 }
 
 // ShowConfirm 弹出确认框(「取消 / 确定」)，分别回调 onCancel / onConfirm。
+// mtype 为 MsgError 时确认按钮用危险色（elDanger），适用于删除等破坏性操作。
 func ShowConfirm(title, message string, mtype MessageType, onConfirm, onCancel func()) int {
+	confirmColor := elPrimary()
+	if mtype == MsgError {
+		confirmColor = elDanger()
+	}
 	var id int
 	dialog := NewDialog(title, messageBoxBody(message, mtype)).WithWidth(400).WithFooter(
 		NewButton(i18n.T("el.messagebox.cancel"), func() {
@@ -41,13 +46,13 @@ func ShowConfirm(title, message string, mtype MessageType, onConfirm, onCancel f
 			if onCancel != nil {
 				onCancel()
 			}
-		}).WithColor(types.ColorFromRGB(244, 244, 245)).WithTextColor(elTextRegular()),
+		}).WithColor(elFill()).WithTextColor(elTextRegular()),
 		NewButton(i18n.T("el.messagebox.confirm"), func() {
 			HideOverlay(id)
 			if onConfirm != nil {
 				onConfirm()
 			}
-		}).WithColor(elPrimary()),
+		}).WithColor(confirmColor),
 	)
 	id = ShowDialog(dialog)
 	return id
